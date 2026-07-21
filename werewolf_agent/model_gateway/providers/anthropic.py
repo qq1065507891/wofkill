@@ -4,10 +4,14 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-15
+修改日期：2026-07-21
 
 2026-07-15 新增：``config.base_url`` 覆盖 provider 实例默认 URL；``config.extra_body``
 合并进 payload（不覆盖已有字段）。用于同一 Anthropic 兼容客户端服务多个 endpoint。
+2026-07-21 新增：anthropic prompt cache (cache_control: ephemeral) — system_prompt
+非空时切到 list-of-text-blocks 形式, 给首 block 加 cache_control 标记, 跨轮
+跨玩家复用 cache_read_input_tokens. 用量记录补充 cache_creation_input_tokens
+和 cache_read_input_tokens 字段.
 
 使用示例：内部模块，无对外接口
 """
@@ -31,6 +35,13 @@ from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
     resolve_structured_output_mode,
 )
+
+
+# Anthropic prompt cache 标记. Claude 系列 ephemeral cache 的最小有效
+# prefix 是 1024 tokens (claude-sonnet-4.5 / opus-4.8); 短 prefix 加 marker
+# 也合法, 但 Anthropic 不会创建 cache, 不会额外收费. 我们对任意长度的
+# system_prompt 都加 marker, 跨轮稳定够长时才命中 cache_read_input_tokens.
+_ANTHROPIC_CACHE_CONTROL_EPHEMERAL: dict[str, str] = {"type": "ephemeral"}
 
 
 class AnthropicProvider(_BaseHttpProvider):
@@ -98,7 +109,7 @@ class AnthropicProvider(_BaseHttpProvider):
             payload["max_tokens"] = max(int(config.max_tokens or 0), budget + 1024)
             payload["temperature"] = 1
         if system_prompt:
-            payload["system"] = system_prompt
+            payload["system"] = _wrap_system_prompt_for_cache(system_prompt)
         if tools and mode == StructuredOutputMode.NATIVE_TOOL:
             payload["tools"] = tools
         if tool_choice and mode == StructuredOutputMode.NATIVE_TOOL:
@@ -109,9 +120,8 @@ class AnthropicProvider(_BaseHttpProvider):
                 payload.setdefault(key, value)
 
         if final_prompt_observer is not None:
-            system_content = str(payload.get("system") or "")
             notify_final_prompt_observer(final_prompt_observer, FinalPromptAssembly(
-                system_bytes=system_content.encode("utf-8"),
+                system_bytes=_system_bytes_for_observer(payload.get("system")),
                 provider_payload_bytes=canonical_provider_payload(payload),
                 final_system_location="system",
                 final_system_message_index=None,
@@ -144,6 +154,13 @@ class AnthropicProvider(_BaseHttpProvider):
         usage = data.get("usage", {})
         reasoning_tokens = int(
             (usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+        )
+        # 2026-07-21 R2: Anthropic prompt cache 统计字段.
+        cache_creation_input_tokens = int(
+            usage.get("cache_creation_input_tokens", 0) or 0
+        )
+        cache_read_input_tokens = int(
+            usage.get("cache_read_input_tokens", 0) or 0
         )
         has_thinking = any(
             item.get("type") == "thinking" for item in _anthropic_content(data)
@@ -180,8 +197,50 @@ class AnthropicProvider(_BaseHttpProvider):
                 latency_ms=latency_ms,
                 prompt_tokens=int(usage.get("input_tokens", 0) or 0),
                 completion_tokens=int(usage.get("output_tokens", 0) or 0),
+                cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
             ),
         )
+
+
+# 2026-07-21 R2: 把 system_prompt 包装成 Anthropic prompt cache 的 list 形式.
+#
+# 输入是 str. 输出 list-of-text-blocks 形式 (Anthropic 2026 协议) ::
+#
+#     [
+#         {"type": "text", "text": "<system_prompt>",
+#          "cache_control": {"type": "ephemeral"}},
+#     ]
+#
+# 字节兼容 finalize_prompt_observer 的 contract marker 校验: marker 字符串
+# 仍然以 Python repr 形式出现在 system_bytes 里, find() 仍命中.
+def _wrap_system_prompt_for_cache(system_prompt: str) -> list[dict[str, Any]]:
+    """Wrap a system_prompt string into Anthropic text-blocks with cache_control."""
+    return [{
+        "type": "text",
+        "text": system_prompt,
+        "cache_control": _ANTHROPIC_CACHE_CONTROL_EPHEMERAL,
+    }]  # type: ignore[list-item]  # 单元素 list, 与 anthropic.py:list[dict] 形态兼容.
+
+
+def _system_bytes_for_observer(system_value: str | list[dict[str, Any]] | None) -> bytes:
+    """序列化 system 字段供 FinalPromptAssembly.system_bytes.
+
+    兼容 str (旧用法) 和 list-of-text-blocks (R2 新形态).
+    列表形式用 canonical JSON 保证后续调用者能字节化, 同时 contract marker
+    仍然出现在 JSON 内的中文 UTF-8 序列里, find() 命中.
+    """
+    if system_value is None:
+        return b""
+    if isinstance(system_value, str):
+        return system_value.encode("utf-8")
+    # list 形式, 用 json.dumps 而非 str() (Python repr 会带单引号, 与 JSON 不同).
+    return json.dumps(
+        system_value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 # -- Anthropic response parsers --

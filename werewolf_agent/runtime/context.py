@@ -93,11 +93,12 @@ from werewolf_agent.runtime.context_skill_advice import (
 )
 # 兼容旧源码扫描测试：真实枚举值 "review_correct" 位于 context_skill_advice。
 from werewolf_agent.runtime.context_strategy_directives import (
-    _MAX_STRATEGY_DIRECTIVE_TOKENS,  # noqa: F401
-    _ROUND_SPECIFIC_DROP_KEYS,  # noqa: F401
-    _cap_strategy_directive,  # noqa: F401
+    cap_strategy_directive,  # R5 公开入口; 2026-07-21 build_agent_context 强制接通
+    cap_strategy_directive as _cap_strategy_directive,  # noqa: F401  # 旧私有别名兼容
     _directive_size,  # noqa: F401
     _merge_strategy_directive,  # noqa: F401
+    _ROUND_SPECIFIC_DROP_KEYS,  # noqa: F401
+    _MAX_STRATEGY_DIRECTIVE_TOKENS,  # noqa: F401  # 历史兼容: 导入 _MAX_STRATEGY_DIRECTIVE_TOKENS 常量
 )
 
 logger = logging.getLogger(__name__)
@@ -540,7 +541,7 @@ def build_agent_context(
         authoritative_world_identities=authoritative_world_identities,
         public_world_evidence_ids=sorted(public_evidence_ids),
         simulation_predictions=simulation_predictions_dict,
-        strategy_directive=strategy_directive,
+        strategy_directive=cap_strategy_directive(strategy_directive),
         skill_analyses=skill_analyses,
         decision_identity=decision_identity,
         exposure_collector=exposure_collector,

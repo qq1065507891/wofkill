@@ -260,6 +260,12 @@ def _generate_openai_compatible(
     usage = data.get("usage", {})
     details = usage.get("completion_tokens_details") or {}
     reasoning_tokens = int(details.get("reasoning_tokens", 0) or 0)
+    # 2026-07-21 R6: OpenAI Chat Completions prompt cache 解析.
+    # OpenAI 自动 cache prompt 前缀 ≥ 1024 token; 命中数从
+    # usage.prompt_tokens_details.cached_tokens 读. server-side auto cache
+    # 没有 creation 概念, 所以 cache_creation_input_tokens 永远是 0.
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    cached_tokens = int(prompt_details.get("cached_tokens", 0) or 0)
     return GenerateResult(
         text=text,
         thinking_text=thinking_text,
@@ -293,6 +299,7 @@ def _generate_openai_compatible(
             latency_ms=latency_ms,
             prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
             completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+            cache_read_input_tokens=cached_tokens,
         ),
     )
 

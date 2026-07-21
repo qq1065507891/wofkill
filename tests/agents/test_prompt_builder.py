@@ -5435,5 +5435,116 @@ def test_vote_choice_prompt_does_not_turn_candidate_status_into_evidence():
     assert "暂无该候选的公开证据摘要" in prompt
 
 
+# 2026-07-21 R3: 6 段稳定的 system prompt builder 抽取为 per-process singleton,
+# 让 Anthropic cache_control (R2) 在跨轮跨玩家时能命中同一字符串对象, 提升
+# cache_read_input_tokens 命中比例. 这些测试断言: 同实例多次调, 同玩家身份
+# 多次调, 返同一字符串对象 (`is` 关系), 同时内容与 R3 前完全等价.
+
+
+def test_static_literal_sections_return_singleton_string_objects() -> None:
+    """`_build_game_rules` / `_build_reasoning_method` / `_build_skill_policy`
+    / `_build_output_contract` 是 module-level 常量, 同实例多次调用 `is` 同一对象.
+
+    这样 R2 的 cache_control 在同进程内跨玩家跨轮复用同一字符串, Anthropic
+    prefix-byte 二次匹配精确命中.
+    """
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+    )
+    builder_a = PlayerPromptBuilder(ctx, "玩家")
+    builder_b = PlayerPromptBuilder(ctx, "玩家")
+    sections = (
+        ("game_rules", builder_a._build_game_rules, builder_b._build_game_rules),
+        ("reasoning_method", builder_a._build_reasoning_method, builder_b._build_reasoning_method),
+        ("skill_policy", builder_a._build_skill_policy, builder_b._build_skill_policy),
+        ("output_contract", builder_a._build_output_contract, builder_b._build_output_contract),
+    )
+    for label, fa, fb in sections:
+        a, b = fa(), fb()
+        assert a is b, f"{label} 必须返回同一字符串对象, 当前 a={id(a)} b={id(b)}"
+        # 内容仍在
+        assert len(a) > 100, f"{label} 字符串仍要保留完整内容"
+
+
+def test_information_boundaries_process_singleton_across_calls() -> None:
+    """`_build_information_boundaries` 依赖 _USER_SECTION_SPECS, 同一进程内只算一次."""
+    ctx1 = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, own_role="villager",
+    )
+    ctx2 = AgentContext(
+        agent_id="p08", task_type=TaskType.SPEECH, own_role="werewolf",
+    )
+    builder1 = PlayerPromptBuilder(ctx1)
+    builder2 = PlayerPromptBuilder(ctx2)
+    a = builder1._build_information_boundaries()
+    b = builder2._build_information_boundaries()
+    assert a is b, (
+        "information_boundaries 是 process singleton, 不同玩家两次调用应 "
+        "返同一字符串对象"
+    )
+
+
+def test_role_guide_per_role_singleton() -> None:
+    """`_build_role_guide` 同角色玩家返同一对象, 不同角色不同对象."""
+    werewolf_a = PlayerPromptBuilder(AgentContext(
+        agent_id="p08", task_type=TaskType.SPEECH, own_role="werewolf",
+    ))
+    werewolf_b = PlayerPromptBuilder(AgentContext(
+        agent_id="p10", task_type=TaskType.SPEECH, own_role="werewolf",
+    ))
+    villager_a = PlayerPromptBuilder(AgentContext(
+        agent_id="p02", task_type=TaskType.SPEECH, own_role="villager",
+    ))
+
+    w_a = werewolf_a._build_role_guide()
+    w_b = werewolf_b._build_role_guide()
+    v_a = villager_a._build_role_guide()
+
+    assert w_a is w_b, "同角色 (werewolf) 玩家同进程返同一对象"
+    assert w_a is not v_a, "不同角色 (werewolf vs villager) 必须不同"
+    assert "狼人规则" in w_a
+    assert "村民规则" in v_a
+
+
+def test_static_sections_keep_existing_string_content() -> None:
+    """R3 不改内容, 只改存储形式. 老测试 (L551-571 顺序/子串断言) 仍通过.
+
+    抽查关键子串确保 R3 没有把常量字符串意外截断或移位.
+    """
+    ctx = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, own_role="villager",
+    )
+    builder = PlayerPromptBuilder(ctx)
+    assert "【禁止事项】" in builder._build_game_rules()
+    assert "本局只有以下7种角色" in builder._build_game_rules()
+    assert "【推理方法-3 步】" in builder._build_reasoning_method()
+    assert "【结构化输出】" in builder._build_output_contract()
+    assert "JSON 字符总数 ≤ 4000" in builder._build_output_contract()
+    assert "【信息边界】" in builder._build_information_boundaries()
+    assert "【重写一致性硬约束 / MUST" in builder._build_information_boundaries()
+
+
+def test_static_section_overlap_with_r2_cache_marker_does_not_change() -> None:
+    """R3 抽单例不影响 Anthropic provider 的 cache marker (R2 行为).
+
+    R2 把 system 切 list + cache_control: ephemeral; R3 让前缀字节本身是
+    同一对象, cache_control 仍正确放在 list 首 block. 这条是 R2 + R3
+    协同的综合 sanity, 防止下次再做 R4 时误删 cache marker.
+    """
+    from werewolf_agent.model_gateway.providers.anthropic import (
+        _wrap_system_prompt_for_cache,
+    )
+
+    s1 = _wrap_system_prompt_for_cache("hello world")
+    s2 = _wrap_system_prompt_for_cache("hello world")
+    # 不同调用返回的 list 元素虽然内容相同但 list 是新对象 (R3 不动 provider 层).
+    # 但 list 里 text 字符串与 R3 抽出的同名常量是不是同一对象, 这条留给 R3 实现后断言.
+    assert isinstance(s1, list) and len(s1) == 1
+    assert s1[0]["cache_control"] == {"type": "ephemeral"}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -4,10 +4,12 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-15
+修改日期：2026-07-21
 
 2026-07-15 新增：``config.base_url`` 覆盖 provider 实例默认 URL；``config.extra_body``
 合并进 payload。用于与 OpenAI 客户端版本的 native MiniMax 共存。
+2026-07-21 新增：anthropic prompt cache (cache_control: ephemeral) — 与 anthropic.py
+共享 _wrap_system_prompt_for_cache.
 
 使用示例：内部模块，无对外接口
 """
@@ -21,6 +23,8 @@ from werewolf_agent.model_gateway.providers.anthropic import (
     _anthropic_tool_name,
     _extract_anthropic_text,
     _has_anthropic_tool_use,
+    _system_bytes_for_observer,
+    _wrap_system_prompt_for_cache,
 )
 from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
 from werewolf_agent.model_gateway.final_prompt_observer import (
@@ -100,7 +104,7 @@ class MiniMaxProvider(_BaseHttpProvider):
             payload["max_tokens"] = max(int(config.max_tokens or 0), budget + 1024)
             payload["temperature"] = 1
         if system_prompt:
-            payload["system"] = system_prompt
+            payload["system"] = _wrap_system_prompt_for_cache(system_prompt)
         if tools and mode == StructuredOutputMode.NATIVE_TOOL:
             payload["tools"] = tools
         # 2026-07-15: per-profile extra_body 合并。
@@ -109,9 +113,8 @@ class MiniMaxProvider(_BaseHttpProvider):
                 payload.setdefault(key, value)
 
         if final_prompt_observer is not None:
-            system_content = str(payload.get("system") or "")
             notify_final_prompt_observer(final_prompt_observer, FinalPromptAssembly(
-                system_bytes=system_content.encode("utf-8"),
+                system_bytes=_system_bytes_for_observer(payload.get("system")),
                 provider_payload_bytes=canonical_provider_payload(payload),
                 final_system_location="system",
                 final_system_message_index=None,
@@ -141,6 +144,12 @@ class MiniMaxProvider(_BaseHttpProvider):
         usage = data.get("usage", {})
         reasoning_tokens = int(
             (usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+        )
+        cache_creation_input_tokens = int(
+            usage.get("cache_creation_input_tokens", 0) or 0
+        )
+        cache_read_input_tokens = int(
+            usage.get("cache_read_input_tokens", 0) or 0
         )
         has_thinking = any(
             item.get("type") == "thinking"
@@ -179,5 +188,7 @@ class MiniMaxProvider(_BaseHttpProvider):
                 latency_ms=latency_ms,
                 prompt_tokens=int(usage.get("input_tokens", 0) or 0),
                 completion_tokens=int(usage.get("output_tokens", 0) or 0),
+                cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
             ),
         )

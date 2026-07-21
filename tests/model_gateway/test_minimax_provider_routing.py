@@ -222,3 +222,81 @@ def test_minimax_m27_profiles_still_defined_for_reflection_fallback(yaml_config:
         assert required in profiles, f"required profile {required!r} missing"
         assert profiles[required]["provider"] == "minimax"
         assert profiles[required]["model"] == "MiniMax-M2.7"
+
+
+class _FakeResponse:
+    def __init__(self, json_payload):
+        self._json = json_payload
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return self._json
+
+
+class _FakeHttpClient:
+    def __init__(self, response_json):
+        self._response_json = response_json
+        self.last_json = None
+
+    def post(self, url, *, json, **_):
+        self.last_json = json
+        return _FakeResponse(self._response_json)
+
+
+def test_minimax_provider_payload_sync_with_anthropic_cache_control() -> None:
+    """2026-07-21 R2: MiniMax payload.system 与 Anthropic 一致, 共享 cache marker.
+
+    MiniMax.py 完全照抄 anthropic.py 的 system 字段拼装; R2 让两边都
+    在 system_prompt 长度足够时切到 list-of-text-blocks + cache_control.
+    """
+    from werewolf_agent.model_gateway.providers.minimax import MiniMaxProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    long_prompt = "【提示词合同】id=werewolf-player-system;version=test\n" + (
+        "稳定规则内容：" * 200
+    )
+    client = _FakeHttpClient({
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    })
+    MiniMaxProvider(
+        api_key="k", base_url="https://api.minimaxi.com/anthropic",
+        http_client=client,
+    ).generate(
+        prompt="hello",
+        config=ModelConfig(provider="minimax", model="MiniMax-M2.7"),
+        system_prompt=long_prompt,
+    )
+    sent_system = client.last_json["system"]
+    assert isinstance(sent_system, list) and len(sent_system) == 1
+    assert sent_system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_minimax_provider_short_system_also_uses_cache_control() -> None:
+    """短 system_prompt 在 MiniMax 也走 list (与 anthropic 同步).
+
+    Anthropic 在 prefix < 1024 token 时静默忽略 cache_control marker,
+    不收费无副作用. R2 选择统一形态, provider 不做长度阈值判断.
+    """
+    from werewolf_agent.model_gateway.providers.minimax import MiniMaxProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _FakeHttpClient({
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    })
+    MiniMaxProvider(
+        api_key="k", base_url="https://api.minimaxi.com/anthropic",
+        http_client=client,
+    ).generate(
+        prompt="hello",
+        config=ModelConfig(provider="minimax", model="MiniMax-M2.7"),
+        system_prompt="hi",
+    )
+    sent_system = client.last_json["system"]
+    assert isinstance(sent_system, list) and len(sent_system) == 1
+    assert sent_system[0]["text"] == "hi"
+    assert sent_system[0]["cache_control"] == {"type": "ephemeral"}

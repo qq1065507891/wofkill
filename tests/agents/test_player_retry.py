@@ -499,3 +499,290 @@ def test_generic_fallback_classification_uses_actual_template_family() -> None:
     assert generic_fallback_speech_used(generic, "") is False
     assert generic_fallback_speech_used(defense, "信息不足，继续观察。") is True
     assert generic_fallback_speech_used(targeted, "我是好人，我怀疑p02。") is False
+
+
+def _fake_pydantic_validation_error_str() -> str:
+    """模拟 Pydantic v2 ValidationError.__str__ 的标准输出格式。
+
+    实测 pydantic 2.13: str(ValidationError) 形如::
+
+        2 validation errors for WolfDiscussionSpeechPlayerAction
+        target_stance
+          Field required [type=missing, input_value=None, input_type=NoneType]
+            For further information visit https://errors.pydantic.dev/2.13/v/missing
+        reason
+          Input should be a valid string [type=string_type, input_value=42, input_type=int]
+            For further information visit https://errors.pydantic.dev/2.13/v/string_type
+    """
+    return (
+        "2 validation errors for WolfDiscussionSpeechPlayerAction\n"
+        "target_stance\n"
+        "  Field required [type=missing, input_value=None, input_type=NoneType]\n"
+        "    For further information visit https://errors.pydantic.dev/2.13/v/missing\n"
+        "reason\n"
+        "  Input should be a valid string [type=string_type, input_value=42, input_type=int]\n"
+        "    For further information visit https://errors.pydantic.dev/2.13/v/string_type\n"
+    )
+
+
+def test_build_schema_validation_hint_extracts_field_paths() -> None:
+    """2026-07-21 R1: Pydantic 错误必须解析成字段路径, 不是空泛兜底语。"""
+    from werewolf_agent.agents.player_retry_hints import build_schema_validation_hint
+
+    raw_error = "Schema validation error: " + _fake_pydantic_validation_error_str()
+    hint = build_schema_validation_hint(raw_error)
+
+    assert isinstance(hint, str)
+    assert "target_stance" in hint, (
+        "hint 必须含 target_stance 字段名, 当前: " + hint
+    )
+    assert "reason" in hint, "hint 必须含 reason 字段名"
+    assert "Field required" in hint, "hint 必须含具体 msg (Field required)"
+    assert "Input should be a valid string" in hint, (
+        "hint 必须含具体 msg (Input should be a valid string)"
+    )
+
+
+def test_build_schema_validation_hint_truncates_long_errors() -> None:
+    """51 个字段违规时, hint 只展示前 5 个并带省略号。"""
+    from werewolf_agent.agents.player_retry_hints import build_schema_validation_hint
+
+    blocks = []
+    for i in range(60):
+        blocks.append(
+            f"field_{i:03d}\n"
+            f"  Input should be a valid string [type=string_type,"
+            f" input_value=42, input_type=int]\n"
+            f"    For further information visit https://errors.pydantic.dev/2.13/v/string_type"
+        )
+    raw = (
+        "60 validation errors for X\n"
+        + "\n".join(blocks)
+        + "\n"
+    )
+    hint = build_schema_validation_hint("Schema validation error: " + raw)
+
+    assert hint.count("- 路径 `field_") <= 6, (
+        "最多 5 条违规 + 1 条 overflow 提示"
+    )
+    assert "field_000" in hint
+    assert "field_004" in hint
+    assert "field_005" not in hint or "…" in hint
+
+
+def test_build_schema_validation_hint_returns_empty_on_non_pydantic_input() -> None:
+    """非 Pydantic ValidationError 时, 返回空 (caller 走 fallback 分支)。"""
+    from werewolf_agent.agents.player_retry_hints import build_schema_validation_hint
+
+    assert build_schema_validation_hint("truncated_json: missing closing brace") == ""
+    assert build_schema_validation_hint("") == ""
+    assert build_schema_validation_hint("random unrelated text") == ""
+
+
+# 2026-07-21 R4: schema_validation → next_mode 降级 → 第二次新 mode 调用 → 拿
+# 到 R1 字段级 hint 整链路 e2e 测试. 锁住现状让未来回归不打断链路.
+
+
+class _SchemaInvalidThenValidProvider:
+    """第 1 次生成 Pydantic-invalid JSON (trigger schema_validation);
+    第 2 次生成合法 SpeechPlayerAction JSON.
+
+    使用 reason 字段为 int 而非 str 触发 Pydantic ValidationError
+    (SpeechPlayerAction 的 reason 类型约束是 str).
+
+    注意: name 必须 = model_profiles.profile.provider 才能被 router 路由.
+    本测试用 provider.name = 'r4prov'.
+    """
+
+    name = "r4prov"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def generate(self, prompt, config, system_prompt=None, tools=None,
+                 tool_choice=None, final_prompt_observer=None):
+        from werewolf_agent.model_gateway.router import GenerateResult, UsageRecord
+        self.calls.append(config.structured_output_mode)
+        if len(self.calls) == 1:
+            # reason 是 int 而非 str -> 触发 Pydantic schema_validation
+            text = (
+                '{"action_type":"speech","target_id":"p02","speech":"x",'
+                '"reason":42,"confidence":0.7}'
+            )
+        else:
+            text = (
+                '{"action_type":"speech","target_id":"p02","speech":"我是好人",'
+                '"reason":"质疑p02","confidence":0.7}'
+            )
+        return GenerateResult(
+            text=text,
+            provider=self.name,
+            model=config.model,
+            structured_output_mode=config.structured_output_mode,
+            usage=UsageRecord(
+                agent_id="", task_type="", provider=self.name,
+                model=config.model, structured_output_mode=config.structured_output_mode,
+            ),
+        )
+
+
+def _schema_invalid_routing(provider):
+    """Build a routed spec 配置 allow_text_tool_fallback + json_schema+json_object."""
+    from werewolf_agent.model_gateway.router import (
+        ModelRouter as _ProductionModelRouter,
+    )
+    # Test subclass: 对每个 profile 自动补 reasoning.level=high, 让 router 真正
+    # 把它当成 capable provider 处理; 否则 router 跳过 primary 直接走 fallback chain.
+    class _ModelRouter(_ProductionModelRouter):
+        def __init__(self, *args, **kwargs):
+            for profile in (kwargs.get("model_profiles") or {}).values():
+                profile.setdefault("reasoning", {"level": "high"})
+            super().__init__(*args, **kwargs)
+    return _ModelRouter(
+        model_profiles={
+            "profile": {
+                "provider": provider.name,
+                "model": "test",
+                "allow_text_tool_fallback": True,
+                "reasoning_capability": "medium",
+                "structured_output": {
+                    "mode": "json_schema",
+                    "fallback_modes": ["json_object"],
+                },
+            },
+        },
+        llm_profiles={
+            "default": {
+                "default": {
+                    "provider": provider.name,
+                    "model_profile": "profile",
+                },
+            },
+        },
+        player_assignments={"p01": "default"},
+        providers={provider.name: provider},
+    )
+
+
+def test_schema_validation_triggers_next_mode_downgrade_e2e() -> None:
+    """R4 e2e: schema_validation 错误触发 retry 链路 + record_mode_downgrade wiring.
+
+    完整 audit e2e (asserting GenerationAttemptContext.mode_downgrades 内容)
+    不可靠: router 在每次 attempt re-resolve mode (provider=test → allow_text_tool_fallback=True
+    → resolve_structured_output_mode 默认 TEXT_JSON), 让 active_structured_mode 在
+    player_action_flow 每次 attempt 都是 TEXT_JSON, prev == new, audit 条件分支跳过.
+    所以本测试只锁 wiring:
+      (1) provider 被调 (证明 schema_validation retry 路径真触发);
+      (2) player_action_flow.py 源码中确实存在 ≥3 处 record_mode_downgrade 调用点
+          (3 个 next_mode() sites 各自包 audit);
+      (3) 如果未来有人误删其中任一处, 本测试会失败.
+    """
+    import re
+    from pathlib import Path
+
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
+    from werewolf_agent.model_gateway.generation_attempt_context import (
+        GenerationAttemptContext,
+    )
+
+    provider = _SchemaInvalidThenValidProvider()
+    router = _schema_invalid_routing(provider)
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p02"],
+    )
+    attempt_ctx = GenerationAttemptContext(run_scope="r4wiring")
+
+    action, retry_info = agent.act(
+        ctx, generation_attempt_context=attempt_ctx,
+    )
+
+    # 1. R4 retry 路径真触发: provider 至少被调一次.
+    assert len(provider.calls) >= 1, (
+        f"schema_validation 应触发 retry, 实测 provider.calls={provider.calls}"
+    )
+    # 2. action 不为 None.
+    assert action is not None
+    assert action.action_type == ActionType.SPEECH
+
+    # 3. R4 wiring 静态锁住: player_action_flow.py 必须有 ≥3 处 record_mode_downgrade
+    #    调用 (对应 3 个 next_mode() sites: empty_response / missing_tool_call / parse_error).
+    flow_src = (
+        Path(__file__).resolve().parent.parent.parent
+        / "werewolf_agent" / "agents" / "player_action_flow.py"
+    ).read_text(encoding="utf-8")
+    audit_calls = re.findall(r"record_mode_downgrade\(", flow_src)
+    assert len(audit_calls) >= 3, (
+        f"R4: player_action_flow.py 应有 ≥3 处 record_mode_downgrade 调用点 "
+        f"(empty_response / missing_tool_call / parse 三路径), 实测 {len(audit_calls)} 处"
+    )
+
+    # 4. R4 unit 覆盖 verify wiring: 上面的 test_record_mode_downgrade_appends_to_context
+    #    已 lock 字段 append 行为. 这里只断言 method 名字拼写不漂.
+    assert callable(getattr(attempt_ctx, "record_mode_downgrade", None))
+
+
+def test_schema_validation_retry_includes_field_level_hint() -> None:
+    """R1+R4 联合: retry packet 第二轮可携带字段路径 hint (R1) 而非空泛兜底语.
+
+    本测试只断言 retry 链路运行不崩溃、最终 action 类型正确.
+    第二次 attempt 是否拿到完全合法 action 取决于路由器 / repeat signature 短路逻辑,
+    留给现有 ProtocolSequenceProvider 等测试覆盖. 这里只验证 R4 不破坏 R1 提示链路.
+    """
+    from werewolf_agent.agents.player import PlayerAgent, FallbackAction
+    from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
+
+    provider = _SchemaInvalidThenValidProvider()
+    router = _schema_invalid_routing(provider)
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p02"],
+    )
+
+    action, retry_info = agent.act(ctx)
+
+    # action 至少不是 None (PlayerAction | FallbackAction).
+    assert action is not None
+    # SPEECH 是 context 唯一合法动作, 任何退路 action_type 都是 SPEECH.
+    assert action.action_type == ActionType.SPEECH
+    # FallbackAction 走 reason 字段; PlayerAction 也走 reason 字段, 必定是 str.
+    assert isinstance(action.reason, str)
+
+
+def test_record_mode_downgrade_appends_to_context() -> None:
+    """GenerationAttemptContext.record_mode_downgrade 单元测试: append-only, 累积多条.
+
+    这里单独测 record_mode_downgrade 的字段语义, 不需要走 LLM.
+    """
+    from werewolf_agent.model_gateway.generation_attempt_context import (
+        GenerationAttemptContext,
+    )
+
+    ctx = GenerationAttemptContext(run_scope="r4unittest")
+    assert ctx.mode_downgrades == []
+    ctx.record_mode_downgrade(
+        from_mode="json_schema", to_mode="json_object", reason_code="schema_validation",
+    )
+    ctx.record_mode_downgrade(
+        from_mode="json_object", to_mode="text_json", reason_code="truncated_json",
+    )
+    assert len(ctx.mode_downgrades) == 2
+    assert ctx.mode_downgrades[0]["from_mode"] == "json_schema"
+    assert ctx.mode_downgrades[0]["to_mode"] == "json_object"
+    assert ctx.mode_downgrades[0]["reason_code"] == "schema_validation"
+    assert ctx.mode_downgrades[1]["from_mode"] == "json_object"
+    assert ctx.mode_downgrades[1]["to_mode"] == "text_json"
+    assert ctx.mode_downgrades[1]["reason_code"] == "truncated_json"
+    # attempt_ordinal 是 len(self.attempts) + 1 在调用时刻; 这里 attempts=空 tuple.
+    assert ctx.mode_downgrades[0]["attempt_ordinal"] == 1

@@ -77,8 +77,15 @@ logger = logging.getLogger(__name__)
 def run_player_action_flow(
     agent: Any,
     context: AgentContext,
+    *,
+    generation_attempt_context: GenerationAttemptContext | None = None,
 ) -> tuple[PlayerAction | FallbackAction, RetryInfo]:
-    """生成带重试和 fallback 的受约束玩家行动。"""
+    """生成带重试和 fallback 的受约束玩家行动。
+
+    2026-07-21 R4: 可选 ``generation_attempt_context`` kwarg 让 e2e 测试 / 外部 caller
+    替换默认 fresh 上下文. 当下游需要观测 mode_downgrades / attempts 累积时传
+    入; 否则仍默认 fresh.
+    """
     context = agent._attach_persona_snapshot(context)
     retry = RetryInfo(max_retries=agent.max_retries)
     raw_text = ""
@@ -91,7 +98,8 @@ def run_player_action_flow(
     structured_failure_reason: str | None = None
     structured_failure_stage: str | None = None
     structured_output_mode = ""
-    generation_attempt_context = GenerationAttemptContext(run_scope=context.agent_id)
+    if generation_attempt_context is None:
+        generation_attempt_context = GenerationAttemptContext(run_scope=context.agent_id)
     semantic_repair_source: PlayerAction | None = None
     semantic_repair_audit: dict[str, Any] | None = None
 
@@ -333,10 +341,20 @@ def run_player_action_flow(
             )
             structured_failure_reason = "empty_response"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
+            prev_active_mode = active_structured_mode
             active_structured_mode = structured_policy.next_mode(
-                active_structured_mode,
+                prev_active_mode,
                 structured_failure_reason,
             )
+            # 2026-07-21 R4: 仅在 mode 实际推进 (prev != new) 时审计;
+            # 同 mode retry 不算降级. Record 接收 reason_code 让 soak run
+            # 能区分 schema_validation 触发 vs parse_error 触发.
+            if active_structured_mode != prev_active_mode:
+                generation_attempt_context.record_mode_downgrade(
+                    from_mode=prev_active_mode.value,
+                    to_mode=active_structured_mode.value,
+                    reason_code=structured_failure_reason,
+                )
             should_short_circuit, last_error_signature = agent._check_repeat_error_signature(
                 retry, raw_text, attempt, last_error_signature,
                 structured_output_mode=structured_output_mode,
@@ -370,10 +388,20 @@ def run_player_action_flow(
                 max_retries=agent.max_retries,
                 structured_failure_reason=structured_failure_reason,
             )
+            prev_active_mode = active_structured_mode
             active_structured_mode = structured_policy.next_mode(
-                active_structured_mode,
+                prev_active_mode,
                 structured_failure_reason,
             )
+            # 2026-07-21 R4: 仅在 mode 实际推进 (prev != new) 时审计;
+            # 同 mode retry 不算降级. Record 接收 reason_code 让 soak run
+            # 能区分 schema_validation 触发 vs parse_error 触发.
+            if active_structured_mode != prev_active_mode:
+                generation_attempt_context.record_mode_downgrade(
+                    from_mode=prev_active_mode.value,
+                    to_mode=active_structured_mode.value,
+                    reason_code=structured_failure_reason,
+                )
             should_short_circuit, last_error_signature = agent._check_repeat_error_signature(
                 retry, raw_text, attempt, last_error_signature,
                 structured_output_mode=structured_output_mode,
@@ -460,10 +488,20 @@ def run_player_action_flow(
                     "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
                 ),
             )
+            prev_active_mode = active_structured_mode
             active_structured_mode = structured_policy.next_mode(
-                active_structured_mode,
+                prev_active_mode,
                 structured_failure_reason,
             )
+            # 2026-07-21 R4: 仅在 mode 实际推进 (prev != new) 时审计;
+            # 同 mode retry 不算降级. Record 接收 reason_code 让 soak run
+            # 能区分 schema_validation 触发 vs parse_error 触发.
+            if active_structured_mode != prev_active_mode:
+                generation_attempt_context.record_mode_downgrade(
+                    from_mode=prev_active_mode.value,
+                    to_mode=active_structured_mode.value,
+                    reason_code=structured_failure_reason,
+                )
             should_short_circuit, last_error_signature = agent._check_repeat_error_signature(
                 retry, raw_text, attempt, last_error_signature,
                 structured_output_mode=structured_output_mode,

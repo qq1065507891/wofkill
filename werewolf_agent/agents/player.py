@@ -9,7 +9,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from werewolf_agent.model_gateway.generation_attempt_context import (
+        GenerationAttemptContext,
+    )
 
 from werewolf_agent.agents.action_validation import (
     ActionValidator,
@@ -50,6 +55,7 @@ from werewolf_agent.agents.player_retry import (
     check_repeat_error_signature as _check_repeat_error_signature,
     fallback_vote_target_from_context as _fallback_vote_target_from_context,
 )
+from werewolf_agent.agents.player_retry_hints import build_schema_validation_hint
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
 from werewolf_agent.agents.planning import planning_envelope_to_action
 from werewolf_agent.agents.metrics_collector import MetricsCollector
@@ -120,10 +126,25 @@ class PlayerAgent:
         # tuning. Memory-only; not persisted across sessions.
         self.metrics_collector = MetricsCollector()
 
-    def act(self, context: AgentContext) -> tuple[PlayerAction | FallbackAction, RetryInfo]:
-        """Generate a constrained player action with retry/fallback."""
+    def act(
+        self,
+        context: AgentContext,
+        *,
+        generation_attempt_context: GenerationAttemptContext | None = None,
+    ) -> tuple[PlayerAction | FallbackAction, RetryInfo]:
+        """Generate a constrained player action with retry/fallback.
+
+        2026-07-21 R4: 加 ``generation_attempt_context`` kwarg 让 e2e 测试 / 外部 caller
+        显式注入 attempt 上下文以便观测 mode_downgrades / attempts 累积. 默认 None,
+        仍走 ``run_player_action_flow`` 内部 fresh 上下文, 行为不变.
+        """
         from werewolf_agent.agents.player_action_flow import run_player_action_flow
 
+        if generation_attempt_context is not None:
+            return run_player_action_flow(
+                self, context,
+                generation_attempt_context=generation_attempt_context,
+            )
         return run_player_action_flow(self, context)
 
     _attach_persona_snapshot = attach_persona_snapshot
@@ -156,6 +177,13 @@ class PlayerAgent:
         context: AgentContext,
         parse_error: str,
     ) -> str | None:
+        # 2026-07-21 R1: Pydantic schema-validation 失败时, 把字段级违规细节 (loc /
+        # msg / input) 直接灌入 hint, 让 LLM 第二次输出能定位到具体字段。
+        # 退路: 解析失败或非 Pydantic 类错误时, 返回 None 让 caller 走空泛兜底语。
+        if parse_error.startswith("Schema validation error:"):
+            schema_hint = build_schema_validation_hint(parse_error)
+            if schema_hint:
+                return schema_hint
         if not self._is_sheriff_vote_audit_field_error(context, parse_error):
             return None
         forbidden = ", ".join(_SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS)

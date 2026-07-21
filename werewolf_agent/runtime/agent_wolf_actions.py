@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-07
-修改日期: 2026-07-18
+修改日期: 2026-07-21
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_wolf_actions import agent_wolf_discussion
@@ -51,6 +51,21 @@ from werewolf_agent.runtime.wolf_discussion_directives import (
 from werewolf_agent.runtime.wolf_kill_support import (
     _build_wolf_kill_directive,
     _single_wolf_vote,
+)
+
+
+# 2026-07-21 jitter 兜底：1a-verify 暴露 LLM 在 plan-envelope 模式下 ~6% 概率
+# 静默漏 target_stance 字段，导致 _planned_wolf_kill 走 strategic_abstain 空刀。
+# strategy_directive 已注入完整 contract，但某些模型组合仍漏；本常量用于重
+# 试阶段的精简 hint，比完整 contract 短，让模型第二轮更容易按格式补字段。
+_STANCE_RETRY_HINT = (
+    "【重试必填 / RETRY MUST】上一次输出你漏了 `target_stance` 顶层键。"
+    "本次必须输出如下结构 (对象或 null):\n"
+    "{\"target_id\": \"p05\" 或 null, "
+    "\"stance\": \"propose\" | \"support\" | \"oppose\" | \"abstain\", "
+    "\"priority\": \"primary\" | \"backup\"}\n"
+    "没决定就 target_id=null + stance=abstain + priority=primary。"
+    "再次省略 = 空刀失败。"
 )
 from werewolf_agent.runtime.wolf_team_plan_support import (
     build_prior_plan_summary,
@@ -584,6 +599,35 @@ def agent_wolf_discussion(
     action, retry_info = agent.act(context)
     speech_text = getattr(action, "speech", "") or ""
     target_stance = getattr(action, "target_stance", None)
+
+    # 2026-07-21 jitter 兜底：1a-verify 暴露某些模型组合（特别是 Kimi-K2.6 via Ark）
+    # 即使在 strategy_directive 已注入 target_stance_contract，仍 ~6% 静默漏字段。
+    # 这里一次性重试：缩短的 contract 注入到 directive，让 LLM 第二轮 act() 必须产出。
+    if target_stance is None and decision_identity is not None:
+        retry_directive = dict(strategy_directive)
+        retry_directive["target_stance_retry_hint"] = _STANCE_RETRY_HINT
+        retry_context = context.model_copy(
+            update={
+                "strategy_directive": retry_directive,
+            },
+        )
+        retry_action, _ = agent.act(retry_context)
+        retry_stance = getattr(retry_action, "target_stance", None)
+        retry_speech = getattr(retry_action, "speech", "") or ""
+        target_stance = retry_stance
+        if retry_speech.strip():
+            speech_text = retry_speech
+        if exposure_collector is not None:
+            exposure_collector._append(
+                "wolf_target_stance_retry",
+                decision_identity,
+                {
+                    "wolf_id": wolf_id,
+                    "round": round_num,
+                    "night_number": gs.night_number,
+                    "retry_filled_stance": retry_stance is not None,
+                },
+            )
 
     if not speech_text.strip():
         speech_text = build_empty_wolf_discussion_fallback(

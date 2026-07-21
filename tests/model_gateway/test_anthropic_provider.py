@@ -180,3 +180,152 @@ class TestAnthropicTextFallbackRobustness:
         assert client.last_json["thinking"]["type"] == "enabled"
         assert client.last_json["thinking"]["budget_tokens"] > 0
         assert result.reasoning_status == "requested_unconfirmed"
+
+
+class TestAnthropicPromptCache:
+    """2026-07-21 R2: Anthropic provider 加 cache_control: ephemeral 标记。
+
+    把系统提示从裸 str 升级为 list-of-text-blocks 形式 (Anthropic 2026 协议),
+    给首个 block 加 cache_control: {"type": "ephemeral"}, 让跨轮跨玩家的
+    system prompt 复用 cache_read_input_tokens。
+    """
+
+    LONG_SYSTEM_PROMPT = "【提示词合同】id=werewolf-player-system;version=test\n" + (
+        "稳定规则内容：" * 200
+    )
+
+    @staticmethod
+    def _capture_client(response_json: dict[str, Any]) -> _FakeHttpClient:
+        return _FakeHttpClient(response_json)
+
+    def test_long_system_prompt_emits_cache_control_text_block(self) -> None:
+        """system_prompt 足够长 (>= 1024 token 起步) 时, payload[\"system\"] 是 list.
+
+        每个 text block 带 cache_control: {\"type\": \"ephemeral\"}. Anthropic
+        将为该 prefix 创建 cache, 跨轮跨玩家复用 cache_read_input_tokens.
+        """
+        from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+        from werewolf_agent.model_gateway.router import ModelConfig
+
+        client = self._capture_client({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1,
+                      "cache_creation_input_tokens": 1500, "cache_read_input_tokens": 0},
+        })
+        result = AnthropicProvider(
+            api_key="k", base_url="https://api.example", http_client=client,
+        ).generate(
+            prompt="hello",
+            config=ModelConfig(provider="anthropic", model="claude-test"),
+            system_prompt=self.LONG_SYSTEM_PROMPT,
+        )
+        sent_system = client.last_json["system"]
+        assert isinstance(sent_system, list), (
+            f"long system_prompt 必须走 list-of-text-blocks, got {type(sent_system).__name__}"
+        )
+        assert len(sent_system) == 1
+        first = sent_system[0]
+        assert first.get("type") == "text"
+        assert first.get("text") == self.LONG_SYSTEM_PROMPT
+        assert first.get("cache_control") == {"type": "ephemeral"}, (
+            f"first text block 必须带 cache_control: ephemeral, got {first.get('cache_control')!r}"
+        )
+        assert result.text == "ok"
+
+    def test_short_system_prompt_also_uses_cache_control_block(self) -> None:
+        """短 system_prompt 也会走 list-of-text-blocks + cache_control marker.
+
+        Anthropic 在 prefix < 1024 token 时不会创建 cache, 但发送 cache_control
+        标记仍合法 (server 静默忽略). 这一行为保证 provider 始终按 Anthropic
+        list 协议走, 不在 routing 层根据 prompt 长度切形态.
+        """
+        from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+        from werewolf_agent.model_gateway.router import ModelConfig
+
+        client = self._capture_client({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+        short_prompt = "你好"
+        AnthropicProvider(
+            api_key="k", base_url="https://api.example", http_client=client,
+        ).generate(
+            prompt="hello",
+            config=ModelConfig(provider="anthropic", model="claude-test"),
+            system_prompt=short_prompt,
+        )
+        sent_system = client.last_json["system"]
+        assert isinstance(sent_system, list) and len(sent_system) == 1
+        assert sent_system[0]["text"] == short_prompt
+        assert sent_system[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_no_system_prompt_does_not_emit_cache_control(self) -> None:
+        """system_prompt 为 None 或空时, payload[\"system\"] 字段不出现."""
+        from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+        from werewolf_agent.model_gateway.router import ModelConfig
+
+        client = self._capture_client({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+        AnthropicProvider(
+            api_key="k", base_url="https://api.example", http_client=client,
+        ).generate(
+            prompt="hello",
+            config=ModelConfig(provider="anthropic", model="claude-test"),
+            system_prompt=None,
+        )
+        assert "system" not in client.last_json
+
+    def test_anthropic_usage_parsed_into_usage_record(self) -> None:
+        """Anthropic response.usage.cache_creation_input_tokens /
+        cache_read_input_tokens 必须写入 UsageRecord.
+        """
+        from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+        from werewolf_agent.model_gateway.router import ModelConfig
+
+        client = self._capture_client({
+            "content": [{"type": "text", "text": "answer"}],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 1500,
+                "cache_read_input_tokens": 700,
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        })
+        result = AnthropicProvider(
+            api_key="k", base_url="https://api.example", http_client=client,
+        ).generate(
+            prompt="hello",
+            config=ModelConfig(provider="anthropic", model="claude-test"),
+            system_prompt=self.LONG_SYSTEM_PROMPT,
+        )
+        assert result.usage is not None
+        assert result.usage.cache_creation_input_tokens == 1500
+        assert result.usage.cache_read_input_tokens == 700
+        assert result.usage.prompt_tokens == 100
+
+    def test_anthropic_usage_handles_missing_cache_fields(self) -> None:
+        """老 vendor 或 fallback 路径不返回 cache_* 字段时, default 0."""
+        from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+        from werewolf_agent.model_gateway.router import ModelConfig
+
+        client = self._capture_client({
+            "content": [{"type": "text", "text": "answer"}],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+            },
+        })
+        result = AnthropicProvider(
+            api_key="k", base_url="https://api.example", http_client=client,
+        ).generate(
+            prompt="hello",
+            config=ModelConfig(provider="anthropic", model="claude-test"),
+            system_prompt=None,
+        )
+        assert result.usage is not None
+        assert result.usage.cache_creation_input_tokens == 0
+        assert result.usage.cache_read_input_tokens == 0
+

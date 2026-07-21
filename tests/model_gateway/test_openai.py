@@ -135,3 +135,83 @@ def test_openai_provider_sends_reasoning_effort_and_records_reasoning_tokens():
     assert "max_tokens" not in client.payload
     assert result.reasoning_status == "confirmed"
     assert result.reasoning_tokens == 3
+
+
+# 2026-07-21 R6: OpenAI Chat Completions prompt cache 解析.
+# OpenAI 自动 cache prompt 前缀, 返回 usage.prompt_tokens_details.cached_tokens
+# 表示命中 token 数. 不解析会导致 UsageRecord.cache_read_input_tokens 永远是 0
+# (R2 anthropic 已经解析, OpenAI/GLM 没有).
+
+
+class _CachedResponse:
+    """2026-07-21 R6: 模拟 OpenAI 返回 cached_tokens."""
+
+    status_code = 200
+
+    def __init__(self, cached_tokens: int | None):
+        self.cached_tokens = cached_tokens
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        usage = {
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "completion_tokens_details": {"reasoning_tokens": 0},
+        }
+        if self.cached_tokens is not None:
+            usage["prompt_tokens_details"] = {"cached_tokens": self.cached_tokens}
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": usage,
+        }
+
+
+class _CachedClient:
+    def __init__(self, cached_tokens: int | None):
+        self.cached_tokens = cached_tokens
+        self.last_json = None
+
+    def post(self, url, *, json=None, **_):
+        self.last_json = json
+        return _CachedResponse(self.cached_tokens)
+
+
+def test_openai_usage_parses_cached_tokens():
+    """R6: cached_tokens 必须写入 UsageRecord.cache_read_input_tokens."""
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _CachedClient(cached_tokens=800)
+    result = OpenAIProvider(
+        api_key="k", base_url="https://api.example.com/v1", http_client=client,
+    ).generate(
+        prompt="hi",
+        config=ModelConfig(provider="openai", model="gpt-test"),
+    )
+
+    assert result.usage is not None
+    assert result.usage.cache_read_input_tokens == 800, (
+        f"cached_tokens=800 应写入 UsageRecord, 实测 {result.usage.cache_read_input_tokens}"
+    )
+    # OpenAI 是 server-side auto cache, 没有 creation 概念.
+    assert result.usage.cache_creation_input_tokens == 0
+
+
+def test_openai_usage_missing_prompt_tokens_details_safe():
+    """R6: 老 vendor 无 prompt_tokens_details 字段时, cached_tokens 默认 0 不崩."""
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _CachedClient(cached_tokens=None)
+    result = OpenAIProvider(
+        api_key="k", base_url="https://api.example.com/v1", http_client=client,
+    ).generate(
+        prompt="hi",
+        config=ModelConfig(provider="openai", model="gpt-test"),
+    )
+
+    assert result.usage is not None
+    assert result.usage.cache_read_input_tokens == 0
+    assert result.usage.cache_creation_input_tokens == 0

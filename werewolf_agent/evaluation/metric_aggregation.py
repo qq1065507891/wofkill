@@ -138,6 +138,9 @@ class MetricsAggregator:
         latency_count = 0
         total_prompt = 0
         total_completion = 0
+        # 2026-07-21 R7: 累计 prompt cache 字段.
+        total_cache_creation = 0
+        total_cache_read = 0
         by_provider: dict[str, float] = {}
         by_task: dict[str, float] = {}
         by_player: dict[str, float] = {}
@@ -147,6 +150,8 @@ class MetricsAggregator:
                 total_cost += cost.estimated_cost
                 total_prompt += cost.prompt_tokens
                 total_completion += cost.completion_tokens
+                total_cache_creation += cost.cache_creation_input_tokens
+                total_cache_read += cost.cache_read_input_tokens
                 if cost.latency_ms > 0:
                     total_latency += cost.latency_ms
                     latency_count += 1
@@ -161,6 +166,8 @@ class MetricsAggregator:
         c.avg_latency_ms = int(total_latency / latency_count) if latency_count else 0
         c.total_prompt_tokens = total_prompt
         c.total_completion_tokens = total_completion
+        c.total_cache_creation_tokens = total_cache_creation
+        c.total_cache_read_tokens = total_cache_read
         c.by_provider = by_provider
         c.by_task_type = by_task
         c.by_player = by_player

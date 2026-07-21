@@ -82,6 +82,13 @@ class UsageRecord:
     reasoning_level: str = "none"
     reasoning_status: str = "not_requested"
     reasoning_tokens: int = 0
+    # 2026-07-21 R2: Anthropic prompt cache 命中统计.
+    # cache_creation_input_tokens = 首次写入 prefix 的 token (走 1.25x 计费).
+    # cache_read_input_tokens = 复用 cache 的 token (走 0.1x 计费).
+    # 仅 Anthropic / MiniMax (anthropic-compatible) 这两类厂商会填这两个字段;
+    # OpenAI / GLM 默认 0.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     attempts: tuple[AttemptExecutionRecord, ...] = ()
 
     def __post_init__(self) -> None:

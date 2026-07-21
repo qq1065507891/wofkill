@@ -3,7 +3,7 @@
 功能描述：**：定义 HARD_CONSTRAINT_KEYS / SUGGESTION_KEYS / REFERENCE_KEYS 三个 frozenset，供 prompt builder 按优先级组装指令。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-21
 使用示例：内部模块，无对外接口
 """
 
@@ -39,6 +39,11 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "gold_water_duty",
     "unreported_checks",
     "my_check_history",
+    # 2026-07-21: must emit target_stance in plan-envelope mode, otherwise
+    # _planned_wolf_kill force-strategic_abstain 空刀。提升到 HARD 后会被
+    # PromptStrategyMixin 渲染为【硬约束】(MUST) 块，LLM 在 envelope 模式下
+    # 会显式产出该字段，planning 层透传修复才能被触发。
+    "target_stance_contract",
     # PR1: post-game reflection directive. It carries role-family
     # section headers (【投票错误】 / 【保留的优点】 / 【悍跳分析】) that
     # the aggregation layer parses. Unclassified it fell through to

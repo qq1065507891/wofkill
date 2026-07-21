@@ -69,6 +69,11 @@ class CostRecord:
     latency_ms: int = 0
     estimated_cost: float = 0.0
     fallback: bool = False
+    # 2026-07-21 R7: prompt cache 字段默认 0. CostRecord 当前无生产 caller
+    # (`evaluation/runner.py:add_cost_record` 仅在 tests/evaluation/test_evaluation.py
+    # 中被构造). R7 防御性扩字段, 为 future PR 把 UsageRecord 接到 CostRecord 时.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +264,9 @@ class CostMetrics:
     avg_latency_ms: int = 0
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
+    # 2026-07-21 R7: prompt cache 累计.
+    total_cache_creation_tokens: int = 0
+    total_cache_read_tokens: int = 0
     by_provider: dict[str, float] = field(default_factory=dict)
     by_task_type: dict[str, float] = field(default_factory=dict)
     by_player: dict[str, float] = field(default_factory=dict)

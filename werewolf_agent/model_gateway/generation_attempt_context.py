@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-16
+修改日期: 2026-07-21
 """
 
 from __future__ import annotations
@@ -27,6 +27,10 @@ class GenerationAttemptContext:
     attempts: tuple[AttemptExecutionRecord, ...] = ()
     next_route_kind: RouteKind = RouteKind.PRIMARY
     terminal_failure_reason: str | None = None
+    # 2026-07-21 R4: 累积所有 mode 降级事件 (json_schema -> json_object ->
+    # text_json 等). append-only; 每条 dict 含 from_mode, to_mode, reason_code,
+    # attempt_ordinal. soak run 用此字段观测 schema_validation 触发降级的频率.
+    mode_downgrades: list[dict] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         scope = self.run_scope if len(self.run_scope) >= 4 else "game"
@@ -46,6 +50,25 @@ class GenerationAttemptContext:
             root_cause=root_cause,
         ))
         self.next_route_kind = RouteKind.REPAIR
+
+    def record_mode_downgrade(
+        self,
+        *,
+        from_mode: str,
+        to_mode: str,
+        reason_code: str,
+    ) -> None:
+        """2026-07-21 R4: 把 N→N+1 mode 降级事件写入 current attempt 上下文.
+
+        append-only. PlayerAgent.act() 触发 schema_validation / parse_error
+        失败后调用, 让 soak run 能区分"协议降级 vs 同 mode 修复".
+        """
+        self.mode_downgrades.append({
+            "from_mode": from_mode,
+            "to_mode": to_mode,
+            "reason_code": reason_code,
+            "attempt_ordinal": len(self.attempts) + 1,
+        })
 
     def append_terminal_fallback(self, failure_reason: str | None = None) -> None:
         """为 action 层确定性 fallback 添加可翻译的终止边界。"""

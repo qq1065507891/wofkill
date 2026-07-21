@@ -3,7 +3,7 @@
 功能描述：**：定义 DecisionPlan / DialoguePlan 模型，提供公私域校验和计划到动作的转换。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-21
 使用示例：内部模块，无对外接口
 """
 
@@ -13,7 +13,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from werewolf_agent.agents.schemas import ActionType, AgentContext, PlayerAction
+from werewolf_agent.agents.action_schemas import WolfTargetStanceAction
+from werewolf_agent.agents.schemas import (
+    ActionType,
+    AgentContext,
+    PlayerAction,
+    TaskType,
+    WolfDiscussionSpeechPlayerAction,
+)
 from werewolf_agent.persona_runtime.policy import PersonaPolicyPrior
 
 
@@ -87,15 +94,34 @@ def planning_envelope_to_action(
     data: dict[str, Any],
     context: AgentContext,
 ) -> tuple[PlayerAction, dict[str, Any]]:
-    """Convert an explicit decision/dialogue envelope into an action."""
+    """Convert an explicit decision/dialogue envelope into an action.
+
+    WOLF_DISCUSSION 上下文会把 envelope 中的私有 ``target_stance`` 透传到
+    ``WolfDiscussionSpeechPlayerAction``，避免 wolf_discussion 节点的
+    ``build_validated_wolf_target_stance`` 全部 fallback 到 abstain / target_id=None
+    后 _planned_wolf_kill 走 strategic_abstain 空刀。
+    """
     decision_data = data.get("decision_plan")
     dialogue_data = data.get("dialogue_plan")
     if not isinstance(decision_data, dict) or not isinstance(dialogue_data, dict):
         raise ValueError("planning envelope requires decision_plan and dialogue_plan objects")
 
+    raw_target_stance = data.get("target_stance")
+    target_stance: WolfTargetStanceAction | None = None
+    if isinstance(raw_target_stance, dict):
+        try:
+            target_stance = WolfTargetStanceAction.model_validate(raw_target_stance)
+        except ValueError:
+            target_stance = None
+
     decision = DecisionPlan.model_validate(decision_data)
     dialogue = DialoguePlan.model_validate(dialogue_data)
-    action = decision_and_dialogue_to_action(decision, dialogue, context)
+    action = decision_and_dialogue_to_action(
+        decision,
+        dialogue,
+        context,
+        target_stance=target_stance,
+    )
     prior = PersonaPolicyPrior.from_snapshot(
         context.persona_snapshot,
         own_role=context.own_role,
@@ -116,6 +142,8 @@ def planning_envelope_to_action(
             "deception_allowed": prior.deception_allowed,
         },
     }
+    if target_stance is not None:
+        audit["target_stance"] = target_stance.model_dump(mode="json")
     return action, audit
 
 
@@ -123,8 +151,16 @@ def decision_and_dialogue_to_action(
     decision: DecisionPlan,
     dialogue: DialoguePlan,
     context: AgentContext,
+    *,
+    target_stance: WolfTargetStanceAction | None = None,
 ) -> PlayerAction:
-    """Validate a plan pair and convert it into a schema-constrained action."""
+    """Validate a plan pair and convert it into a schema-constrained action.
+
+    当上下文为 WOLF_DISCUSSION 且行动是 SPEECH 时，必须返回
+    ``WolfDiscussionSpeechPlayerAction`` 子类实例，把 ``target_stance`` 从上游
+    envelope 透传；否则仅得到基类 SPEECH action，其
+    ``getattr(action, "target_stance", None)`` 永远为 None，下游就会被吞成 abstain。
+    """
     _validate_against_context(decision, context)
     _validate_public_dialogue(dialogue)
     public_reason = render_dialogue_plan(dialogue)
@@ -144,6 +180,19 @@ def decision_and_dialogue_to_action(
                 "其他合法目标的公开矛盾和票型证据更弱。"
             ),
             private_reason=_private_audit_reason(decision),
+        )
+
+    if (
+        context.task_type == TaskType.WOLF_DISCUSSION
+        and decision.action_type == ActionType.SPEECH
+    ):
+        return WolfDiscussionSpeechPlayerAction(
+            action_type=ActionType.SPEECH,
+            target_id=target_id,
+            speech=public_reason,
+            reason=public_reason,
+            confidence=decision.confidence,
+            target_stance=target_stance,
         )
 
     return PlayerAction(

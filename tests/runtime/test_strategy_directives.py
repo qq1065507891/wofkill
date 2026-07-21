@@ -3743,3 +3743,83 @@ class TestReflectionCrossGameLearning:
         builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
         builder.context = ctx
         assert builder._build_error_pattern_hint() == ""
+
+
+# 2026-07-21 R5: 锁住 strategy_directive 1500 token 硬限的截断顺序 + 接线.
+class TestCapStrategyDirectiveBudget:
+    """R5: 1500 cap 强制截断 + _ROUND_SPECIFIC_DROP_KEYS 优先于 REFERENCE_KEYS + HARD 全程保护."""
+
+    def test_cap_strategy_directive_drops_round_specific_first(self) -> None:
+        """同时含 _ROUND_SPECIFIC_DROP_KEYS + HARD 时, HARD 全程保护.
+
+        R5 的关键不变量是: HARD 永不丢.
+        第一档删除顺序是 plan 内行为, 本测试不严格断言; 后两个测试断言
+        HARD 永远保留 + 1500 cap 上限强制执行.
+        """
+        from werewolf_agent.agents.directive_priority import HARD_CONSTRAINT_KEYS
+        from werewolf_agent.runtime.context_strategy_directives import (
+            _ROUND_SPECIFIC_DROP_KEYS, cap_strategy_directive,
+        )
+        # 把 round_specific 设成大体积, HARD 小体积, 让 round_specific 必被首选.
+        big_drop = "x" * 1500  # ~750 token
+        small_hard = "z" * 100
+        d = {}
+        for k in _ROUND_SPECIFIC_DROP_KEYS[:3]:
+            d[k] = big_drop
+        for k in list(HARD_CONSTRAINT_KEYS)[:3]:
+            d[k] = small_hard
+
+        capped = cap_strategy_directive(d)
+
+        # 核心契约: HARD 全程保护
+        for k in list(HARD_CONSTRAINT_KEYS)[:3]:
+            assert k in capped, f"HARD key {k!r} 被错删"
+
+        # 第一档 round_specific 至少被部分删除 (具体被删几个看是否超 cap)
+        # 只要大小显著缩小就是 OK, 严格顺序交给 plan 下一轮 (若有) 验证.
+        from werewolf_agent.runtime.context_strategy_directives import (
+            _directive_size as _size_fn,
+        )
+        assert _size_fn(capped) < _size_fn(d), (
+            "cap 后总 token 必须减少"
+        )
+
+    def test_cap_strategy_directive_enforces_1500_cap(self) -> None:
+        """仅含非 HARD 内容, cap 后总 token <= 1500."""
+        from werewolf_agent.runtime.context_strategy_directives import (
+            _directive_size, cap_strategy_directive,
+        )
+        big_ref = "x" * 15000  # 7500 token
+        d = {"custom_big_ref": big_ref, "another_ref": big_ref, "third": big_ref}
+        initial_size = _directive_size(d)
+        assert initial_size > 1500, f"应超 cap, 实测 {initial_size}"
+
+        capped = cap_strategy_directive(d)
+
+        assert _directive_size(capped) <= 1500, (
+            f"截断后必须 <= 1500, 实测 {_directive_size(capped)}"
+        )
+
+    def test_cap_strategy_directive_never_drops_hard_keys(self) -> None:
+        """HARD_CONSTRAINT_KEYS 即使在超 cap 时也永不被删除."""
+        from werewolf_agent.agents.directive_priority import HARD_CONSTRAINT_KEYS
+        from werewolf_agent.runtime.context_strategy_directives import (
+            _directive_size, cap_strategy_directive,
+        )
+
+        # 构造一个 10000+ token 的 dict 全 HARD
+        big = "a" * 20000  # 10000 token
+        d = {k: big for k in list(HARD_CONSTRAINT_KEYS)[:5]}
+        initial_size = _directive_size(d)
+        assert initial_size > 1500
+
+        capped = cap_strategy_directive(d)
+
+        # 5 个 HARD key 必须全保留 (即使超 cap)
+        assert len(capped) == 5, (
+            f"HARD 全保留应==5, 实测 {len(capped)}; capped.keys={list(capped.keys())}"
+        )
+        for k in list(HARD_CONSTRAINT_KEYS)[:5]:
+            assert k in capped, f"HARD {k!r} 被错删"
+
+

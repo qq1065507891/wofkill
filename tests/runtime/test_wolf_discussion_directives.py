@@ -255,6 +255,50 @@ def test_build_wolf_discussion_strategy_directive_keeps_last_eight_speeches() ->
     assert directive["previous_discussion"] == speeches[-8:]
 
 
+def test_build_wolf_discussion_directive_carries_target_stance_contract() -> None:
+    """prompt 必须显式告诉 LLM：每夜必须产出 target_stance 结构化字段。
+
+    2026-07-21 1a-verify 暴露：MiniMax-M3 native / Kimi-K2.6 等推理模型
+    在 plan 信封模式下从不写 target_stance，即使 schema 声明 required。
+    修复点是 planning.py 透传，但 LLM 行为层不产字段就触发不到；
+    因此 prompt 指令必须显式必填 + 给合法示例。
+    """
+    directive = build_wolf_discussion_strategy_directive(
+        discussion_instruction="x",
+        round_focus="target_agreement",
+        wolf_teammates=["w1", "w2"],
+        previous_speeches=[],
+    )
+
+    contract = directive.get("target_stance_contract")
+    assert isinstance(contract, str), (
+        "wolf discussion 策略指令必须包含 target_stance_contract 字段，"
+        "否则 LLM 不会在 envelope 信封里产出 target_stance。"
+    )
+    assert "target_stance" in contract
+    assert "propose" in contract
+    assert "abstain" in contract
+    assert "primary" in contract
+    assert ("必须" in contract) or ("MUST" in contract) or ("必填" in contract)
+
+
+def test_build_wolf_discussion_directive_layered_context_keeps_target_stance_contract() -> None:
+    """layered_context 注入路径不能把 target_stance_contract 挤掉。"""
+    directive = build_wolf_discussion_strategy_directive(
+        discussion_instruction="x",
+        round_focus="target_agreement",
+        wolf_teammates=["w1", "w2"],
+        previous_speeches=[],
+        layered_context={
+            "structured": {"live_status": {}, "target_stances": []},
+            "text": {"recent_raw": [], "older_summary": []},
+            "audit": {},
+        },
+    )
+
+    assert "target_stance_contract" in directive
+
+
 def test_build_teammate_transcript_uses_recent_six_teammate_speeches() -> None:
     """注入上下文的队友 transcript 只保留最近 6 条。"""
     speeches = [

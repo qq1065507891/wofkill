@@ -4,9 +4,10 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-21
 
 使用示例:
-    >>> from werewolf_agent.runtime.context_strategy_directives import _cap_strategy_directive
+    >>> from werewolf_agent.runtime.context_strategy_directives import cap_strategy_directive
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def _merge_strategy_directive(
 
     existing = context.strategy_directive or {}
     merged: dict[str, Any] = {**existing, **new_directive}
-    merged = _cap_strategy_directive(merged)
+    merged = cap_strategy_directive(merged)
     return context.model_copy(update={"strategy_directive": merged})
 
 
@@ -58,12 +59,20 @@ def _directive_size(directive: dict[str, Any]) -> int:
     return total // 2
 
 
-def _cap_strategy_directive(
+def cap_strategy_directive(
     directive: dict[str, Any],
     cap_tokens: int = _MAX_STRATEGY_DIRECTIVE_TOKENS,
 ) -> dict[str, Any]:
-    """优先丢弃低价值回合级字段，直到 strategy_directive 不超过上限。"""
+    """2026-07-21 R5: 1500 cap 强制截断 (从 _cap_strategy_directive 提升为 public).
 
+    优先丢 _ROUND_SPECIFIC_DROP_KEYS → REFERENCE_KEYS → 未分类.
+    HARD_CONSTRAINT_KEYS 全程保护 (任何档都不会包含).
+    截断后总 token 估算 ≤ cap_tokens.
+
+    该函数在 context.py:543 (build_agent_context) 接通, 是 strategy_directive
+    注入 user prompt 前的必经环节. 之前模块私有且无 caller, R5 把它接到
+    实际生产路径.
+    """
     if _directive_size(directive) <= cap_tokens:
         return directive
     ordered_candidates: list[str] = []
@@ -87,3 +96,7 @@ def _cap_strategy_directive(
             break
         directive = {k: v for k, v in directive.items() if k != key}
     return directive
+
+
+# 向后兼容: 私有别名保留, 让历史调用方 (e.g. tests 之外) 不立即崩.
+_cap_strategy_directive = cap_strategy_directive

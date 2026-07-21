@@ -354,3 +354,207 @@ def test_prompt_renderer_never_truncates_structured_wolf_stances() -> None:
         assert f"g-layered:e{index:06d}" in rendered
     for index in range(12):
         assert f"raw-secret-{index}" in rendered
+
+
+def _registry_with_agent(_agent) -> object:
+    class _Registry:
+        def get_agent(self, _player_id):
+            return _agent
+
+    return _Registry()
+
+
+def test_wolf_action_retries_when_target_stance_missing(monkeypatch) -> None:
+    """1a-verify 暴露 ~6% 情况下 LLM 静默跳过 target_stance 字段。
+
+    agent_wolf_discussion 必须对这种情况触发一次重试，并在重试 context
+    里把 target_stance_contract 强化注入 strategy_directive，覆盖 jitter。
+    """
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.runtime import agent_wolf_actions
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    from werewolf_agent.agents.action_schemas import WolfTargetStanceAction
+
+    gs = _discussion_state()
+    identity = DecisionIdentity(
+        "g-retry", "w1", "wolf_discussion_round_1", 0, 1,
+        "wolf_discussion", 12,
+    )
+    collector = ModuleExposureAuditCollector()
+    base_context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+        recent_transcript=[],
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+    contexts_seen: list[AgentContext] = []
+
+    class _FlakyAgent:
+        """第 1 次 act(): 漏 target_stance; 第 2 次 act(): 产出合法 stance。"""
+        def __init__(self):
+            self.calls = 0
+
+        def act(self, context):
+            self.calls += 1
+            contexts_seen.append(context)
+            if self.calls == 1:
+                return SimpleNamespace(
+                    speech="本轮我倾向先冷静观察", target_stance=None, trace=None,
+                ), None
+            return SimpleNamespace(
+                speech="本轮我倾向刀 p05",
+                target_stance=WolfTargetStanceAction(
+                    target_id="p05", stance="propose", priority="primary",
+                ),
+                trace=None,
+            ), None
+
+    flaky = _FlakyAgent()
+    monkeypatch.setattr(agent_wolf_actions, "build_agent_context", lambda *a, **kw: base_context)
+
+    result = agent_wolf_actions.agent_wolf_discussion(
+        {"game_state": gs, "wolf_discussion_round": 1, "wolf_team_plan": None},
+        object(),
+        _registry_with_agent(flaky),
+        "w1",
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+
+    assert result is not None
+    assert result["target_stance"] == {
+        "target_id": "p05", "stance": "propose", "priority": "primary",
+    }
+    assert flaky.calls == 2, "missed-stance 时必须至少重试一次"
+    assert "target_stance_contract" in contexts_seen[1].strategy_directive
+    # retry 必须显式告诉 LLM 「必填」, 而不是把它降级到 discussion_instruction。
+    contract = contexts_seen[1].strategy_directive["target_stance_contract"]
+    assert ("必填" in contract) or ("MUST" in contract)
+    # 第二轮 contract 里附带必填示例的合法枚举, 让模型第二次 act 能直接照着补。
+    assert "propose" in contract and "abstain" in contract
+
+
+def test_wolf_action_does_not_retry_when_stance_present(monkeypatch) -> None:
+    """正常情况: LLM 已产出 stance 时不应该重试 (避免浪费 LLM 调用)。"""
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.runtime import agent_wolf_actions
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    from werewolf_agent.agents.action_schemas import WolfTargetStanceAction
+
+    gs = _discussion_state()
+    identity = DecisionIdentity(
+        "g-no-retry", "w1", "wolf_discussion_round_1", 0, 1,
+        "wolf_discussion", 12,
+    )
+    collector = ModuleExposureAuditCollector()
+    base_context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+        recent_transcript=[],
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+    call_count = {"n": 0}
+
+    class _GoodAgent:
+        def act(self, context):
+            call_count["n"] += 1
+            return SimpleNamespace(
+                speech="我建议刀 p06",
+                target_stance=WolfTargetStanceAction(
+                    target_id="p06", stance="propose", priority="primary",
+                ),
+                trace=None,
+            ), None
+
+    monkeypatch.setattr(agent_wolf_actions, "build_agent_context", lambda *a, **kw: base_context)
+
+    result = agent_wolf_actions.agent_wolf_discussion(
+        {"game_state": gs, "wolf_discussion_round": 1, "wolf_team_plan": None},
+        object(),
+        _registry_with_agent(_GoodAgent()),
+        "w1",
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+
+    assert result is not None
+    assert result["target_stance"]["target_id"] == "p06"
+    assert call_count["n"] == 1, "stance 已存在时不应重试"
+
+
+def test_wolf_action_retry_records_audit_retry_event(monkeypatch) -> None:
+    """retry 路径必须暴露审计事件, 这样 run soak 能观测到抖动率。
+
+    通过 collector 的 _append 直接观测事件类型是不是 wolf_target_stance_retry。
+    """
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.runtime import agent_wolf_actions
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    from werewolf_agent.agents.action_schemas import WolfTargetStanceAction
+
+    gs = _discussion_state()
+    identity = DecisionIdentity(
+        "g-retry-audit", "w1", "wolf_discussion_round_1", 0, 1,
+        "wolf_discussion", 12,
+    )
+    collector = ModuleExposureAuditCollector()
+    base_context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+        recent_transcript=[],
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+
+    class _FlakyAgent:
+        def __init__(self):
+            self.calls = 0
+        def act(self, context):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    speech="观察", target_stance=None, trace=None,
+                ), None
+            return SimpleNamespace(
+                speech="刀 p05",
+                target_stance=WolfTargetStanceAction(
+                    target_id="p05", stance="propose", priority="primary",
+                ),
+                trace=None,
+            ), None
+
+    monkeypatch.setattr(agent_wolf_actions, "build_agent_context", lambda *a, **kw: base_context)
+
+    agent_wolf_actions.agent_wolf_discussion(
+        {"game_state": gs, "wolf_discussion_round": 1, "wolf_team_plan": None},
+        object(),
+        _registry_with_agent(_FlakyAgent()),
+        "w1",
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+
+    events = collector.flush_events()
+    retry_events = [
+        e for e in events if getattr(e, "type", "") == "wolf_target_stance_retry"
+    ]
+    assert retry_events, (
+        f"retry 应被审计, 实际事件类型: {[getattr(e, 'type', '') for e in events]}"
+    )
+    payload = retry_events[0].payload
+    assert payload["wolf_id"] == "w1"
+    assert payload["round"] == 1

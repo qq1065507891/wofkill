@@ -97,7 +97,15 @@ def test_anthropic_observer_reports_top_level_system_with_no_message_index() -> 
     )
 
     assert client.payload is not None
-    assert assemblies[0].system_bytes == client.payload["system"].encode("utf-8")
+    # 2026-07-21 R2: anthropic system 字段在 system_prompt 非空时升级为 list 形式
+    # (cache_control), observer 把 list JSON 化成 system_bytes. str 形态走旧契约.
+    payload_system = client.payload["system"]
+    if isinstance(payload_system, list):
+        import json
+        expected = json.dumps(payload_system, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    else:
+        expected = payload_system.encode("utf-8")
+    assert assemblies[0].system_bytes == expected
     assert assemblies[0].final_system_location == "system"
     assert assemblies[0].final_system_message_index is None
 
@@ -309,6 +317,14 @@ def test_router_observes_each_real_provider_assembly_in_fallback_chain() -> None
     assert primary_client.payload is not None
     assert fallback_client.payload is not None
     assert assemblies[0].system_bytes == primary_client.payload["messages"][0]["content"].encode("utf-8")
-    assert assemblies[1].system_bytes == fallback_client.payload["system"].encode("utf-8")
+    # 2026-07-21 R2: 见上一个测试的同款兼容：anthropic 在 system_prompt 非空时
+    # 走 list 形态; fallback 链路下来时同样要按 list/str 自适应.
+    fallback_system = fallback_client.payload["system"]
+    if isinstance(fallback_system, list):
+        import json
+        expected = json.dumps(fallback_system, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    else:
+        expected = fallback_system.encode("utf-8")
+    assert assemblies[1].system_bytes == expected
     assert assemblies[1].final_system_location == "system"
     assert assemblies[1].final_system_message_index is None

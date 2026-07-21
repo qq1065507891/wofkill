@@ -119,6 +119,8 @@ class _BaseHttpProvider:
         latency_ms: int,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
     ) -> UsageRecord:
         return UsageRecord(
             agent_id="",
@@ -128,4 +130,6 @@ class _BaseHttpProvider:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             latency_ms=latency_ms,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
         )

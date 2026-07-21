@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-18
+修改日期: 2026-07-21
 
 使用示例:
     >>> from werewolf_agent.runtime.wolf_discussion_directives import build_wolf_discussion_instruction
@@ -309,12 +309,37 @@ def build_wolf_discussion_strategy_directive(
     previous_speeches: list[dict[str, str]],
     layered_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """构建狼队夜聊的策略指令字典。"""
+    """构建狼队夜聊的策略指令字典。
+
+    2026-07-21 1a-verify 暴露推理模型在 plan 信封模式下经常省略 ``target_stance``
+    字段，导致 ``_planned_wolf_kill`` 走 strategic_abstain 空刀。planning 层
+    透传修复只是必要不充分；这里在 prompt 里硬性要求 LLM 必须产出该字段，
+    并给出合法枚举示例，让 LLM 行为层选择输出。
+    """
     directive = {
         "wolf_team_discussion": discussion_instruction,
         "round_focus": round_focus,
         "wolf_teammates": wolf_teammates,
         "previous_discussion": previous_speeches[-8:],
+        # 必填项：plan 信封模式下必须产出 target_stance
+        # （顶层键与 build_full_action_schema 中 WOLF_DISCUSSION 分支一致）
+        "target_stance_contract": (
+            "【必填 / MUST】输出 JSON 时必须包含顶级键 `target_stance`，"
+            "否则本轮立场证据作废，强制 strategic_abstain 空刀。"
+            "合法结构（对象或 null）：\n"
+            "{"
+            "\"target_id\": \"p05\" 或 null, "
+            "\"stance\": \"propose\" | \"support\" | \"oppose\" | \"abstain\", "
+            "\"priority\": \"primary\" | \"backup\""
+            "}\n"
+            "规则：\n"
+            "- 若本轮想给某玩家留击杀目标 → target_id 必填，stance=propose|support，priority=primary；\n"
+            "- 若有备选 → 再用 priority=backup 输出第二个 stance（同一对象里多次出现）"
+            "或用对话里提到的备选 id 在 stance=support 一并列名（受 schema 限制只能输出一个对象）；\n"
+            "- 若本轮真的想 abstain（如讨论中还没结论）→ target_id=null，stance=abstain；\n"
+            "- 严禁整段省略 target_stance 字段。即便 target_id 仍在斟酌，"
+            "也要先输出 stance=abstain 让协议层知道不是数据缺失。"
+        ),
     }
     if layered_context is not None:
         directive["wolf_universal_rules"] = layered_context["structured"]

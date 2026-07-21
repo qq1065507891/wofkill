@@ -310,6 +310,54 @@ class TestMetricsAggregator:
         assert "openai" in snap.cost_metrics.by_provider
         assert snap.cost_metrics.by_provider["openai"] == 0.05
 
+    def test_cost_metrics_aggregates_cache_tokens_r7(self):
+        """2026-07-21 R7: CostRecord.cache_* 字段 → CostMetrics.total_cache_* 累加."""
+        agg = MetricsAggregator()
+        result = _make_game_result(cost_records=[
+            CostRecord(
+                game_id="g1", player_id="p1", task_type="speech",
+                provider="anthropic", model="claude-test", estimated_cost=0.01,
+                cache_creation_input_tokens=100,
+                cache_read_input_tokens=80,
+            ),
+            CostRecord(
+                game_id="g1", player_id="p2", task_type="vote",
+                provider="anthropic", model="claude-test", estimated_cost=0.02,
+                cache_creation_input_tokens=50,
+                cache_read_input_tokens=200,
+            ),
+            CostRecord(
+                game_id="g1", player_id="p3", task_type="speech",
+                provider="openai", model="gpt-test", estimated_cost=0.0,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=300,
+            ),
+        ])
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # 总创建 100 + 50 + 0 = 150
+        assert snap.cost_metrics.total_cache_creation_tokens == 150, (
+            f"R7: CostMetrics.total_cache_creation_tokens 应==150; "
+            f"实测 {snap.cost_metrics.total_cache_creation_tokens}"
+        )
+        # 总读 80 + 200 + 300 = 580
+        assert snap.cost_metrics.total_cache_read_tokens == 580, (
+            f"R7: CostMetrics.total_cache_read_tokens 应==580; "
+            f"实测 {snap.cost_metrics.total_cache_read_tokens}"
+        )
+        # 既有字段不受影响
+        assert snap.cost_metrics.total_prompt_tokens == 0
+        assert snap.cost_metrics.total_completion_tokens == 0
+
+    def test_cost_record_default_cache_fields_zero(self):
+        """R7: CostRecord 缺省 cache_* 字段 = 0, 既有测试构造不传 cache_* 不崩."""
+        cr = CostRecord(
+            game_id="g1", player_id="p1", task_type="speech",
+            provider="mock", model="test", estimated_cost=0.01,
+        )
+        assert cr.cache_creation_input_tokens == 0
+        assert cr.cache_read_input_tokens == 0
+
     def test_growth_curve_two_games(self):
         agg = MetricsAggregator()
         agg.add_results([

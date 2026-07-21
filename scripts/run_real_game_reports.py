@@ -113,6 +113,9 @@ def print_usage_stats(runner: Any) -> None:
     fail = total - ok
     prompt_tokens = sum(usage.prompt_tokens for usage in usage_log)
     completion_tokens = sum(usage.completion_tokens for usage in usage_log)
+    # 2026-07-21 R7: prompt cache 累计写入 sink.
+    cache_creation_tokens = sum(usage.cache_creation_input_tokens for usage in usage_log)
+    cache_read_tokens = sum(usage.cache_read_input_tokens for usage in usage_log)
     latency_ms = sum(usage.latency_ms for usage in usage_log)
 
     print(f"  Calls: {total}  (ok {ok}, fail {fail})")
@@ -120,6 +123,22 @@ def print_usage_stats(runner: Any) -> None:
         f"  Tokens: {prompt_tokens:,} prompt + {completion_tokens:,} completion = "
         f"{prompt_tokens + completion_tokens:,}"
     )
+    # R7: cache_* 写入 sink. 真实数字由 UsageRecord 透传.
+    # cache_creation = 首次写入 prefix (Anthropic / MiniMax, 走 1.25x 计费).
+    # cache_read = 复用 prefix (Anthropic / MiniMax 0.1x, OpenAI / GLM auto-cache 0.5x).
+    print(
+        f"  Cache:  {cache_creation_tokens:,} creation + "
+        f"{cache_read_tokens:,} read = "
+        f"{cache_creation_tokens + cache_read_tokens:,} total"
+    )
+    # cache_hit_ratio = cache_read / (prompt + cache_read); cache_creation 不计入
+    # 因为首次写入不属于"命中".
+    cache_hit_ratio = (
+        cache_read_tokens / (prompt_tokens + cache_read_tokens)
+        if (prompt_tokens + cache_read_tokens) > 0
+        else 0.0
+    )
+    print(f"  Cache hit ratio: {cache_hit_ratio:.1%}")
     print(f"  Latency: {latency_ms / 1000:.1f}s total")
     action_attempts = [
         attempt

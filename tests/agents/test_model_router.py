@@ -213,7 +213,13 @@ class TestModelRouter:
         assert client.calls[0]["url"].endswith("/v1/messages")
         assert client.calls[0]["headers"]["x-api-key"] == "key"
         assert client.calls[0]["json"]["model"] == "claude-test"
-        assert client.calls[0]["json"]["system"] == "You are concise."
+        # 2026-07-21 R2: Anthropic system_prompt 升级为 list-of-text-blocks +
+        # cache_control: ephemeral, 跨轮跨玩家复用 cache_read_input_tokens.
+        assert client.calls[0]["json"]["system"] == [{
+            "type": "text",
+            "text": "You are concise.",
+            "cache_control": {"type": "ephemeral"},
+        }]
         assert result.usage.prompt_tokens == 3
         assert result.usage.completion_tokens == 1
 
