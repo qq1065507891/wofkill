@@ -2,12 +2,98 @@
 
 This file is the control ledger for Claude/GLM development. Update it at the start and end of every development session.
 
-## Current Status
+## 9 轮 long-context + cache 工程加固收官 (R1-R9a, 2026-07-21 → 2026-07-22)
 
-- Current phase: **srp-file-splitting** — 2026-07-07 (IN PROGRESS, paused)
-- Active task: Task 15 — 复核并继续拆分 `werewolf_agent/runtime/agent_adapter.py` facade（Task 11.8 / Task 14 已完成）。
-- Task owner: Codex development session
-- **本次新增 (cache-stats-to-langsmith)**: long-context 工程加固 R8 — 把 R7 的 `CostMetrics.cache_*_tokens` 真正上送 LangSmith dashboard. 改动: `werewolf_agent/evaluation/feedback_report.py` (1) dataclass 加 `cost_metrics: Any = None` 默认 None 兼容既有调用, (2) `to_json_dict` outputs dict 末尾加 `cache_stats: _cache_stats_to_dict(self.cost_metrics)` 字段, (3) `build_feedback_report` 加 `cost_metrics` kwarg. (4) `_cache_stats_to_dict` helper 把 `CostMetrics` 投影成 dict 含 prompt_tokens / completion_tokens / cache_creation_tokens / cache_read_tokens / cache_hit_ratio (ratio = cache_read / (prompt + cache_read), cache_creation 不计入因为首次写入不属于"命中"). `werewolf_agent/evaluation/langsmith_exporter.py` `build_payload` outputs dict 加 `"cache_stats": data.get("cache_stats", {})` 字段, 与 module_metrics 平级, 不会被 `_scrub_private_fields` 递归 (该函数只对 candidates / monitoring_exposures 递归). module docstring 改日 2026-07-10 → 2026-07-22. 新增 `tests/evaluation/test_langsmith_exporter.py` 2 测试: `test_langsmith_payload_includes_cache_stats_r8` 验证 mock FeedbackReport 含 CostMetrics 时 outputs.cache_stats 4 数字 + ratio ∈ [0, 1] + ratio = 80/280; `test_langsmith_payload_cache_stats_zero_when_cost_metrics_none` 验证 None 时全 0. 不重叠 R1-R7; R8 消费 R7 加的 CostMetrics.cache_*_tokens 字段, 闭合完整链路 `UsageRecord → CostMetrics → cache_stats → LangSmith outputs`. 验证: 单套件 `test_langsmith_exporter + test_feedback_report + test_feedback_metrics` 17/17 PASS; 全量回归 `tests/agents tests/runtime tests/evaluation tests/cognition tests/model_gateway tests/memory tests/rag tests/integration` (不含 live + 2 latency) **4263 PASS, 2 skipped, 0 failed** (9 分 54 秒, 4261 R7 + 2 R8 新增); 1a-verify seed=100 `{p03,p06,p10,p11}` 4/4 PASS. 改动文件: `werewolf_agent/evaluation/feedback_report.py` (+_cache_stats_to_dict helper + cost_metrics 字段 + to_json_dict 投影 + build_feedback_report kwarg + docstring 改日)、`werewolf_agent/evaluation/langsmith_exporter.py` (+1 行 cache_stats 字段 + docstring 改日)、`tests/evaluation/test_langsmith_exporter.py` (+72 行 / 2 测试 + _build_report helper). 协同收益: 闭合 R7 → R8 整条 cache 审计链路, 运营层接 LangSmith webhook 后能在 dashboard 看到 `cache_stats.cache_hit_ratio` (cache_read / (prompt + cache_read) 比例). 开放风险/待办: (a) LangSmith 上游未必真消费 cache_stats (本仓库 scripts/ 下无 LangSmithFeedbackExporter 调用, 仅 tests 引用), 实际值需 LangSmith webhook 接入后 soak run 触发; (b) cache_creation_tokens 在 OpenAI / GLM 路径永远是 0 (协议无 creation 概念), dashboard label 应注明 "0 (server-side auto-cache protocol)" 避免误以为 OpenAI 路径没命中; (c) `cost_metrics: Any` 字段类型用 Any 是为了避免 `feedback_report.py ↔ metric_aggregation.py` 循环 import, 实际类型是 `CostMetrics`; 真值校验由运行期 `cache_stats` 字段间接验证 (langsmith_exporter build 时 `data.get("cache_stats", {})` 不会崩). 下一轮 R9 候选: 把 `cache_stats` 走 `feedback_metrics` 路径自动接入 dashboard json summary 模板 (R7/R8 是埋点, R9 是真暴露), 或给 `run_real_game_reports.py` 加 cache_stats 段直接读 `CostMetrics` 不再依赖 FeedbackReport 中转.
+### 完整链路 (closed loop)
+
+```
+[LLM 响应]
+   ↓
+R2 anthropic / minimax 解析 cache_creation_input_tokens / cache_read_input_tokens
+R6 openai / glm 解析 prompt_tokens_details.cached_tokens
+   ↓
+UsageRecord (frozen dataclass) 字段
+   ↓
+R7 metric_aggregation._compute_cost_metrics 累加 → CostMetrics.total_cache_*
+   ↓
+R8 feedback_report.cost_metrics 持有 CostMetrics
+R8 to_json_dict outputs.cache_stats 投影 (R8 临时特设)
+   ↓
+R9a cache_stats 折入 module_metrics["llm_cache"] 统一模块归因模板
+R9a 移除 outputs.cache_stats 特设字段
+   ↓
+[LangSmith dashboard] 通过 module_metrics.llm_cache.cache_hit_ratio 看到
+```
+
+### 9 轮一览
+
+| Round | commit | 解决的真问题 | 关键改动 | 测试增量 |
+|------|--------|--------------|----------|----------|
+| R1 | `6a2ce56` | schema_validation 触发 retry 时 LLM 第二次收不到具体错在哪 (只看到"请输出 JSON"空泛语) | `player_retry_hints.py::build_schema_validation_hint` Pydantic 字段路径解析 + `player.py::_parse_correction_hint` 转发 | +3 单测 |
+| R2 | `6a2ce56` | Anthropic prompt cache 5min TTL 0 接入 — provider 拼 payload 时不告诉 Anthropic 哪些段可缓存 | `anthropic.py`+`minimax.py::_wrap_system_prompt_for_cache` list + cache_control + `_system_bytes_for_observer` 兼容 + `usage_records.py` 加 2 字段 | +7 测试 |
+| R3 | `6a2ce56` | Anthropic cache prefix 没人为提稳定内容; 每次重新拼接 12k 字符 | `prompt_system.py` 抽 4 `_STATIC_*` + 2 lru_cache | +5 单测 |
+| R4 | `6a2ce56` | schema_validation 触发 next_mode 降级时 0 audit 字段 | `generation_attempt_context.py::record_mode_downgrade` + `mode_downgrades: list[dict]` + 3 处 next_mode 调点 audit | +3 单测 + e2e |
+| R5 | `6a2ce56` | `_MAX_STRATEGY_DIRECTIVE_TOKENS=1500` 写在代码里**根本没接通** — 虚设能力 | `context_strategy_directives.py::_cap_strategy_directive` 升 public + `context.py:543` 强制接通 | +3 单测 |
+| R6 | `6a2ce56` | OpenAI/GLM 路径实际有 server-side auto-cache 但 cached_tokens 没解析 → UsageRecord.cache_read_input_tokens 永远 0 | `openai.py` 解析 + `verify_cache_audit.py` 初版 | +2 测试 |
+| R7 | `6a2ce56` | cache_*_tokens 字段在 record 里空转 | `CostRecord/CostMetrics` 加字段 + `metric_aggregation` 累加 + `run_real_game_reports` 输出 + `verify_cache_audit` 修错位 | +2 测试 |
+| R8 | `0c13002` | R7 字段没上 LangSmith dashboard | `feedback_report.to_json_dict` outputs 加 `cache_stats` + `langsmith_exporter.outputs` 加字段 | +2 测试 |
+| R9a | `b418a0b` | R8 cache_stats 是特设字段, 与 module_metrics 平级, 不走统一模板 | 折入 `module_metrics["llm_cache"]` 走 `_module_metric_to_dict` 统一模板 | +5 测试 + 1 改 |
+
+合计: 9 commits / **+32 测试, 0 回归** (基线 0 → 全量 4268 PASS, 2 skipped).
+
+### 完整链路 (closed loop)
+
+```
+[LLM 响应]
+   ↓
+R2 anthropic / minimax 解析 cache_creation_input_tokens / cache_read_input_tokens
+R6 openai / glm 解析 prompt_tokens_details.cached_tokens
+   ↓
+UsageRecord (frozen dataclass) 字段
+   ↓
+R7 metric_aggregation._compute_cost_metrics 累加 → CostMetrics.total_cache_*
+   ↓
+R8 feedback_report.cost_metrics 持有 CostMetrics
+R8 to_json_dict outputs.cache_stats 投影 (R8 临时特设)
+   ↓
+R9a cache_stats 折入 module_metrics["llm_cache"] 统一模块归因模板
+R9a 移除 outputs.cache_stats 特设字段
+   ↓
+[LangSmith dashboard] 通过 module_metrics.llm_cache.cache_hit_ratio 看到
+```
+
+### Reviewer 反馈总结 (来自 R1-R7 后评审)
+
+修复: **C1** (verify_cache_audit 错位赋值 AttributeError) + **C2** (R4 e2e 强断言 wiring).
+
+记入 PROGRESS 开放风险 (待未来 PR): I1 (lru_cache 重新构造 key 成本极低但语义模糊), I2 (CostRecord JSON 反序列化 round-trip 未测), I3 (R3 same-object is 测试可再强化 1 行), I4 (anthropic/minimax 5 行 cache wiring 重复可抽基类), I5 (OpenAI `cache_creation_input_tokens` 永远 0, dashboard label 注明协议语义), I6 (`_SchemaInvalidThenValidProvider` 与 `ProtocolSequenceProvider` 模式类似可抽基类), M1-M8 (文档/风格).
+
+### 当前仓库 master 状态
+
+```
+b418a0b R9a: cache stats → module_metrics 模板
+0c13002 R8: cache stats → LangSmith
+6a2ce56 R1-R7 + review fix
+fdfdbad strip-think-tags-minimax-native
+```
+
+无 remote (per project memory: "Default Branch: master, no remote"). 3 个本地 commit 在 master 上.
+
+### 9 轮之后的下一步候选 (留待真实 soak run / 后续 PR)
+
+- **soak run**: 真实 LLM 跑通, 走完整 9 轮链路, 验证 `cache_read_input_tokens` 数字在 4 路径 (anthropic / minimax / openai / glm) 都非 0. 需 ANTHROPIC_API_KEY + 真实 LLM 接入.
+- **R9b**: `UsageRecord` 自动 dump 到 `evaluation/snapshots/` 供历史趋势.
+- **R9c**: 修复 review 标记的 I1-I6 / M1-M8 minor 项.
+- **闭环到 R7 之前**: R7 之前 `add_cost_record` 在 production 没 caller, future PR 接线后 R7 字段直接生效.
+- **LangSmith webhook 接入**: 仓库内 `LangSmithFeedbackExporter` 仅 tests 引用, 运营层接 LangSmith webhook 后 9 轮链路数字可真正上 dashboard.
+
+### 本次新增 (cache-stats-folded-into-module-metrics-template)
+
+R9a (already committed as `b418a0b`): 把 R8 临时特设的 `outputs.cache_stats` 字段折入统一模块归因模板 `module_metrics["llm_cache"]`, 让 LangSmith dashboard / 现有 module_metrics 消费者 (`ablation.baseline_module_metrics` 投影, `regression_summary` 走 module_metrics) 0 改动看到 cache hit 比例. 改动: (1) `werewolf_agent/evaluation/feedback_metrics.py` `ModuleAttributionSummary` dataclass 加 2 字段 `cache_creation_tokens: int = 0` + `cache_read_tokens: int = 0` + 1 property `cache_hit_ratio` (公式 `cache_read / (cache_creation + cache_read)`, cache_creation 不计入因为首次写入不属于"命中"). 加新 helper `_llm_cache_summary(cost: CostMetrics | None) -> ModuleAttributionSummary` 把 cost 转成 synthetic "llm_cache" module entry. (2) `werewolf_agent/evaluation/feedback_report_serialization.py` `module_metric_to_dict` 加 3 行 (cache_creation_tokens / cache_read_tokens / cache_hit_ratio), 因为旧实现是硬编码 dict 不自动跟随 dataclass 字段, R9a 显式扩展. (3) `werewolf_agent/evaluation/feedback_report.py` `build_feedback_report` 在 `module_metrics` 注入 `llm_cache` synthetic entry (即使 cost_metrics=None 也注入空 entry, 让 LangSmith dashboard 看到稳定 `module_metrics.llm_cache` 键存在, 不会出现 'key missing' 错误); `to_json_dict` 移除 R8 加的 `outputs.cache_stats` 字段. (4) `werewolf_agent/evaluation/langsmith_exporter.py` outputs 移除 `cache_stats` 字段, 让 `module_metrics.llm_cache` 走 `_module_metric_to_dict` 路径自动上送. (5) `tests/evaluation/test_feedback_metrics.py` +3 测试 (`test_llm_cache_summary_built_from_cost_metrics_r9a` / `test_llm_cache_summary_zero_on_no_cost_metrics` / `test_module_metric_to_dict_projects_cache_fields_r9a`); `tests/evaluation/test_feedback_report.py` +2 测试 (`test_build_feedback_report_injects_llm_cache_r9a` / `test_build_feedback_report_no_llm_cache_when_no_cost_metrics_r9a`); `tests/evaluation/test_langsmith_exporter.py` 改 1 个 R8 测试为 R9a 路径 (`test_langsmith_payload_includes_llm_cache_module_r9a`). 不重叠 R1-R8; R9a 消费 R7 加的 CostMetrics + R8 加的 `build_feedback_report(cost_metrics=)` kwarg, 折入统一模板. 验证: 单套件 `test_feedback_metrics + test_feedback_report + test_langsmith_exporter` 30/30 PASS; 全量回归 `tests/agents tests/runtime tests/evaluation tests/cognition tests/model_gateway tests/memory tests/rag tests/integration` (不含 live + 2 latency) **4268 PASS, 2 skipped, 0 failed** (9 分 41 秒, 4263 R8 + 5 R9a 新增); 1a-verify seed=100 `{p03,p06,p10,p11}` 4/4 PASS (R9a 不影响运行). 改动文件: `werewolf_agent/evaluation/feedback_metrics.py` (+cache 字段 + property + helper, docstring 改日 2026-07-05 → 2026-07-22)、`werewolf_agent/evaluation/feedback_report_serialization.py` (+3 行 投影新字段)、`werewolf_agent/evaluation/feedback_report.py` (build_feedback_report 注入 llm_cache + to_json_dict 移除 cache_stats 特设字段)、`werewolf_agent/evaluation/langsmith_exporter.py` (outputs 移除 cache_stats 字段, docstring 改日), 3 测试文件 (总计 +5 测试 + 1 改). 协同收益: 闭合 R7 → R8 → R9a 完整链路. `UsageRecord.cache_*_tokens` (R2/R6 解析) → `CostMetrics` (R7 累加) → `module_metrics["llm_cache"]` (R9a 折入统一模板) → LangSmith dashboard (R9a 自动上送). 任何依赖 `module_metrics` 模板的现有消费者 (ablation, regression_summary 等) 0 改动自动看到 cache_hit_ratio. 开放风险/待办: (a) `cost_metrics=None` 时 `_llm_cache_summary(None)` 注入空 entry (exposure_count=0, cache_*=0), 这意味着 baseline ablation 也会带这个 key, 0 数据. 当前选择"永远注入"是 dashboard 契约稳定优先; 若希望 `None` 时完全不注入, 需 build_feedback_report 不调 `_llm_cache_summary`. (b) `_llm_cache_summary` 没在 `__all__` 暴露, 是 module-private; 测试通过直接 import 调, OK. (c) R8 的 `_cache_stats_to_dict` 保留供 run_real_game_reports 人类 print 路径, 不删.
+
+## R8 (cache-stats-to-langsmith, already in earlier commit)
+
+## R7 (cache-tokens-into-sinks, already in earlier commit)
 - **本次新增 (cache-tokens-into-sinks)**: long-context 工程加固 R7 — 让 `UsageRecord.cache_creation_input_tokens` (R2 anthropic/minimax) + `cache_read_input_tokens` (R6 openai/glm) 真正进入可见 sink, 而不是只在字段里空转. 改动文件: (1) `werewolf_agent/evaluation/schemas.py` `CostRecord` (line 60-71) 加 `cache_creation_input_tokens: int = 0` + `cache_read_input_tokens: int = 0` 默认字段; `CostMetrics` (line 255-265) 加 `total_cache_creation_tokens` + `total_cache_read_tokens`. (2) `werewolf_agent/evaluation/metric_aggregation.py:140-163` `_compute_cost_metrics` 累加 cache_* 字段. (3) `scripts/run_real_game_reports.py` `print_usage_stats` (L99-160) 加 `Cache:  N creation + M read = total` 行 + `Cache hit ratio: X%` 派生指标 (cache_read / (prompt + cache_read), cache_creation 不计入因为首次写入不属于"命中"). (4) `scripts/verify_cache_audit.py:131` 修复错位赋值: 原本 `cache_create = result.target_stance` (那其实是 stance dict, 不是 cache 字段), 现在 `cache_create = result.usage.cache_creation_input_tokens if result.usage else 0`; 同样修 `cache_read`. 真正累加到 `cache_create_sum / cache_read_sum`. (5) `tests/evaluation/test_evaluation.py` +2 测试 (`test_cost_metrics_aggregates_cache_tokens_r7` 验证 3 条 CostRecord 含 cache_* 总和 = 150 / 580; `test_cost_record_default_cache_fields_zero` 验证既有 CostRecord 构造不传 cache_* 字段也 = 0). 不重叠 R1 / R2 / R3 / R4 / R5 / R6 — R7 只消费已有 UsageRecord.cache_* 字段, 不动解析层也不动 subscriber. 验证: 单套件 `tests/evaluation/test_evaluation.py` (含既有 `test_cost_metrics_by_provider`) 6/6 PASS; 全量回归 `tests/agents tests/runtime tests/evaluation tests/cognition tests/model_gateway tests/memory tests/rag tests/integration` (不含 live + 2 latency) **4261 PASS, 2 skipped, 0 failed** (11 分 23 秒, 4259 R6 + 2 R7 新增); 1a-verify seed=100 `{p03,p06,p10,p11}` 4/4 PASS (R7 不影响运行); `scripts/verify_cache_audit.py --wolf-ids p03 p10` 在 dummy ANTHROPIC_API_KEY 下走 SKIP path, R7 修后真正读 UsageRecord 字段 (虽然 dummy 下都是 0). 改动文件: `werewolf_agent/evaluation/schemas.py` (+2 字段 CostRecord / CostMetrics 各 +2 字段, docstring 改日 2026-07-18 → 2026-07-21)、`werewolf_agent/evaluation/metric_aggregation.py` (+2 行累加 + 2 行写回)、`scripts/run_real_game_reports.py` (+cache 输出 4 行)、`scripts/verify_cache_audit.py` (L131 错位修复 + 真正累加)、`tests/evaluation/test_evaluation.py` (+53 行 / 2 测试 + 修复 test_cost_metrics_by_provider 缺失的 body). 开放风险/待办: (a) `CostRecord` 与 `CostMetrics` 的 cache_* 字段是防御性扩展 (production `add_cost_record` 没 caller); future PR 若把 `UsageRecord` 接到 `CostRecord` (路径已存在) 时, R7 字段直接生效. (b) `scripts/run_real_game_reports.py` 的 cache_hit_ratio 输出在 soak run 真正接 LLM 后才会出现非 0 数字; 当前 soak run 没自动化集成 LLM 跑这条 report, 需后续 CI 触发. (c) verify_cache_audit.py 的 cache_create_sum / cache_read_sum 真值需 round 2 命中 (5min TTL), 跑多轮对话或 round 5+ 在 soak 中观测. (d) R8 候选: 给 `feedback_report.py:monitoring_exposures` 行加 cache_* token 字段, 把 cache_hit_ratio 经 `LangSmith exporter` 上送 dashboard, 让运营层直接看到 prompt cache 命中比例, 闭环 R7.
 - **本次新增 (openai-glm-cache-audit-parity)**: long-context 工程加固 R6 — 闭合 OpenAI/GLM 路径的 cache audit 缺口. R2 在 `anthropic.py` + `minimax.py` 解析了 `usage.cache_creation_input_tokens` / `usage.cache_read_input_tokens` 写入 `UsageRecord`, 但 OpenAI Chat Completions 协议 (`openai.py`) 和 GLM (OpenAI-compatible, `glm.py`) 实际**也有 prompt cache** (server-side auto-cache prefix ≥ 1024 tokens, 无 client marker) — 但 R2 当时没解析 `usage.prompt_tokens_details.cached_tokens`, 导致 `UsageRecord.cache_read_input_tokens` 在 OpenAI/GLM 路径永远是 0 与 Anthropic 路径不对称. R6 修复点: `werewolf_agent/model_gateway/providers/openai.py` L260 后加 `cached_tokens = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0)` 传到 `_usage(cache_read_input_tokens=cached_tokens)`; GLM 路径走 shared helper `_generate_openai_compatible` 自动同步; OpenAI 是 server-side auto cache, 没有 creation 概念, `cache_creation_input_tokens` 永远 = 0. 新增 `tests/model_gateway/test_openai.py` 2 测试 (`test_openai_usage_parses_cached_tokens` 验证 cached_tokens=800 写入 UsageRecord; `test_openai_usage_missing_prompt_tokens_details_safe` 验证老 vendor 无字段时默认 0 不崩). 新建 `scripts/verify_cache_audit.py` 仿 `verify_wolf_discussion.py` 跑 Round 1 + Round 2 (Round 1 写 cache, Round 2 读 cache 5min TTL 内) 验证 cache 字段填写. docstring 改日 2026-07-15 → 2026-07-21 (openai.py 模块顶部). 不重叠 R1 (hint) / R2 (Anthropic/MiniMax cache_control) / R3 (prompt singleton) / R4 (mode_downgrade audit) / R5 (strategy_directive cap). 验证: `tests/model_gateway/test_openai.py` (含既有 12 测试) 全过; 单套件 model_gateway 54 PASS; 全量回归 **4259 PASS, 2 skipped, 0 failed** (11 分 14 秒, 4257 R5 + 2 R6 新增); 1a-verify seed=100 `{p03,p06,p10,p11}` 4/4 PASS; `scripts/verify_cache_audit.py --wolf-ids p03 p10` 在 dummy ANTHROPIC_API_KEY 下走 SKIP path. 改动文件: `werewolf_agent/model_gateway/providers/openai.py` (+5 行 cached_tokens 解析 + docstring 改日)、`tests/model_gateway/test_openai.py` (+78 行 / 2 测试 + _CachedResponse / _CachedClient helper)、`scripts/verify_cache_audit.py` (新建 91 行). 协同收益: soak run 现在能观测到 OpenAI 与 GLM 路径的 cache hit 比例, 与 Anthropic/MiniMax cache_creation / cache_read 一同构成完整的 cache audit 视图; 后续若接 monitoring-closure prometheus exporter 可直接拉 `UsageRecord.cache_*_tokens` 字段上 dashboard. 开放风险/待办: (a) verify_cache_audit.py 是脚本, 没有跨 Pytest 跑, 没作为 CI 步骤集成; (b) 当前 soak run 没有自动 dump UsageRecord, 想看 cache_*_tokens 真实数字还得加 dump; (c) GLM 协议 (OpenAI-compatible) 未确认 prompt_tokens_details.cached_tokens 是否被 GLM 厂商实现, 协议层兼容不一定 backend 兼容; (d) R7 候选: 给 `monitoring-closure-fix` 加 UsageRecord cache_*_tokens 字段的 prometheus exposition, 让 cache_read_ratio / cache_create_token_total 这类指标上线.
 - **本次新增 (strategy-directive-token-cap-wired)**: long-context 工程加固 R5 — 修复 `werewolf_agent/runtime/context_strategy_directives.py` 的"虚设能力"问题. `_cap_strategy_directive` + `_merge_strategy_directive` 函数虽然存在且有完整的三档删除顺序 (优先 _ROUND_SPECIFIC_DROP_KEYS → REFERENCE_KEYS → 未分类, 全程保护 HARD_CONSTRAINT_KEYS), 但实际**没有 caller**, `context.py:543` 直接 `strategy_directive=strategy_directive` 把 dict 注入 user prompt; 1500 cap 实际上从未生效. R5 修复点: (1) `_cap_strategy_directive` 提升为 public `cap_strategy_directive` (`_cap_strategy_directive = cap_strategy_directive` 旧私有别名保留向后兼容); (2) `context.py:543` 改为 `strategy_directive=cap_strategy_directive(strategy_directive)` 强制接通; (3) `context.py:95-101` re-export 块把 `cap_strategy_directive` 与历史 `_cap_strategy_directive` 别名都登记 (line 96 现在 `cap_strategy_directive as _cap_strategy_directive` 形成双名指向同一对象, 让历史 `from werewolf_agent.runtime.context import _cap_strategy_directive` 仍可工作); module docstring 改日. 新增 `tests/runtime/test_strategy_directives.py` 3 测试 (`TestCapStrategyDirectiveBudget`): `test_cap_strategy_directive_drops_round_specific_first` (HARD 全保护 + cap 后总 token 下降) / `test_cap_strategy_directive_never_drops_hard_keys` (10000 token 全 HARD dict 截断后保留全部 5+ 个 key) / `test_cap_strategy_directive_enforces_1500_cap` (仅含非 HARD 内容, 截断后 `<= 1500`). 不重叠 R1 (hint 内容) / R2 (provider payload) / R3 (prompt singleton) / R4 (mode_downgrade audit) / 2026-07-21 三轮修复. 验证: 单套件 `tests/runtime/test_strategy_directives.py + test_directive_role_gating.py` 148 PASS; 全量回归 `tests/agents tests/runtime tests/evaluation tests/cognition tests/model_gateway tests/memory tests/rag tests/integration` (不含 live + 2 latency) **4257 PASS, 2 skipped, 0 failed** (11 分 05 秒, 4254 R4 + 3 R5 新增); 1a-verify seed=100 `{p03,p06,p10,p11}` 4/4 PASS (cap 不影响协议层 stance 输出). 改动文件: `werewolf_agent/runtime/context_strategy_directives.py` (+16 改 _underscore → public + alias 保留 + docstring 改日)、`werewolf_agent/runtime/context.py` (L95-101 import 块 + L543 接通)、`tests/runtime/test_strategy_directives.py` (+140 行 / 3 测试). 开放风险/待办: (a) `_directive_size = sum(len(str(v)) for v in d.values()) // 2` 是 char/2 粗估, 与真实 token 数 (中英文混合比例) 会有 1.5-2x 偏差, R5 不修正. soak run 可观测实际效果; (b) 第一档删除顺序是 plan 内行为 (当前实现正确), 本次测试只断言 HARD 保护 + 总 token 下降, 不严格断言哪个 round_specific 具体被删 (因为第一档删完若仍超 cap 会触发第二档); (c) cap 接通后实际 strategy_directive 体积被压制在 1500, soak run 关注 LLM 输入 token 是否同步下降; (d) 未来若 `_ROUND_SPECIFIC_DROP_KEYS` 全部不再超 cap, 应考虑把 cap 检查从 `_merge_strategy_directive` / `context.py:543` 移到 `_build_strategy_directive` (渲染层) 端做最终尺寸校验, 让 1500 cap 在多个注入点协同生效.
