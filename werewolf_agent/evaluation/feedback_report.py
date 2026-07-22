@@ -3,7 +3,7 @@
 功能描述：为反馈回路评估输出生成紧凑JSON报告，并携带脱敏监控摘要。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-13
+修改日期：2026-07-22
 使用示例：内部模块，无对外接口
 """
 
@@ -26,8 +26,42 @@ from werewolf_agent.evaluation.feedback_schemas import (
     FailureDiagnosis,
     ImprovementCandidate,
 )
+from werewolf_agent.evaluation.metric_aggregation import MetricsAggregator
 from werewolf_agent.evaluation.regression_gate import CandidateRegressionReport
 from werewolf_agent.runtime.exposure_audit import summarize_persona_prompt_confirmation
+
+
+# 2026-07-22 R8: 把 CostMetrics 投影成 LangSmith 暴露的 cache_stats dict.
+# 走与 module_metrics 平级路径 (不进 _scrub_private_fields 递归).
+def _cache_stats_to_dict(cost: "CostMetrics | None") -> dict[str, Any]:
+    """R8: 把 CostMetrics (R7 落地) 投影成 LangSmith cache_stats dict.
+
+    cache_hit_ratio = cache_read / (prompt + cache_read); cache_creation 不计入
+    因为首次写入不属于"命中". cost=None 时返回零值.
+    """
+    if cost is None:
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_hit_ratio": 0.0,
+        }
+    total_prompt_plus_read = (
+        cost.total_prompt_tokens + cost.total_cache_read_tokens
+    )
+    ratio = (
+        cost.total_cache_read_tokens / total_prompt_plus_read
+        if total_prompt_plus_read > 0
+        else 0.0
+    )
+    return {
+        "prompt_tokens": cost.total_prompt_tokens,
+        "completion_tokens": cost.total_completion_tokens,
+        "cache_creation_tokens": cost.total_cache_creation_tokens,
+        "cache_read_tokens": cost.total_cache_read_tokens,
+        "cache_hit_ratio": ratio,
+    }
 
 _ablation_to_dict = feedback_report_serialization.ablation_to_dict
 _candidate_prompt_payload = feedback_report_serialization.candidate_prompt_payload
@@ -64,6 +98,9 @@ class FeedbackReport:
     candidate_gate_reports: list[CandidateRegressionReport] = field(default_factory=list)
     monitoring_exposures: list[dict[str, Any]] = field(default_factory=list)
     persona_prompt_confirmation: dict[str, Any] = field(default_factory=dict)
+    # 2026-07-22 R8: CostMetrics (R7 落地) 可选持有; to_json_dict 投影 cache_* 到
+    # outputs.cache_stats. 默认 None 兼容既有 build_feedback_report 调用.
+    cost_metrics: Any = None  # 实际类型 CostMetrics | None, 用 Any 避免循环 import.
 
     def to_json_dict(self, *, include_private_audit: bool = False) -> dict[str, Any]:
         failure_clusters = _failure_clusters(
@@ -118,6 +155,9 @@ class FeedbackReport:
             "persona_prompt_confirmation": _public_safe_json(
                 self.persona_prompt_confirmation
             ),
+            # 2026-07-22 R8: cache 指标 (R7 CostMetrics) 上送 LangSmith.
+            # 走与 module_metrics 平级路径, 不会被 _scrub_private_fields 递归.
+            "cache_stats": _cache_stats_to_dict(self.cost_metrics),
         }
 
     def to_json(self, *, include_private_audit: bool = False) -> str:
@@ -140,6 +180,7 @@ def build_feedback_report(
     full_game_ablation_reports: list[FullGameAblationReport] | None = None,
     candidate_gate_reports: list[CandidateRegressionReport] | None = None,
     generated_at: str = "",
+    cost_metrics: Any = None,
 ) -> FeedbackReport:
     """Build a compact feedback report from local evaluation artifacts."""
     return FeedbackReport(
@@ -156,6 +197,7 @@ def build_feedback_report(
         source_refs=_collect_source_refs(traces),
         monitoring_exposures=_monitoring_exposure_rows(traces),
         persona_prompt_confirmation=summarize_persona_prompt_confirmation(traces),
+        cost_metrics=cost_metrics,
     )
 
 

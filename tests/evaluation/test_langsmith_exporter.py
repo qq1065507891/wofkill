@@ -310,3 +310,68 @@ def test_langsmith_payload_includes_redacted_monitoring_exposures() -> None:
     assert "target_role" not in serialized
     assert "werewolf" not in serialized
     assert "raw_content" not in serialized
+
+
+def test_langsmith_payload_includes_cache_stats_r8() -> None:
+    """R8: cache_*_tokens (R7) 上送 LangSmith outputs.cache_stats.
+
+    FeedbackReport.cost_metrics 持有 CostMetrics; build_payload 后
+    outputs.cache_stats 含 4 个数字字段 (prompt/completion/creation/read) + 1 个 ratio.
+    cache_hit_ratio 在 [0, 1] 闭区间内, 验证 base 公式.
+    """
+    from dataclasses import asdict
+    from werewolf_agent.evaluation.langsmith_exporter import (
+        LangSmithFeedbackExporter,
+    )
+    from werewolf_agent.evaluation.metric_aggregation import CostMetrics
+
+    cost = CostMetrics(
+        total_prompt_tokens=200,
+        total_completion_tokens=80,
+        total_cache_creation_tokens=100,
+        total_cache_read_tokens=80,
+    )
+    report = _build_report(cost_metrics=cost)
+    exporter = LangSmithFeedbackExporter(project_name="agent-feedback")
+    payload = exporter.build_payload(report)
+    cache_stats = payload["runs"][0]["outputs"]["cache_stats"]
+    # 4 个数字 + 1 ratio.
+    assert cache_stats["prompt_tokens"] == 200
+    assert cache_stats["completion_tokens"] == 80
+    assert cache_stats["cache_creation_tokens"] == 100
+    assert cache_stats["cache_read_tokens"] == 80
+    # ratio = 80 / (200 + 80) = 0.2857...
+    assert 0.0 <= cache_stats["cache_hit_ratio"] <= 1.0
+    assert abs(cache_stats["cache_hit_ratio"] - 80 / 280) < 1e-6
+    # R8: cache_stats 与 monitoring_exposures 平级, 不在 _scrub_private_fields 递归范围.
+    assert "cache_stats" in payload["runs"][0]["outputs"]
+
+
+def test_langsmith_payload_cache_stats_zero_when_cost_metrics_none() -> None:
+    """R8: cost_metrics=None 时 cache_stats 全 0, 不崩."""
+    from werewolf_agent.evaluation.langsmith_exporter import (
+        LangSmithFeedbackExporter,
+    )
+
+    report = _build_report(cost_metrics=None)
+    exporter = LangSmithFeedbackExporter(project_name="agent-feedback")
+    payload = exporter.build_payload(report)
+    cache_stats = payload["runs"][0]["outputs"]["cache_stats"]
+    assert cache_stats["prompt_tokens"] == 0
+    assert cache_stats["completion_tokens"] == 0
+    assert cache_stats["cache_creation_tokens"] == 0
+    assert cache_stats["cache_read_tokens"] == 0
+    assert cache_stats["cache_hit_ratio"] == 0.0
+
+
+def _build_report(cost_metrics=None) -> "FeedbackReport":
+    """Helper: 构造一个最小 FeedbackReport (含 cost_metrics 可选)."""
+    from werewolf_agent.evaluation.feedback_report import FeedbackReport
+
+    return FeedbackReport(
+        report_id="r8-audit",
+        batch_id="b8",
+        trace_count=0,
+        module_metrics={},
+        cost_metrics=cost_metrics,
+    )

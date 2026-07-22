@@ -3,7 +3,7 @@
 功能描述：**：将反馈报告和脱敏监控摘要导出至LangSmith，导入时避免引入外部追踪依赖
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-10
+修改日期：2026-07-22
 使用示例：内部模块，无对外接口
 """
 
@@ -52,6 +52,9 @@ class LangSmithFeedbackExporter:
                         "monitoring_exposures": _scrub_private_fields(
                             data.get("monitoring_exposures", []),
                         ),
+                        # 2026-07-22 R8: cache 指标 (R7 CostMetrics) 上送 LangSmith.
+                        # 与 module_metrics 平级, 不进 _scrub_private_fields 递归.
+                        "cache_stats": data.get("cache_stats", {}),
                     },
                     "metadata": {
                         "batch_id": report.batch_id,
