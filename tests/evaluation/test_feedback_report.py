@@ -559,3 +559,68 @@ def test_public_view_still_scrubs_private_actual_role() -> None:
     )
 
     assert "actual_role" not in serialized
+
+
+def test_build_feedback_report_injects_llm_cache_r9a() -> None:
+    """R9a: build_feedback_report(cost_metrics=...) 在 module_metrics 注入 llm_cache.
+
+    验证 outputs.module_metrics["llm_cache"] 含 cache_* 字段与 cache_hit_ratio.
+    跑 to_json_dict 后, R8 特设 cache_stats 字段已移除; 走 module_metrics
+    统一模板让 LangSmith dashboard 0 改动自动看到 cache_hit_ratio.
+    """
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+    from werewolf_agent.evaluation.metric_aggregation import CostMetrics
+
+    cost = CostMetrics(
+        total_prompt_tokens=200,
+        total_completion_tokens=80,
+        total_cache_creation_tokens=100,
+        total_cache_read_tokens=80,
+    )
+    report = build_feedback_report(
+        report_id="r9a-audit",
+        batch_id="b9a",
+        traces=[],
+        cost_metrics=cost,
+    )
+    # module_metrics 含 "llm_cache" synthetic entry.
+    assert "llm_cache" in report.module_metrics
+    llm_cache = report.module_metrics["llm_cache"]
+    assert llm_cache.module == "llm_cache"
+    assert llm_cache.exposure_count == 1
+    assert llm_cache.cache_creation_tokens == 100
+    assert llm_cache.cache_read_tokens == 80
+    assert abs(llm_cache.cache_hit_ratio - 80 / 180) < 1e-6
+
+    # to_json_dict 后, R8 cache_stats 字段已移除; data["module_metrics"]
+    # 才是 cache 暴露路径.
+    data = report.to_json_dict()
+    assert "cache_stats" not in data, (
+        "R9a: to_json_dict 不再含 R8 cache_stats 字段, 已折入 module_metrics"
+    )
+    assert "llm_cache" in data["module_metrics"]
+    assert data["module_metrics"]["llm_cache"]["cache_creation_tokens"] == 100
+    assert data["module_metrics"]["llm_cache"]["cache_read_tokens"] == 80
+    assert abs(data["module_metrics"]["llm_cache"]["cache_hit_ratio"] - 80 / 180) < 1e-6
+
+
+def test_build_feedback_report_no_llm_cache_when_no_cost_metrics_r9a() -> None:
+    """R9a: cost_metrics=None 时 build_feedback_report 仍注入 llm_cache (空 entry).
+
+    设计选择: 即使 cost=None, 也注入 exposure_count=0 + cache_*=0 的空 entry,
+    让 LangSmith dashboard 看到稳定的 module_metrics.llm_cache 键存在, 不会出现
+    'key missing' 错误. 之前 R8 旧计划是仅 cost 非 None 才注入, 但 R9a 实施
+    改为永远注入, 让 dashboard 端契约稳定.
+    """
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+
+    report = build_feedback_report(
+        report_id="r9a-nocost",
+        batch_id="b9a",
+        traces=[],
+    )
+    assert "llm_cache" in report.module_metrics
+    empty = report.module_metrics["llm_cache"]
+    assert empty.cache_creation_tokens == 0
+    assert empty.cache_read_tokens == 0
+    assert empty.cache_hit_ratio == 0.0

@@ -155,9 +155,9 @@ class FeedbackReport:
             "persona_prompt_confirmation": _public_safe_json(
                 self.persona_prompt_confirmation
             ),
-            # 2026-07-22 R8: cache 指标 (R7 CostMetrics) 上送 LangSmith.
-            # 走与 module_metrics 平级路径, 不会被 _scrub_private_fields 递归.
-            "cache_stats": _cache_stats_to_dict(self.cost_metrics),
+            # 2026-07-22 R9a: cache_* 已折入 module_metrics["llm_cache"], 不再需要
+            # R8 特设 cache_stats 字段. _cache_stats_to_dict 仍保留供人类 print
+            # 路径 (run_real_game_reports) 单独使用.
         }
 
     def to_json(self, *, include_private_audit: bool = False) -> str:
@@ -183,11 +183,22 @@ def build_feedback_report(
     cost_metrics: Any = None,
 ) -> FeedbackReport:
     """Build a compact feedback report from local evaluation artifacts."""
+    module_metrics = summarize_module_attribution(traces)
+    # 2026-07-22 R9a: cost_metrics 注入 synthetic llm_cache module entry.
+    # 即使 cost_metrics=None, 也注入空 entry (exposure_count=0, cache_* 字段=0),
+    # 让 LangSmith dashboard 看到稳定的 module_metrics.llm_cache 键存在, 不会出现
+    # 'key missing' 错误. 仅在 user 没自己提供 "llm_cache" key 时注入, 避免键冲突.
+    if "llm_cache" not in module_metrics:
+        from werewolf_agent.evaluation.feedback_metrics import _llm_cache_summary
+        module_metrics = {
+            **module_metrics,
+            "llm_cache": _llm_cache_summary(cost_metrics),
+        }
     return FeedbackReport(
         report_id=report_id,
         batch_id=batch_id,
         trace_count=len(traces),
-        module_metrics=summarize_module_attribution(traces),
+        module_metrics=module_metrics,
         diagnoses=list(diagnoses or []),
         candidates=list(candidates or []),
         ablation_reports=list(ablation_reports or []),

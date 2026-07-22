@@ -63,6 +63,12 @@ def module_metric_to_dict(summary: ModuleAttributionSummary) -> dict[str, Any]:
         "citation_rate": summary.citation_rate,
         "alignment_rate": summary.alignment_rate,
         "harmful_rate": summary.harmful_rate,
+        # 2026-07-22 R9a: LLM prompt cache 字段 (R2/R6 写, R7 落 sink).
+        # R9a 折入 module_metrics 统一模板, 让 LangSmith dashboard 0 改动
+        # 看到 cache_hit_ratio. cache_creation/cache_read 默认 0 (兼容既有 entry).
+        "cache_creation_tokens": summary.cache_creation_tokens,
+        "cache_read_tokens": summary.cache_read_tokens,
+        "cache_hit_ratio": summary.cache_hit_ratio,
     }
 
 

@@ -312,11 +312,14 @@ def test_langsmith_payload_includes_redacted_monitoring_exposures() -> None:
     assert "raw_content" not in serialized
 
 
-def test_langsmith_payload_includes_cache_stats_r8() -> None:
-    """R8: cache_*_tokens (R7) 上送 LangSmith outputs.cache_stats.
+def test_langsmith_payload_includes_llm_cache_module_r9a() -> None:
+    """R9a: cache_*_tokens (R7) 通过 module_metrics["llm_cache"] 上送 LangSmith.
+
+    之前 R8 走 outputs.cache_stats (特设字段), R9a 折入统一模板让 LangSmith
+    dashboard 0 改动看到 cache_hit_ratio.
 
     FeedbackReport.cost_metrics 持有 CostMetrics; build_payload 后
-    outputs.cache_stats 含 4 个数字字段 (prompt/completion/creation/read) + 1 个 ratio.
+    outputs.module_metrics["llm_cache"] 含 4 个 cache 字段 (creation/read/ratio).
     cache_hit_ratio 在 [0, 1] 闭区间内, 验证 base 公式.
     """
     from dataclasses import asdict
@@ -334,21 +337,22 @@ def test_langsmith_payload_includes_cache_stats_r8() -> None:
     report = _build_report(cost_metrics=cost)
     exporter = LangSmithFeedbackExporter(project_name="agent-feedback")
     payload = exporter.build_payload(report)
-    cache_stats = payload["runs"][0]["outputs"]["cache_stats"]
-    # 4 个数字 + 1 ratio.
-    assert cache_stats["prompt_tokens"] == 200
-    assert cache_stats["completion_tokens"] == 80
-    assert cache_stats["cache_creation_tokens"] == 100
-    assert cache_stats["cache_read_tokens"] == 80
-    # ratio = 80 / (200 + 80) = 0.2857...
-    assert 0.0 <= cache_stats["cache_hit_ratio"] <= 1.0
-    assert abs(cache_stats["cache_hit_ratio"] - 80 / 280) < 1e-6
-    # R8: cache_stats 与 monitoring_exposures 平级, 不在 _scrub_private_fields 递归范围.
-    assert "cache_stats" in payload["runs"][0]["outputs"]
+    # R9a: cache 在 module_metrics["llm_cache"], 不是 R8 的 outputs.cache_stats.
+    outputs = payload["runs"][0]["outputs"]
+    assert "cache_stats" not in outputs, (
+        "R9a: R8 cache_stats 字段已折入 module_metrics.llm_cache"
+    )
+    llm_cache = outputs["module_metrics"]["llm_cache"]
+    assert llm_cache["module"] == "llm_cache"
+    assert llm_cache["cache_creation_tokens"] == 100
+    assert llm_cache["cache_read_tokens"] == 80
+    # ratio = 80 / (100 + 80) = 0.4444...
+    assert 0.0 <= llm_cache["cache_hit_ratio"] <= 1.0
+    assert abs(llm_cache["cache_hit_ratio"] - 80 / 180) < 1e-6
 
 
 def test_langsmith_payload_cache_stats_zero_when_cost_metrics_none() -> None:
-    """R8: cost_metrics=None 时 cache_stats 全 0, 不崩."""
+    """R9a: cost_metrics=None 时 module_metrics["llm_cache"] 是空 entry."""
     from werewolf_agent.evaluation.langsmith_exporter import (
         LangSmithFeedbackExporter,
     )
@@ -356,22 +360,23 @@ def test_langsmith_payload_cache_stats_zero_when_cost_metrics_none() -> None:
     report = _build_report(cost_metrics=None)
     exporter = LangSmithFeedbackExporter(project_name="agent-feedback")
     payload = exporter.build_payload(report)
-    cache_stats = payload["runs"][0]["outputs"]["cache_stats"]
-    assert cache_stats["prompt_tokens"] == 0
-    assert cache_stats["completion_tokens"] == 0
-    assert cache_stats["cache_creation_tokens"] == 0
-    assert cache_stats["cache_read_tokens"] == 0
-    assert cache_stats["cache_hit_ratio"] == 0.0
+    outputs = payload["runs"][0]["outputs"]
+    llm_cache = outputs["module_metrics"]["llm_cache"]
+    assert llm_cache["module"] == "llm_cache"
+    assert llm_cache["exposure_count"] == 0
+    assert llm_cache["cache_creation_tokens"] == 0
+    assert llm_cache["cache_read_tokens"] == 0
+    assert llm_cache["cache_hit_ratio"] == 0.0
 
 
 def _build_report(cost_metrics=None) -> "FeedbackReport":
-    """Helper: 构造一个最小 FeedbackReport (含 cost_metrics 可选)."""
-    from werewolf_agent.evaluation.feedback_report import FeedbackReport
+    """Helper: 构造一个最小 FeedbackReport (含 cost_metrics 可选, 走 build_feedback_report
+    路径, R9a 才会自动注入 llm_cache module entry)."""
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
 
-    return FeedbackReport(
-        report_id="r8-audit",
-        batch_id="b8",
-        trace_count=0,
-        module_metrics={},
+    return build_feedback_report(
+        report_id="r9a-audit",
+        batch_id="b9a",
+        traces=[],
         cost_metrics=cost_metrics,
     )

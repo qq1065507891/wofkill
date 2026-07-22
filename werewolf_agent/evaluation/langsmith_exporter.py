@@ -52,9 +52,10 @@ class LangSmithFeedbackExporter:
                         "monitoring_exposures": _scrub_private_fields(
                             data.get("monitoring_exposures", []),
                         ),
-                        # 2026-07-22 R8: cache 指标 (R7 CostMetrics) 上送 LangSmith.
-                        # 与 module_metrics 平级, 不进 _scrub_private_fields 递归.
-                        "cache_stats": data.get("cache_stats", {}),
+                        # 2026-07-22 R9a: cache 指标 (R7 CostMetrics) 已折入
+                        # module_metrics["llm_cache"] 统一模板 (R9a), 不再走 R8 的
+                        # outputs.cache_stats 特设字段. LangSmith dashboard 通过
+                        # module_metrics.llm_cache.cache_hit_ratio 看到.
                     },
                     "metadata": {
                         "batch_id": report.batch_id,
