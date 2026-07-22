@@ -1,21 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Tests for ``config/models.yaml`` provider/model routing.
+"""锁定 ``config/models.yaml`` 中 MiniMax 与 Ark 模型的路由契约。
 
-Coverage:
-- v1.1.4 fallback-fix Part C.1: ``minimax_default`` primary traffic
-  reroutes through ``openai`` + ``ark_minimax_m3`` (drops the 24.9%
-  failure rate observed on the native ``minimax`` provider in 4 games
-  captured on/after 2026-07-14).
-- 2026-07-15 native-minimax-routing: 5 players (p01/p03/p06/p08/p10)
-  rerouted through ``https://api.minimaxi.com/v1`` via the two new
-  ``minimax_native_m3`` / ``minimax_native_m2_7`` profiles.  The model
-  profile YAML gains ``base_url`` + ``extra_body`` fields; see
-  ``tests/model_gateway/test_per_profile_url_and_extra_body.py`` for
-  the ModelConfig/provider plumbing tests.
-
-These tests pin the YAML state so a future ``minimax_m27_*`` regression
-or native-routing drift is caught at unit time, not at runtime in a
-real game.
+作者: Project contributors
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -24,6 +11,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from werewolf_agent.model_gateway.router import ModelRouter
 
 
 CONFIG_PATH = (
@@ -40,33 +29,53 @@ def yaml_config() -> dict:
         return yaml.safe_load(f)
 
 
-def test_minimax_default_default_provider_is_openai(yaml_config: dict) -> None:
-    """``minimax_default`` must now route primary traffic through
-    ``openai`` (with ``ark_kimi_k26`` model_profile), not the
-    native ``minimax`` provider.  This is what drops the 24.9%
-    observed failure rate.
+@pytest.fixture(scope="module")
+def model_router() -> ModelRouter:
+    """从生产 YAML 构建真实模型路由器。"""
+    return ModelRouter.from_yaml(CONFIG_PATH)
 
-    NEW (2026-07-15, ark-dedup): the underlying Ark model was swapped
-    from ``minimax-m3`` (which shadowed native-minimax routing) to
-    ``Kimi-K2.6`` so the Ark endpoint doesn't compete with native.
-    """
+
+def test_minimax_default_default_provider_is_openai(yaml_config: dict) -> None:
+    """默认 MiniMax 流量固定走 Ark DeepSeek V4 Pro。"""
     cfg = yaml_config["llm_profiles"]["minimax_default"]["default"]
     assert cfg["provider"] == "openai"
-    assert cfg["model_profile"] == "ark_kimi_k26"
+    assert cfg["model_profile"] == "ark_deepseek_v4_pro"
 
 
-def test_minimax_default_fallback_uses_different_provider(yaml_config: dict) -> None:
-    """The fallback provider was previously also ``minimax`` (which
-    offered no model diversity on outage).  Part C.1 changes it to
-    ``openai`` + ``ark_deepseek_v4_flash`` so a ``MiniMax`` outage
-    doesn't propagate.
-    """
+def test_ark_deepseek_default_uses_deepseek_v4_pro(yaml_config: dict) -> None:
+    """``ark_deepseek`` 默认路由与主 DeepSeek V4 Pro 配置一致。"""
+    cfg = yaml_config["llm_profiles"]["ark_deepseek"]["default"]
+    assert cfg == {
+        "provider": "openai",
+        "model_profile": "ark_deepseek_v4_pro",
+    }
+
+
+@pytest.mark.parametrize("task_type", ["speech", "deception", "night_action"])
+def test_minimax_default_tasks_use_deepseek_v4_pro(
+    yaml_config: dict,
+    task_type: str,
+) -> None:
+    """MiniMax 默认档的主要玩家任务固定走 DeepSeek V4 Pro。"""
+    cfg = yaml_config["llm_profiles"]["minimax_default"]["tasks"][task_type]
+    assert cfg == {
+        "provider": "openai",
+        "model_profile": "ark_deepseek_v4_pro",
+    }
+
+
+def test_minimax_default_fallback_uses_same_provider_different_model_profile(
+    yaml_config: dict,
+) -> None:
+    """回退保持同 provider、不同 model profile 的既有配置。"""
     fb = yaml_config["llm_profiles"]["minimax_default"]["fallback"]
-    assert fb["provider"] == "openai"
-    assert fb["model_profile"] in {"ark_deepseek_v4_flash", "ark_deepseek_v4_pro"}
-    # Cross-provider (different from primary)
     primary = yaml_config["llm_profiles"]["minimax_default"]["default"]["provider"]
-    assert fb["provider"] != primary or fb["model_profile"] != "ark_kimi_k26"
+    assert fb == {
+        "provider": "openai",
+        "model_profile": "ark_deepseek_v4_flash",
+    }
+    assert fb["provider"] == primary
+    assert fb["model_profile"] != "ark_deepseek_v4_pro"
 
 
 def test_minimax_default_reflection_keeps_native_endpoint(yaml_config: dict) -> None:
@@ -78,6 +87,57 @@ def test_minimax_default_reflection_keeps_native_endpoint(yaml_config: dict) -> 
     reflection = yaml_config["llm_profiles"]["minimax_default"]["tasks"]["reflection"]
     assert reflection["provider"] == "minimax"
     assert reflection["model_profile"] == "minimax_m27_reflection"
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    [
+        "judge_vote_calling",
+        "judge_skill_guide",
+        "judge_vote_tally",
+        "judge_exile",
+        "judge_sheriff",
+    ],
+)
+def test_judge_tasks_keep_minimax_m27_route(
+    yaml_config: dict,
+    model_router: ModelRouter,
+    task_type: str,
+) -> None:
+    """五个 judge 任务继续使用原生 MiniMax M2.7。"""
+    route = yaml_config["llm_profiles"]["minimax_default"]["tasks"][task_type]
+    assert route == {
+        "provider": "minimax",
+        "model_profile": "minimax_m27_default",
+    }
+    resolved, _ = model_router.resolve_config("judge", task_type)
+    assert resolved.provider == "minimax"
+    assert resolved.model == "MiniMax-M2.7"
+
+
+def test_reflection_resolves_to_minimax_m27(
+    model_router: ModelRouter,
+) -> None:
+    """reflection 继续精确解析为原生 MiniMax M2.7。"""
+    resolved, _ = model_router.resolve_config("p02", "reflection")
+    assert resolved.provider == "minimax"
+    assert resolved.model == "MiniMax-M2.7"
+
+
+@pytest.mark.parametrize("player_id", ["p02", "p04", "p09", "p12"])
+@pytest.mark.parametrize(
+    "task_type",
+    ["vote", "speech", "deception", "night_action"],
+)
+def test_minimax_default_players_resolve_to_deepseek_v4_pro(
+    model_router: ModelRouter,
+    player_id: str,
+    task_type: str,
+) -> None:
+    """四名默认玩家的关键任务精确解析到 DeepSeek V4 Pro。"""
+    resolved, _ = model_router.resolve_config(player_id, task_type)
+    assert resolved.provider == "openai"
+    assert resolved.model == "DeepSeek-V4-Pro"
 
 
 def test_player_defaults_resolve_through_new_routing(yaml_config: dict) -> None:
@@ -160,32 +220,25 @@ def test_native_minimax_fallback_uses_anthropic_compatible_minimax(yaml_config: 
         )
 
 
-def test_ark_kimi_k26_model_profile_exists(yaml_config: dict) -> None:
-    """NEW (2026-07-15, ark-dedup): ``ark_kimi_k26`` replaced
-    ``ark_minimax_m3`` to free the Ark endpoint from shadowing the
-    new native MiniMax routing.  The profile must wrap the Ark
-    model id ``Kimi-K2.6``.
-    """
-    profile = yaml_config["model_profiles"]["ark_kimi_k26"]
+def test_primary_deepseek_v4_pro_model_profile_is_exact(yaml_config: dict) -> None:
+    """主 DeepSeek V4 Pro 档固定关键采样与超时参数，且 Kimi 档已删除。"""
+    profiles = yaml_config["model_profiles"]
+    assert "ark_kimi_k26" not in profiles
+    profile = profiles["ark_deepseek_v4_pro"]
     assert profile["provider"] == "openai"
-    assert profile["model"] == "Kimi-K2.6"
+    assert profile["model"] == "DeepSeek-V4-Pro"
+    assert profile["temperature"] == 0.5
+    assert profile["top_p"] == 0.9
+    assert profile["timeout"] == 120
 
 
 def test_ark_deepseek_v4_pro_secondary_model_profile_exists(yaml_config: dict) -> None:
-    """NEW (2026-07-15, ark-dedup): ``ark_deepseek_v4_pro_secondary``
-    replaced ``ark_minimax_m2_7`` to free the Ark endpoint from
-    shadowing native MiniMax.  The profile keeps deepseek-v4-pro as
-    the underlying model id but uses a distinct sampling channel
-    (higher temperature / top_p) so it's not a literal copy.
-    """
+    """次级 DeepSeek V4 Pro 档保持独立采样参数。"""
     profile = yaml_config["model_profiles"]["ark_deepseek_v4_pro_secondary"]
     assert profile["provider"] == "openai"
     assert profile["model"] == "DeepSeek-V4-Pro"
-    # Distinct sampling channel vs the primary ark_deepseek_v4_pro.
-    primary = yaml_config["model_profiles"]["ark_deepseek_v4_pro"]
-    assert (profile["temperature"], profile["top_p"]) != (
-        primary["temperature"], primary["top_p"]
-    ), "secondary profile drifted to identical sampling as primary"
+    assert profile["temperature"] == 0.6
+    assert profile["top_p"] == 0.95
 
 
 def test_ark_dedup_no_longer_wraps_minimax_models(yaml_config: dict) -> None:
