@@ -230,6 +230,12 @@ def test_primary_deepseek_v4_pro_model_profile_is_exact(yaml_config: dict) -> No
     assert profile["temperature"] == 0.5
     assert profile["top_p"] == 0.9
     assert profile["timeout"] == 120
+    assert profile["reasoning"] == {"level": "high"}
+    assert profile["allow_text_tool_fallback"] is True
+    assert profile["structured_output"] == {
+        "mode": "text_json",
+        "fallback_modes": [],
+    }
 
 
 def test_ark_deepseek_v4_pro_secondary_model_profile_exists(yaml_config: dict) -> None:
