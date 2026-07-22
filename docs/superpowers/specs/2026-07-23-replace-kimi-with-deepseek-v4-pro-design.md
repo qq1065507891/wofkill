@@ -4,7 +4,7 @@
 
 - 日期：2026-07-23
 - 状态：用户已批准
-- 范围：模型路由配置、对应测试与端点探测清单
+- 范围：模型路由配置与对应测试
 
 ## 背景与根因
 
@@ -25,7 +25,7 @@ DeepSeek 路由没有出现同等规模的问题，因此本次先替换模型�
 
 ## 目标
 
-1. 从活动模型配置和端点探测清单中移除 `Kimi-K2.6`。
+1. 从活动模型配置中移除 `Kimi-K2.6`。
 2. 将原 Kimi 流量改为精确模型 ID `DeepSeek-V4-Pro`。
 3. 保留原 Kimi profile 的采样参数 `temperature: 0.5`、`top_p: 0.9`、
    `timeout: 120` 及结构化输出策略。
@@ -37,6 +37,8 @@ DeepSeek 路由没有出现同等规模的问题，因此本次先替换模型�
 - 不修改 retry_count、HTTP timeout、agent timeout 或线程取消语义。
 - 不改变 native MiniMax 玩家分配。
 - 不改变 `ark_deepseek_v4_pro_secondary` 的 `0.6/0.95` 采样通道。
+- 不改变五类显式 `judge_*` 任务到 `minimax_m27_default` 的覆盖路由。
+- 不接管、修改或提交当前未跟踪的 `scripts/probe_all_endpoints.py`。
 - 不修改历史进度记录、既有审计文档或描述历史 Kimi 行为的测试注释。
 - 不停止或重启当前进行中的游戏。
 
@@ -61,10 +63,13 @@ DeepSeek 路由没有出现同等规模的问题，因此本次先替换模型�
 - `llm_profiles.minimax_default.tasks.deception`
 - `llm_profiles.minimax_default.tasks.night_action`
 
-玩家侧结果为：
+玩家与任务侧结果为：
 
-- `p02`、`p04`、`p09`、`p12` 和 `judge` 经 `minimax_default` 使用
-  `DeepSeek-V4-Pro`。
+- `p02`、`p04`、`p09`、`p12` 经 `minimax_default` 的 default、speech、
+  deception、night_action 路由使用 `DeepSeek-V4-Pro`；reflection 继续使用
+  `minimax_m27_reflection`。
+- `judge` 的五类显式 `judge_*` 任务继续使用 `minimax_m27_default`。只有未来
+  未列出、会落到 `minimax_default.default` 的任务才解析为 `DeepSeek-V4-Pro`。
 - `p11` 经 `ark_glm` 使用同一主 profile。
 - `p07` 继续使用 `ark_deepseek_v4_pro_secondary`，保留独立采样通道。
 - 其他玩家路由不变。
@@ -73,10 +78,12 @@ DeepSeek 路由没有出现同等规模的问题，因此本次先替换模型�
 它描述成“不同 provider”的陈旧注释；实际是同一 Ark/OpenAI provider 下的
 不同模型 profile，本次不改变 fallback 行为。
 
-### 3. 同步探测清单
+### 3. 保留用户未跟踪探测脚本
 
-`scripts/probe_all_endpoints.py` 删除 Kimi 探测项。主 DeepSeek 探测项使用
-精确 ID `DeepSeek-V4-Pro`；secondary 项继续保留，用于验证不同采样通道。
+`scripts/probe_all_endpoints.py` 当前是未跟踪的用户文件，不属于已提交仓库内容。
+本次不修改、不暂存也不接管该文件。脚本中残留的 Kimi 探测项不参与运行时路由，
+且脚本当前统一使用 `temperature=0.0`、不传 `top_p`，本身不能验证两个 DeepSeek
+profile 的采样通道差异。完成时把这一现状作为独立说明报告给用户。
 
 ### 4. 测试策略
 
@@ -86,7 +93,10 @@ DeepSeek 路由没有出现同等规模的问题，因此本次先替换模型�
 2. 断言 `ark_deepseek_v4_pro.model == "DeepSeek-V4-Pro"`。
 3. 断言 `minimax_default` 的 default/speech/deception/night_action 均解析到
    `ark_deepseek_v4_pro`。
-4. 断言原有玩家分配、native MiniMax 路由和 secondary profile 不漂移。
+4. 断言 reflection 与五类显式 `judge_*` 路由保持 MiniMax，不被本次替换波及。
+5. 断言原有玩家分配、native MiniMax 路由和 secondary profile 不漂移。
+6. 把陈旧的 `test_minimax_default_fallback_uses_different_provider` 改为验证
+   “同一 Ark/OpenAI provider、不同模型 profile”，使测试名称和断言反映实际行为。
 
 随后运行聚焦测试、相关 model_gateway 回归、YAML 路由加载检查、
 `compileall` 和 `git diff --check`。
@@ -95,9 +105,9 @@ DeepSeek 路由没有出现同等规模的问题，因此本次先替换模型�
 
 - 修改 `config/models.yaml`：唯一生产配置变更。
 - 修改 `tests/model_gateway/test_minimax_provider_routing.py`：路由回归契约。
-- 修改 `scripts/probe_all_endpoints.py`：端点探测清单与活动配置保持一致。
 
 不新增生产模块，不修改运行时 Python 文件，避免把配置替换扩大成架构重构。
+未跟踪的 `scripts/probe_all_endpoints.py` 保持原状且不进入提交。
 
 ## 生效与运维说明
 
@@ -107,9 +117,10 @@ DeepSeek 路由没有出现同等规模的问题，因此本次先替换模型�
 
 ## 验收标准
 
-- 活动配置和探测脚本中不存在 `Kimi-K2.6` 或 `ark_kimi_k26`。
-- `p02`、`p04`、`p09`、`p12`、`judge` 的相关任务解析为
+- 活动配置中不存在 `Kimi-K2.6` 或 `ark_kimi_k26`。
+- `p02`、`p04`、`p09`、`p12` 的 default/speech/deception/night_action 解析为
   `provider=openai`、`model=DeepSeek-V4-Pro`。
+- reflection 与五类显式 `judge_*` 任务保持原 MiniMax 路由。
 - 主 profile 保持 `temperature=0.5`、`top_p=0.9`、`timeout=120`。
 - secondary profile 和非 Kimi 玩家路由保持不变。
 - 聚焦测试与相关回归全部完成并通过。
