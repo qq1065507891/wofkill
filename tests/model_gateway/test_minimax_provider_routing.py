@@ -141,24 +141,18 @@ def test_minimax_default_players_resolve_to_deepseek_v4_pro(
 
 
 def test_player_defaults_resolve_through_new_routing(yaml_config: dict) -> None:
-    """Most players are still bound to ``minimax_default``; after
-    Part C.1 every speech / night_action call from those players
-    goes through Ark OpenAI + M3.  This test pins the player→profile
-    assignment so a future refactor that re-binds to ``minimax_27_*``
-    is caught.
+    """锁定玩家到 llm_profile 的分配。
 
-    NEW (2026-07-15, native-minimax-routing): 5 players (p01/p03/p06/p08/p10)
-    were rerouted to native ``minimax_native_m3`` / ``minimax_native_m2_7``
-    profiles that hit ``https://api.minimaxi.com/v1``.  ``minimax_default``
-    now retains 5 entries (p02/p04/p09/p12/judge); the rest sit on
-    ``ark_*`` or the two new native profiles.
+    p02/p04/p09/p12/judge 保持 ``minimax_default``；玩家的默认及主要任务
+    由其他测试锁定为 Ark ``DeepSeek-V4-Pro``。p01/p03/p06/p08/p10
+    继续分配到两个原生 MiniMax profile。
     """
     players = yaml_config["players"]
     minimax_default_players = {
         pid for pid, info in players.items()
         if info["llm_profile"] == "minimax_default"
     }
-    # 5 native-routed + 3 ark_* + 5 minimax_default = 13 entries.
+    # 5 个原生 MiniMax、3 个 ark_*、5 个 minimax_default，共 13 个条目。
     assert minimax_default_players == {"p02", "p04", "p09", "p12", "judge"}, (
         f"minimax_default roster drifted: {sorted(minimax_default_players)}"
     )
@@ -224,6 +218,10 @@ def test_primary_deepseek_v4_pro_model_profile_is_exact(yaml_config: dict) -> No
     """主 DeepSeek V4 Pro 档固定关键采样与超时参数，且 Kimi 档已删除。"""
     profiles = yaml_config["model_profiles"]
     assert "ark_kimi_k26" not in profiles
+    assert all(
+        profile.get("model") != "Kimi-K2.6"
+        for profile in profiles.values()
+    ), "model_profiles 中仍有 profile 指向 Kimi-K2.6"
     profile = profiles["ark_deepseek_v4_pro"]
     assert profile["provider"] == "openai"
     assert profile["model"] == "DeepSeek-V4-Pro"

@@ -186,15 +186,9 @@ llm_profiles:
       model_profile: minimax_m27_default
 
   # --- MiniMax profiles ---
-  # NEW (v1.1.4 fallback-fix, Part C.1):
-  # ``minimax`` provider (calling ``MiniMax-M2.7``) failed on 154/618
-  # attempts (24.9%) with ``root_cause=invalid_output`` in 4 games
-  # captured on/after 2026-07-14.  ``MiniMax-M3`` (Ark OpenAI-compatible
-  # endpoint) is more reliable, so we now route the player default
-  # through the ``openai`` provider instead of the native ``minimax``
-  # provider.  ``reflection`` task keeps the M2.7 native endpoint as
-  # a fallback (cross-version diverse provider signals help the
-  # reflection synthesizer avoid single-provider bias).
+  # ``minimax_default`` 的 default、speech、deception、night_action
+  # 均通过 ``openai`` provider 使用 Ark ``DeepSeek-V4-Pro``。
+  # ``reflection`` 保留原生 ``minimax`` provider 的 ``MiniMax-M2.7``。
   minimax_default:
     default:
       provider: openai
@@ -212,15 +206,9 @@ llm_profiles:
       night_action:
         provider: openai
         model_profile: ark_deepseek_v4_pro
-      # Phase 2 P2-2: 5 JUDGE_* task types now map to the same
-      # model as ``speech`` (per Phase 1 decision).  Judge
-      # broadcasts are serial and don't need the extra quality of
-      # the default profile, but routing them through a cheaper
-      # model (e.g. ``minimax_m27_fast``) is an independent
-      # optimisation that can be enabled in a follow-up.  Each
-      # judge_* task type is listed explicitly so future per-task
-      # tuning (different max_tokens, temperature, etc.) is
-      # straightforward.
+      # 五个 judge_* 任务是显式 override：使用 ``minimax`` provider
+      # 与 ``minimax_m27_default``（``MiniMax-M2.7``），不跟随 speech
+      # 的 Ark DeepSeek 路由。逐项列出便于后续按任务独立调优。
       judge_vote_calling:
         provider: minimax
         model_profile: minimax_m27_default
