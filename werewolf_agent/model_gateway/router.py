@@ -62,6 +62,7 @@ from werewolf_agent.model_gateway.router_config import (
 )
 from werewolf_agent.model_gateway.router_errors import (
     _empty_result,
+    _failure_disposition_from_attempts,
     _record_failure_usage,
     _record_success_usage,
 )
@@ -78,6 +79,7 @@ from werewolf_agent.model_gateway.structured_output import (
 )
 from werewolf_agent.model_gateway.usage_records import (
     EmptyModelResponseError,
+    FailureDisposition,
     GenerateResult,
     LLMProvider,
     MockProvider,
@@ -90,6 +92,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "EmptyModelResponseError",
+    "FailureDisposition",
     "GenerateResult",
     "LLMProvider",
     "MockProvider",
@@ -344,6 +347,7 @@ class ModelRouter:
         primary_attempts = 0
         primary_audit_config = config
         primary_skip_root: RootCause | None = None
+        skipped_attempt_ordinals: set[int] = set()
 
         if primary_skip_reason is not None:
             (
@@ -357,6 +361,7 @@ class ModelRouter:
                 route_kind=first_route,
                 reason=primary_skip_reason,
             )
+            skipped_attempt_ordinals.add(attempts[-1].ordinal)
 
         primary_budget = RetryBudget(
             RouteKind.PRIMARY,
@@ -394,6 +399,7 @@ class ModelRouter:
                     allow_text_tool_fallback=config.allow_text_tool_fallback,
                     structured_output_mode=active_mode.value,
                     reasoning_level=config.reasoning_level,
+                    failure_disposition=FailureDisposition.NONE,
                     reasoning_status=(
                         result.reasoning_status
                         if result.reasoning_status in {"confirmed", "unsupported"}
@@ -542,6 +548,10 @@ class ModelRouter:
                 terminal_root,
                 terminal=True,
             ))
+        failure_disposition = _failure_disposition_from_attempts(
+            tuple(attempts),
+            skipped_attempt_ordinals=frozenset(skipped_attempt_ordinals),
+        )
         failure_usage = _record_failure_usage(
             usage_log=self._usage_log,
             usage_lock=self._usage_lock,
@@ -578,6 +588,7 @@ class ModelRouter:
             fallback_error=fallback_error,
             last_empty_result=last_empty_result,
             attempts=tuple(attempts),
+            failure_disposition=failure_disposition,
         )
         if route_failure is not None:
             empty_result = replace(
@@ -678,10 +689,11 @@ class ModelRouter:
                         ),
                     )
                     result = replace(
-                        result,
-                        structured_output_mode=mode.value,
-                        reasoning_level=config.reasoning_level,
-                        reasoning_status=(
+                    result,
+                    structured_output_mode=mode.value,
+                    reasoning_level=config.reasoning_level,
+                    failure_disposition=FailureDisposition.NONE,
+                    reasoning_status=(
                             result.reasoning_status
                             if result.reasoning_status in {"confirmed", "unsupported"}
                             else "requested_unconfirmed"
@@ -804,7 +816,9 @@ class ModelRouter:
             self._usage_log.append(usage)
         return GenerateResult(
             text="", provider=config.provider, model=config.model,
-            usage=usage, attempts=(attempt,),
+            usage=usage,
+            failure_disposition=FailureDisposition.POLICY_REJECTED,
+            attempts=(attempt,),
         )
 
     def get_llm_profile_for_agent(self, agent_id: str) -> str:
@@ -905,8 +919,14 @@ def _record_skipped_primary_attempt(
 
 def _root_cause(exc: Exception) -> RootCause:
     """仅把异常归一化为审计枚举，不保留原始错误文本。"""
-    if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+    if isinstance(exc, TimeoutError):
         return RootCause.TIMEOUT
+    try:
+        import httpx
+        if isinstance(exc, httpx.TimeoutException):
+            return RootCause.TIMEOUT
+    except ImportError:
+        pass
     if isinstance(exc, EmptyModelResponseError):
         return RootCause.INVALID_OUTPUT
     return RootCause.PROVIDER_ERROR

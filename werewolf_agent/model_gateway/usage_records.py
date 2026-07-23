@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any, Protocol
 
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
@@ -23,6 +24,16 @@ from werewolf_agent.model_gateway.final_prompt_observer import (
     FinalPromptObserver,
     notify_final_prompt_observer,
 )
+
+
+class FailureDisposition(str, Enum):
+    """完整路由链失败后，供调用方决定是否可进行输出修复的终态归因。"""
+
+    NONE = "none"
+    TRANSPORT_EXHAUSTED = "transport_exhausted"
+    OUTPUT_REPAIRABLE = "output_repairable"
+    POLICY_REJECTED = "policy_rejected"
+    ROUTE_UNAVAILABLE = "route_unavailable"
 
 
 @dataclass(frozen=True)
@@ -152,6 +163,7 @@ class GenerateResult:
     reasoning_status: str = "not_requested"
     reasoning_tokens: int = 0
     thinking_text: str = ""  # 2026-07-21: reasoning 原文, 不进 text。Ark reasoning_content / MiniMax <think> 剥离内容统一走此字段。
+    failure_disposition: FailureDisposition = FailureDisposition.NONE
     attempts: tuple[AttemptExecutionRecord, ...] = ()
 
     def __post_init__(self) -> None:
@@ -243,6 +255,7 @@ class MockProvider:
 
 __all__ = [
     "EmptyModelResponseError",
+    "FailureDisposition",
     "GenerateResult",
     "LLMProvider",
     "MockProvider",

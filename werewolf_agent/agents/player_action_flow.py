@@ -69,6 +69,7 @@ from werewolf_agent.model_gateway.structured_output import (
     classify_structured_failure,
 )
 from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
+from werewolf_agent.model_gateway.usage_records import FailureDisposition
 from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
 
 logger = logging.getLogger(__name__)
@@ -259,6 +260,37 @@ def run_player_action_flow(
         )
 
         if not result.text:
+            disposition = getattr(
+                result,
+                "failure_disposition",
+                FailureDisposition.NONE,
+            )
+            if disposition is not FailureDisposition.OUTPUT_REPAIRABLE:
+                route_failure = getattr(result, "structured_failure_reason", None)
+                structured_failure_reason = route_failure or "model_generation_failed"
+                structured_failure_stage = StructuredFailureStage.PROVIDER.value
+                usage = getattr(result, "usage", None)
+                retry = RetryInfo(
+                    attempt=attempt,
+                    max_retries=agent.max_retries,
+                    error_code=structured_failure_reason,
+                    error_message=structured_failure_reason,
+                    failure_category=getattr(usage, "failure_category", None),
+                    correction_hint="Provider generation failed; using fallback action.",
+                )
+                fallback = _finalize_terminal_fallback(
+                    retry_info=retry,
+                    attempt_raw_text=raw_text,
+                    attempt_parsed_action=parsed_action,
+                    attempt_tool_call_required=tool_call_required,
+                    attempt_tool_call_received=False,
+                    attempt_parse_success=False,
+                    attempt_parse_error=structured_failure_reason,
+                    failure_reason=structured_failure_reason,
+                    failure_stage=structured_failure_stage,
+                    metrics_error_code=structured_failure_reason,
+                )
+                return fallback, retry
             route_failure = getattr(result, "structured_failure_reason", None)
             failure_reason = route_failure or agent._latest_generation_failure_reason()
             if not route_failure and any(

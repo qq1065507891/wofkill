@@ -16,11 +16,20 @@ from __future__ import annotations
 import threading
 from dataclasses import replace
 
+from werewolf_agent.model_gateway.execution_records import (
+    AttemptExecutionRecord,
+    RootCause,
+    RouteKind,
+)
 from werewolf_agent.model_gateway.retry_policy import (
     _http_status_from_exception,
     _raw_error_from_exception,
 )
-from werewolf_agent.model_gateway.usage_records import GenerateResult, UsageRecord
+from werewolf_agent.model_gateway.usage_records import (
+    FailureDisposition,
+    GenerateResult,
+    UsageRecord,
+)
 
 
 def _record_success_usage(
@@ -128,6 +137,7 @@ def _empty_result(
     fallback_error: Exception | None = None,
     last_empty_result: GenerateResult | None = None,
     attempts: tuple = (),
+    failure_disposition: FailureDisposition = FailureDisposition.NONE,
 ) -> GenerateResult:
     """构造兼容旧字段的空响应结果。"""
     return GenerateResult(
@@ -155,8 +165,45 @@ def _empty_result(
             else "not_requested"
         ),
         reasoning_tokens=(last_empty_result.reasoning_tokens if last_empty_result else 0),
+        failure_disposition=failure_disposition,
         attempts=attempts,
     )
+
+
+def _failure_disposition_from_attempts(
+    attempts: tuple[AttemptExecutionRecord, ...],
+    *,
+    skipped_attempt_ordinals: frozenset[int] = frozenset(),
+) -> FailureDisposition:
+    """依据完整尝试链计算终态归因，忽略安全终退和未实际调用的占位记录。"""
+    real_failures = tuple(
+        attempt
+        for attempt in attempts
+        if (
+            attempt.route_kind is not RouteKind.SAFE_FALLBACK
+            and attempt.ordinal not in skipped_attempt_ordinals
+            and attempt.root_cause is not RootCause.NONE
+        )
+    )
+    if any(
+        attempt.root_cause in {RootCause.TIMEOUT, RootCause.PROVIDER_ERROR}
+        for attempt in real_failures
+    ):
+        return FailureDisposition.TRANSPORT_EXHAUSTED
+    if real_failures and all(
+        attempt.root_cause is RootCause.INVALID_OUTPUT
+        for attempt in real_failures
+    ):
+        return FailureDisposition.OUTPUT_REPAIRABLE
+    if real_failures and real_failures[-1].root_cause is RootCause.POLICY_REJECTION:
+        return FailureDisposition.POLICY_REJECTED
+    if any(
+        attempt.root_cause is RootCause.POLICY_REJECTION
+        for attempt in attempts
+        if attempt.route_kind is not RouteKind.SAFE_FALLBACK
+    ):
+        return FailureDisposition.POLICY_REJECTED
+    return FailureDisposition.ROUTE_UNAVAILABLE
 
 
 def _append_usage(
@@ -171,4 +218,9 @@ def _append_usage(
             usage_log[:] = usage_log[-5000:]
 
 
-__all__ = ["_empty_result", "_record_failure_usage", "_record_success_usage"]
+__all__ = [
+    "_empty_result",
+    "_failure_disposition_from_attempts",
+    "_record_failure_usage",
+    "_record_success_usage",
+]

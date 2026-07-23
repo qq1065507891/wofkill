@@ -12,7 +12,11 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from werewolf_agent.model_gateway.usage_records import GenerateResult, UsageRecord
+from werewolf_agent.model_gateway.usage_records import (
+    FailureDisposition,
+    GenerateResult,
+    UsageRecord,
+)
 from werewolf_agent.model_gateway.execution_records import (
     AttemptExecutionRecord,
     AttemptOutcome,
@@ -74,6 +78,14 @@ def test_generate_result_legacy_reasoning_fields_remain_readable() -> None:
     assert result.reasoning_level == "high"
     assert result.reasoning_status == "confirmed"
     assert result.reasoning_tokens == 17
+
+
+def test_generate_result_defaults_to_no_failure_disposition() -> None:
+    """旧 provider 构造结果时不必传入新的终态字段。"""
+    result = GenerateResult(text="ok", provider="primary", model="model-a")
+
+    assert result.failure_disposition is FailureDisposition.NONE
+    assert FailureDisposition.TRANSPORT_EXHAUSTED.value == "transport_exhausted"
     with pytest.raises((FrozenInstanceError, AttributeError)):
         result.reasoning_status = "drifted"  # type: ignore[misc]
 

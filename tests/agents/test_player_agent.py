@@ -334,24 +334,24 @@ class ToolAwareProvider:
 
 
 class EmptyFailureRouter:
-    def __init__(self) -> None:
+    def __init__(self, disposition=None) -> None:
+        from werewolf_agent.model_gateway.usage_records import FailureDisposition
+
         self.calls = 0
         self._usage_log: list[UsageRecord] = []
+        self.disposition = disposition or FailureDisposition.TRANSPORT_EXHAUSTED
 
     def resolve_config(self, agent_id: str, task_type: str):
         return ModelConfig(provider="minimax", model="MiniMax-M2.7", allow_text_tool_fallback=False), None
 
     def generate(self, *args, **kwargs):
         self.calls += 1
-        self._usage_log.append(UsageRecord(
-            agent_id="p01",
-            task_type="speech",
+        return GenerateResult(
+            text="",
             provider="minimax",
             model="MiniMax-M2.7",
-            success=False,
-            fallback_reason="primary_failed:ReadTimeout: The read operation timed out",
-        ))
-        return GenerateResult(text="", provider="minimax", model="MiniMax-M2.7")
+            failure_disposition=self.disposition,
+        )
 
     def get_usage_log(self):
         return list(self._usage_log)
@@ -1486,8 +1486,16 @@ class TestPlayerAgentRetryFallback:
         assert isinstance(action, FallbackAction)
         assert retry.error_code == "empty_response"
 
-    def test_provider_failure_empty_response_does_not_retry_three_model_calls(self) -> None:
-        router = EmptyFailureRouter()
+    @pytest.mark.parametrize(
+        "disposition_name",
+        ["TRANSPORT_EXHAUSTED", "POLICY_REJECTED", "ROUTE_UNAVAILABLE"],
+    )
+    def test_non_repairable_terminal_empty_result_does_not_reenter_router(
+        self, disposition_name,
+    ) -> None:
+        from werewolf_agent.model_gateway.usage_records import FailureDisposition
+
+        router = EmptyFailureRouter(getattr(FailureDisposition, disposition_name))
         agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
 
         action, retry = agent.act(self._make_context())
@@ -2828,12 +2836,7 @@ class TestStructuredOutputMetadata:
         action, retry_info = agent.act(context)
 
         assert isinstance(action, PlayerAction)
-        assert provider.modes == [
-            "json_schema",
-            "json_schema",
-            "json_schema",
-            "json_object",
-        ]
+        assert provider.modes == ["json_schema", "json_object"]
         assert retry_info.early_exit_reason is None
         assert action.trace is not None
         assert action.trace.structured_output_mode == "json_object"
@@ -4543,6 +4546,8 @@ def test_provider_terminal_after_speech_repair_preserves_semantic_fallback(
     assert action.trace.semantic_repair_audit["success"] is False
     assert action.trace.semantic_repair_audit["retained_verified_claim_count"] == 1
     assert action.trace.structured_failure_reason == "fallback_route_unavailable"
+    assert len(action.trace.execution_attempts) >= 2
+    assert action.trace.execution_attempts[-1].route_kind.value == "safe_fallback"
     public_trace = action.trace.model_dump_json()
     assert rejected_speech not in public_trace
     assert private_sentinel not in public_trace

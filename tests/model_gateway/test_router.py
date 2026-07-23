@@ -347,6 +347,8 @@ class TestGenerateWithMockProvider:
         assert result.usage is not None
         assert result.usage.failure_category == "timeout"
         assert result.usage.fallback_reason == "timeout"
+        from werewolf_agent.model_gateway.router import FailureDisposition
+        assert result.failure_disposition is FailureDisposition.TRANSPORT_EXHAUSTED
         assert [item.root_cause.value for item in result.attempts] == [
             "provider_error", "timeout", "policy_rejection",
         ]
@@ -408,6 +410,32 @@ class TestGenerateWithMockProvider:
         assert result.attempts[0].normalized_reasoning_status.value == "requested_unconfirmed"
         assert result.usage is not None
         assert result.usage.attempts == result.attempts
+        from werewolf_agent.model_gateway.router import FailureDisposition
+        assert result.failure_disposition is FailureDisposition.NONE
+
+    def test_success_clears_provider_stale_failure_disposition(self) -> None:
+        from dataclasses import replace
+        from werewolf_agent.model_gateway.router import FailureDisposition
+
+        class StaleFailureProvider(_StaticTextProvider):
+            def generate(
+                self, prompt, config, system_prompt=None, tools=None,
+                tool_choice=None, final_prompt_observer=None,
+            ):
+                result = super().generate(
+                    prompt, config, system_prompt, tools, tool_choice,
+                )
+                return replace(
+                    result,
+                    failure_disposition=FailureDisposition.TRANSPORT_EXHAUSTED,
+                )
+
+        router = _make_router(providers={"anthropic": StaleFailureProvider("ok", "anthropic")})
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert result.text == "ok"
+        assert result.failure_disposition is FailureDisposition.NONE
 
     def test_fallback_retains_task_reasoning_minimum_and_earlier_failure(self) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
@@ -462,8 +490,10 @@ class TestGenerateWithMockProvider:
             "safe_fallback",
         ]
         assert result.attempts[-1].normalized_reasoning_status.value == "not_requested"
+        from werewolf_agent.model_gateway.router import FailureDisposition
+        assert result.failure_disposition is FailureDisposition.POLICY_REJECTED
 
-    def test_empty_response_ends_primary_candidate_without_network_retry(self, monkeypatch) -> None:
+    def test_empty_response_safe_fallback_does_not_override_repairable_disposition(self, monkeypatch) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
 
         empty = _EmptyTextProvider("primary")
@@ -483,6 +513,86 @@ class TestGenerateWithMockProvider:
         assert sleeps == []
         assert result.attempts[0].root_cause.value == "invalid_output"
         assert [attempt.route_kind.value for attempt in result.attempts[:2]] == ["primary", "safe_fallback"]
+        from werewolf_agent.model_gateway.router import FailureDisposition
+        assert result.failure_disposition is FailureDisposition.OUTPUT_REPAIRABLE
+
+    def test_mixed_invalid_output_and_transport_is_transport_exhausted(self) -> None:
+        from werewolf_agent.model_gateway.router import FailureDisposition, ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "high"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={
+                "primary": _EmptyTextProvider("primary"),
+                "fallback": _SequenceProvider([TimeoutError("timeout")], "fallback"),
+            },
+        )
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert result.failure_disposition is FailureDisposition.TRANSPORT_EXHAUSTED
+
+    def test_all_real_invalid_output_failures_are_repairable(self) -> None:
+        from werewolf_agent.model_gateway.router import FailureDisposition, ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "high"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={
+                "primary": _EmptyTextProvider("primary"),
+                "fallback": _EmptyTextProvider("fallback"),
+            },
+        )
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert result.failure_disposition is FailureDisposition.OUTPUT_REPAIRABLE
+
+    def test_callable_provider_named_unavailable_remains_repairable(self) -> None:
+        from werewolf_agent.model_gateway.router import FailureDisposition, ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "unavailable", "model": "unavailable",
+                    "retry_count": 0, "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "unavailable", "model_profile": "primary"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"unavailable": _EmptyTextProvider("unavailable")},
+        )
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert result.failure_disposition is FailureDisposition.OUTPUT_REPAIRABLE
+
+    def test_root_cause_uses_explicit_timeout_types_not_class_name(self) -> None:
+        import httpx
+        from werewolf_agent.model_gateway.execution_records import RootCause
+        from werewolf_agent.model_gateway.router import _root_cause
+
+        class TimeoutNamedError(RuntimeError):
+            pass
+
+        assert _root_cause(TimeoutNamedError("not a timeout")) is RootCause.PROVIDER_ERROR
+        assert _root_cause(httpx.TimeoutException("timed out")) is RootCause.TIMEOUT
 
     def test_primary_rate_limit_uses_candidate_budget_and_exact_delays(self, monkeypatch) -> None:
         from werewolf_agent.model_gateway import router as router_module
@@ -898,6 +1008,8 @@ class TestGenerateWithMockProvider:
         assert result.attempts[-1].model == "unavailable"
         assert result.attempts[-1].root_cause.value == "provider_error"
         assert router.get_usage_log()[-1].attempts == result.attempts
+        from werewolf_agent.model_gateway.router import FailureDisposition
+        assert result.failure_disposition is FailureDisposition.ROUTE_UNAVAILABLE
 
     def test_ordered_fallback_continues_after_capable_candidate_failure(self) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
