@@ -4213,7 +4213,7 @@ def test_semantic_repair_allows_supported_revision(monkeypatch) -> None:
     }
 
 
-def test_not_implemented_provider_returns_aligned_terminal_retry() -> None:
+def test_dedicated_unsupported_provider_returns_aligned_terminal_retry() -> None:
     """首次 tool_choice 不支持时，返回 retry 必须与终态轨迹一致。"""
     from unittest.mock import patch
     from werewolf_agent.model_gateway.execution_records import (
@@ -4251,7 +4251,7 @@ def test_not_implemented_provider_returns_aligned_terminal_retry() -> None:
             reasoning_token_count=0,
             evidence_kind=EvidenceKind.NONE,
         ),))
-        raise NotImplementedError("private provider detail")
+        raise StructuredOutputUnsupportedError("private provider detail")
 
     with patch(
         "werewolf_agent.agents.player_action_flow.call_player_generation_request",
@@ -4271,6 +4271,32 @@ def test_not_implemented_provider_returns_aligned_terminal_retry() -> None:
     assert action.trace.terminal_failure_code == "structured_output_unsupported"
     assert action.trace.original_failure_code == "structured_output_unsupported"
     assert action.trace.structured_failure_reason == "structured_output_unsupported"
+
+
+def test_generic_not_implemented_escapes_action_flow_with_tools_active() -> None:
+    """普通编程错误不能被动作层伪装成结构化能力拒绝。"""
+    from unittest.mock import patch
+
+    provider = _SequenceJsonProvider([])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+
+    def _raise_programming_error(_agent, _context, request, _attempt_context):
+        assert request.tool_choice is not None
+        raise NotImplementedError("provider programming bug")
+
+    with patch(
+        "werewolf_agent.agents.player_action_flow.call_player_generation_request",
+        side_effect=_raise_programming_error,
+    ), pytest.raises(NotImplementedError, match="programming bug"):
+        agent.act(context)
 
 
 def test_speech_repair_then_no_tool_returns_aligned_semantic_fallback(
@@ -4305,7 +4331,7 @@ def test_speech_repair_then_no_tool_returns_aligned_semantic_fallback(
         nonlocal calls
         calls += 1
         if calls == 2:
-            raise NotImplementedError("private provider detail")
+            raise StructuredOutputUnsupportedError("private provider detail")
         return original_call(*args)
 
     with patch.object(agent, "_speech_quality_error", side_effect=["需修复"]), patch(

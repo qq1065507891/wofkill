@@ -69,7 +69,10 @@ from werewolf_agent.model_gateway.structured_output import (
     classify_structured_failure,
 )
 from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
-from werewolf_agent.model_gateway.usage_records import FailureDisposition
+from werewolf_agent.model_gateway.usage_records import (
+    FailureDisposition,
+    StructuredOutputUnsupportedError,
+)
 from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
 
 logger = logging.getLogger(__name__)
@@ -213,7 +216,7 @@ def run_player_action_flow(
                 generation_request,
                 generation_attempt_context,
             )
-        except NotImplementedError:
+        except StructuredOutputUnsupportedError:
             # Provider does not support tool_choice
             structured_failure_reason = "structured_output_unsupported"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
