@@ -578,6 +578,43 @@ def test_execution_report_backfills_legacy_timeout_count_and_records_explicit_dr
     assert metrics["attempt_retry_consistency_error_count"] == 2
 
 
+@pytest.mark.parametrize("supplied_timeout_count", [True, "1", -1, None])
+def test_execution_report_keeps_valid_attempts_when_timeout_projection_is_malformed(
+    supplied_timeout_count: object,
+) -> None:
+    """显式 timeout 投影损坏不能覆盖已经翻译成功的 attempts。"""
+    from werewolf_agent.evaluation.balance_audit import (
+        compute_decision_execution_metrics,
+    )
+
+    attempts = (
+        _attempt(
+            1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+            cause=RootCause.TIMEOUT,
+        ),
+        _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS),
+    )
+    metrics = compute_decision_execution_metrics([{
+        "events": [{"type": "action_trace_audit", "payload": {
+            "action_trace": {
+                "execution_attempts": attempts,
+                "attempt_count": 2,
+                "retry_count": 1,
+                "provider_fallback_count": 0,
+                "runtime_timeout_count": supplied_timeout_count,
+                "generated_by": "model",
+                "terminal_failure_code": None,
+            },
+        }}],
+    }])
+
+    assert metrics["decision_count"] == 1
+    assert metrics["attempt_count"] == 2
+    assert metrics["runtime_timeout_count"] == 1
+    assert metrics["decision_execution_invalid_sequence_count"] == 0
+    assert metrics["attempt_retry_consistency_error_count"] == 1
+
+
 @pytest.mark.parametrize("provider_attempted", [0, 1, None, "true"])
 def test_execution_report_rejects_malformed_provider_attempted_timeout(
     provider_attempted: object,

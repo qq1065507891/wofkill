@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-16
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -81,9 +81,9 @@ def compute_decision_execution_metrics(
         raw_attempts = trace.get("execution_attempts")
         if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
             consistency_errors += sum(
-                type(supplied_timeout_count) is int
-                and supplied_timeout_count >= 0
-                and supplied_timeout_count != 0
+                type(supplied_timeout_count) is not int
+                or supplied_timeout_count < 0
+                or supplied_timeout_count != 0
                 for supplied_timeout_count in explicit_timeout_counts
             )
             decision_count += 1
@@ -112,15 +112,7 @@ def compute_decision_execution_metrics(
         try:
             normalized_trace = normalize_decision_execution_trace(trace)
         except (KeyError, TypeError, ValueError):
-            valid_timeout_counts = [
-                supplied_timeout_count
-                for supplied_timeout_count in explicit_timeout_counts
-                if (
-                    type(supplied_timeout_count) is int
-                    and supplied_timeout_count >= 0
-                )
-            ]
-            if not valid_timeout_counts:
+            if not runtime_timeout_count_explicit:
                 decision_count += 1
                 invalid_sequence_count += 1
                 if minimum_level is not None:
@@ -135,8 +127,10 @@ def compute_decision_execution_metrics(
             }.issubset(trace):
                 normalized_trace["normalized_from_schema_version"] = "1"
             consistency_errors += sum(
-                supplied_timeout_count != derived_timeout_count
-                for supplied_timeout_count in valid_timeout_counts
+                type(supplied_timeout_count) is not int
+                or supplied_timeout_count < 0
+                or supplied_timeout_count != derived_timeout_count
+                for supplied_timeout_count in explicit_timeout_counts
             )
             timeout_consistency_checked = True
 
