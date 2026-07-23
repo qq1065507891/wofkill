@@ -276,6 +276,173 @@ def test_execution_report_accepts_json_normalized_attempts() -> None:
     assert metrics["runtime_timeout_count"] == 1
 
 
+def test_execution_report_deduplicates_wolf_consensus_trace_projection() -> None:
+    """同一狼队决策的独立审计和共识副本只能投影一次。"""
+    from werewolf_agent.evaluation.balance_audit import (
+        compute_decision_execution_metrics,
+    )
+
+    attempts = (
+        _attempt(
+            1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+            cause=RootCause.TIMEOUT,
+        ),
+        _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS),
+    )
+    individual_trace = {
+        "execution_attempts": attempts,
+        "attempt_count": 2,
+        "retry_count": 1,
+        "provider_fallback_count": 0,
+        "runtime_timeout_count": 1,
+        "generated_by": "model",
+        "terminal_failure_code": None,
+    }
+    # runtime/nodes/wolf_consensus.py 会把同一 trace 同时写入独立审计
+    # 事件和 wolf_kill_selected.action_traces。
+    nested_trace = dict(individual_trace)
+
+    metrics = compute_decision_execution_metrics([{
+        "game_id": "g1",
+        "events": [
+            {"type": "action_trace_audit", "payload": {
+                "player_id": "p02",
+                "phase": "wolf_consensus",
+                "task_type": "wolf_consensus",
+                "day_number": 0,
+                "night_number": 1,
+                "trace_id": "g1:p02:wolf_consensus:D0:N1:wolf_consensus:0",
+                "game_id": "g1",
+                "action_index": 0,
+                "action_trace": individual_trace,
+            }},
+            {"type": "wolf_kill_selected", "payload": {
+                "night_number": 1,
+                "target_id": "p01",
+                "action_traces": {"p02": nested_trace},
+            }},
+        ],
+    }])
+
+    assert metrics["decision_count"] == 1
+    assert metrics["attempt_count"] == 2
+    assert metrics["retry_count"] == 1
+    assert metrics["provider_fallback_count"] == 0
+    assert metrics["runtime_timeout_count"] == 1
+    assert metrics["root_cause_counts"] == {"none": 1, "timeout": 1}
+    assert metrics["decision_outcome_counts"] == {"retry_success": 1}
+    assert metrics["attempt_retry_consistency_error_count"] == 0
+
+
+def test_execution_report_merges_richer_wolf_trace_without_losing_timeout_check() -> None:
+    """同组副本要保留完整 attempts 和任一显式 timeout 计数。"""
+    from werewolf_agent.evaluation.balance_audit import (
+        compute_decision_execution_metrics,
+    )
+
+    timeout = _attempt(
+        1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+        cause=RootCause.TIMEOUT,
+    )
+    repair_success = _attempt(2, RouteKind.REPAIR, AttemptOutcome.SUCCESS)
+    retry_failure = _attempt(
+        2, RouteKind.RETRY, AttemptOutcome.FAILURE,
+        cause=RootCause.PROVIDER_ERROR,
+    )
+    final_repair_success = _attempt(
+        3, RouteKind.REPAIR, AttemptOutcome.SUCCESS,
+    )
+    individual_trace = {
+        "execution_attempts": (timeout, repair_success),
+        "attempt_count": 2,
+        "retry_count": 0,
+        "provider_fallback_count": 0,
+        "runtime_timeout_count": 1,
+        "generated_by": "model",
+        "terminal_failure_code": None,
+    }
+    nested_trace = {
+        "execution_attempts": (timeout, retry_failure, final_repair_success),
+        "attempt_count": 3,
+        "retry_count": 1,
+        "provider_fallback_count": 0,
+        "generated_by": "model",
+        "terminal_failure_code": None,
+    }
+    metrics = compute_decision_execution_metrics([{
+        "game_id": "g1",
+        "events": [
+            {"type": "action_trace_audit", "payload": {
+                "player_id": "p02",
+                "phase": "wolf_consensus",
+                "task_type": "wolf_consensus",
+                "trace_id": "g1:p02:wolf_consensus:D0:N1:wolf_consensus:0",
+                "action_trace": individual_trace,
+            }},
+            {"type": "wolf_kill_selected", "payload": {
+                "night_number": 1,
+                "target_id": "p01",
+                "action_traces": {"p02": nested_trace},
+            }},
+        ],
+    }])
+
+    assert metrics["decision_count"] == 1
+    assert metrics["attempt_count"] == 3
+    assert metrics["retry_count"] == 1
+    assert metrics["runtime_timeout_count"] == 1
+    assert metrics["attempt_retry_consistency_error_count"] == 0
+
+
+def test_execution_report_keeps_equal_traces_with_distinct_request_ids() -> None:
+    """相同业务内容但不同请求身份仍是两次决策。"""
+    from werewolf_agent.evaluation.balance_audit import (
+        compute_decision_execution_metrics,
+    )
+
+    first_attempts = (
+        _attempt(1, RouteKind.PRIMARY, AttemptOutcome.SUCCESS),
+    )
+    second_attempts = (
+        replace(
+            first_attempts[0],
+            opaque_request_id=OpaqueRequestId.new("game", "11223344"),
+        ),
+    )
+    trace_template = {
+        "attempt_count": 1,
+        "retry_count": 0,
+        "provider_fallback_count": 0,
+        "runtime_timeout_count": 0,
+        "generated_by": "model",
+        "terminal_failure_code": None,
+    }
+    metrics = compute_decision_execution_metrics([{
+        "game_id": "g1",
+        "events": [
+            {"type": "action_trace_audit", "payload": {
+                "trace_id": "g1:p02:wolf_consensus:D0:N1:wolf_consensus:0",
+                "action_trace": {
+                    **trace_template,
+                    "execution_attempts": first_attempts,
+                },
+            }},
+            {"type": "action_trace_audit", "payload": {
+                "trace_id": "g1:p02:wolf_consensus:D0:N2:wolf_consensus:1",
+                "action_trace": {
+                    **trace_template,
+                    "execution_attempts": second_attempts,
+                },
+            }},
+        ],
+    }])
+
+    assert metrics["decision_count"] == 2
+    assert metrics["attempt_count"] == 2
+    assert metrics["runtime_timeout_count"] == 0
+    assert metrics["decision_outcome_counts"] == {"direct_success": 2}
+
+
 def test_execution_report_aggregates_only_real_provider_timeouts() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
 
@@ -336,6 +503,14 @@ def test_execution_report_backfills_legacy_timeout_count_and_records_explicit_dr
         1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT,
     )
     success = _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS)
+    second_timeout = replace(
+        timeout,
+        opaque_request_id=OpaqueRequestId.new("game", "55667788"),
+    )
+    second_success = replace(
+        success,
+        opaque_request_id=OpaqueRequestId.new("game", "55667788"),
+    )
     metrics = compute_decision_execution_metrics([{
         "events": [
             {"type": "action_trace_audit", "payload": {"action_trace": {
@@ -349,7 +524,7 @@ def test_execution_report_backfills_legacy_timeout_count_and_records_explicit_dr
                 "runtime_timeout_count": 1,
             }}},
             {"type": "action_trace_audit", "payload": {"action_trace": {
-                "execution_attempts": (timeout, success),
+                "execution_attempts": (second_timeout, second_success),
                 "runtime_timeout_count": 0,
             }}},
         ],
@@ -482,22 +657,34 @@ def test_critical_reasoning_coverage_uses_policy_minimum_and_requires_task_type(
         reasoning_token_count=0,
         evidence_kind=EvidenceKind.NONE,
     )
+    speech_attempt = replace(
+        medium_attempt,
+        opaque_request_id=OpaqueRequestId.new("game", "55667788"),
+    )
+    judge_attempt = replace(
+        none_attempt,
+        opaque_request_id=OpaqueRequestId.new("game", "99aabbcc"),
+    )
+    untyped_attempt = replace(
+        medium_attempt,
+        opaque_request_id=OpaqueRequestId.new("game", "ddeeff00"),
+    )
     games = [{"events": [
         {"type": "action_trace_audit", "payload": {
             "task_type": "wolf_team_plan",
             "action_trace": {"execution_attempts": (medium_attempt,)},
         }},
-        {"type": "action_trace_audit", "payload": {
-            "task_type": "speech",
-            "action_trace": {"execution_attempts": (medium_attempt,)},
-        }},
-        {"type": "action_trace_audit", "payload": {
-            "task_type": "judge_phase",
-            "action_trace": {"execution_attempts": (none_attempt,)},
-        }},
-        {"type": "action_trace_audit", "payload": {
-            "action_trace": {"execution_attempts": (medium_attempt,)},
-        }},
+            {"type": "action_trace_audit", "payload": {
+                "task_type": "speech",
+                "action_trace": {"execution_attempts": (speech_attempt,)},
+            }},
+            {"type": "action_trace_audit", "payload": {
+                "task_type": "judge_phase",
+                "action_trace": {"execution_attempts": (judge_attempt,)},
+            }},
+            {"type": "action_trace_audit", "payload": {
+                "action_trace": {"execution_attempts": (untyped_attempt,)},
+            }},
     ]}]
 
     metrics = compute_decision_execution_metrics(games)

@@ -63,7 +63,8 @@ def compute_decision_execution_metrics(
 
     for record in _iter_action_trace_records(games):
         trace = record["trace"]
-        runtime_timeout_count_explicit = "runtime_timeout_count" in trace
+        explicit_timeout_counts = _explicit_timeout_counts(record, trace)
+        runtime_timeout_count_explicit = bool(explicit_timeout_counts)
         timeout_consistency_checked = False
         task_type = record.get("explicit_task_type")
         minimum_level: ReasoningLevel | None = None
@@ -79,14 +80,12 @@ def compute_decision_execution_metrics(
             missing_task_type_count += 1
         raw_attempts = trace.get("execution_attempts")
         if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
-            supplied_timeout_count = trace.get("runtime_timeout_count")
-            if (
-                runtime_timeout_count_explicit
-                and type(supplied_timeout_count) is int
+            consistency_errors += sum(
+                type(supplied_timeout_count) is int
                 and supplied_timeout_count >= 0
                 and supplied_timeout_count != 0
-            ):
-                consistency_errors += 1
+                for supplied_timeout_count in explicit_timeout_counts
+            )
             decision_count += 1
             invalid_sequence_count += 1
             if minimum_level is not None:
@@ -113,12 +112,15 @@ def compute_decision_execution_metrics(
         try:
             normalized_trace = normalize_decision_execution_trace(trace)
         except (KeyError, TypeError, ValueError):
-            supplied_timeout_count = trace.get("runtime_timeout_count")
-            if (
-                not runtime_timeout_count_explicit
-                or type(supplied_timeout_count) is not int
-                or supplied_timeout_count < 0
-            ):
+            valid_timeout_counts = [
+                supplied_timeout_count
+                for supplied_timeout_count in explicit_timeout_counts
+                if (
+                    type(supplied_timeout_count) is int
+                    and supplied_timeout_count >= 0
+                )
+            ]
+            if not valid_timeout_counts:
                 decision_count += 1
                 invalid_sequence_count += 1
                 if minimum_level is not None:
@@ -132,9 +134,9 @@ def compute_decision_execution_metrics(
                 "terminal_failure_code",
             }.issubset(trace):
                 normalized_trace["normalized_from_schema_version"] = "1"
-            consistency_errors += int(
-                supplied_timeout_count
-                != derived_timeout_count
+            consistency_errors += sum(
+                supplied_timeout_count != derived_timeout_count
+                for supplied_timeout_count in valid_timeout_counts
             )
             timeout_consistency_checked = True
 
@@ -209,13 +211,12 @@ def compute_decision_execution_metrics(
                 for key, value in expected_fields.items()
             )
         if runtime_timeout_count_explicit and not timeout_consistency_checked:
-            supplied_timeout_count = trace.get("runtime_timeout_count")
-            if (
+            consistency_errors += sum(
                 type(supplied_timeout_count) is int
                 and supplied_timeout_count >= 0
                 and supplied_timeout_count != derived_timeout_count
-            ):
-                consistency_errors += 1
+                for supplied_timeout_count in explicit_timeout_counts
+            )
 
         has_provider_fallback = any(
             attempt.route_kind is RouteKind.PROVIDER_FALLBACK
@@ -366,6 +367,38 @@ def _iter_action_traces(games: list[dict[str, Any]]):
 
 
 def _iter_action_trace_records(games: list[dict[str, Any]]):
+    records = list(_iter_raw_action_trace_records(games))
+    parent = list(range(len(records)))
+    request_owner: dict[str, int] = {}
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for index, record in enumerate(records):
+        for request_id in _trace_request_ids(record["trace"]):
+            previous = request_owner.get(request_id)
+            if previous is None:
+                request_owner[request_id] = index
+            else:
+                union(previous, index)
+
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for index, record in enumerate(records):
+        groups.setdefault(find(index), []).append(record)
+    for group in groups.values():
+        yield _merge_action_trace_records(group)
+
+
+def _iter_raw_action_trace_records(games: list[dict[str, Any]]):
     for game in games:
         for event in game.get("events", []):
             payload = event.get("payload") or {}
@@ -377,6 +410,11 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
                     "task": _trace_task(payload, trace, event.get("type")),
                     "explicit_task_type": _explicit_trace_task(payload, trace),
                     "game": game,
+                    "representation": (
+                        "individual"
+                        if event.get("type") == "action_trace_audit"
+                        else "direct"
+                    ),
                 }
             elif (
                 event.get("type") == "action_trace_audit"
@@ -389,6 +427,7 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
                     "task": _trace_task(payload, {}, event.get("type")),
                     "explicit_task_type": _explicit_trace_task(payload, {}),
                     "game": game,
+                    "representation": "individual",
                 }
             traces = payload.get("action_traces")
             if isinstance(traces, Mapping):
@@ -400,7 +439,87 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
                             "task": _trace_task(payload, item, event.get("type")),
                             "explicit_task_type": _explicit_trace_task(payload, item),
                             "game": game,
+                            "representation": "nested",
                         }
+
+
+def _trace_request_ids(trace: Mapping[str, Any]) -> frozenset[str]:
+    """仅从可完整翻译的 attempts 提取逻辑决策请求身份。"""
+    raw_attempts = trace.get("execution_attempts")
+    if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
+        return frozenset()
+    try:
+        if all(isinstance(item, AttemptExecutionRecord) for item in raw_attempts):
+            translated = translate_decision_outcome(tuple(raw_attempts))
+        elif all(isinstance(item, Mapping) for item in raw_attempts):
+            translated = translate_serialized_decision_outcome(raw_attempts)
+        else:
+            return frozenset()
+    except (KeyError, TypeError, ValueError):
+        return frozenset()
+    request_ids = {
+        _attempt_request_id(attempt)
+        for attempt in translated.attempts
+    }
+    if None in request_ids:
+        return frozenset()
+    return frozenset(request_ids)
+
+
+def _attempt_request_id(attempt: Any) -> str | None:
+    """统一强类型与 JSON attempt 的脱敏请求身份。"""
+    request_id = getattr(attempt, "opaque_request_id", None)
+    value = getattr(request_id, "value", request_id)
+    return value if isinstance(value, str) and value else None
+
+
+def _merge_action_trace_records(
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """为同一请求身份的多个投影选择完整 trace 并保留 timeout 校验。"""
+    selected = max(
+        records,
+        key=lambda record: (
+            len(record["trace"].get("execution_attempts") or ()),
+            record.get("representation") == "individual",
+        ),
+    )
+    explicit_timeout_counts: list[Any] = []
+    for record in records:
+        trace = record["trace"]
+        if "runtime_timeout_count" not in trace:
+            continue
+        supplied_timeout_count = trace["runtime_timeout_count"]
+        if not any(
+            type(existing) is type(supplied_timeout_count)
+            and existing == supplied_timeout_count
+            for existing in explicit_timeout_counts
+        ):
+            explicit_timeout_counts.append(supplied_timeout_count)
+    selected_trace = dict(selected["trace"])
+    if (
+        "runtime_timeout_count" not in selected_trace
+        and explicit_timeout_counts
+    ):
+        selected_trace["runtime_timeout_count"] = explicit_timeout_counts[0]
+    return {
+        **selected,
+        "trace": selected_trace,
+        "explicit_timeout_counts": tuple(explicit_timeout_counts),
+    }
+
+
+def _explicit_timeout_counts(
+    record: Mapping[str, Any],
+    trace: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    """返回组内全部显式 timeout 计数，避免副本覆盖校验信息。"""
+    counts = record.get("explicit_timeout_counts")
+    if isinstance(counts, tuple):
+        return counts
+    if "runtime_timeout_count" in trace:
+        return (trace["runtime_timeout_count"],)
+    return ()
 
 
 def _critical_explicit_task(payload: dict[str, Any]) -> bool:
