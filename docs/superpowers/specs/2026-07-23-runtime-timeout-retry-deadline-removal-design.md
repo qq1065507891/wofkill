@@ -92,6 +92,21 @@ HTTP timeout 是唯一超时边界。它必须由 provider 客户端真正中止
 
 重试次数不包含第一次调用；例如 primary 普通网络错误最多产生 5 条 provider attempt。
 
+预算按“单个 route candidate”计算。primary 是一个 candidate；fallback chain 中每个
+不同的 provider/model candidate 在切入时获得自己的预算，切换 candidate 时重新计数。
+同一 candidate 内不因错误类型从普通网络错误切换到 429（或反向切换）而重置计数。
+
+每个 candidate 同时维护三个计数：
+
+- `total_retry_count`：受 `config.retry_count` 约束；
+- `generic_retry_count`：primary 上限 4，fallback 上限 2；
+- `rate_limit_retry_count`：primary/fallback 上限均为 3。
+
+一次失败只有在“总预算尚未耗尽”且“当前错误类别预算尚未耗尽”时才能重试。这样混合
+错误序列也始终被 `config.retry_count` 限制。例如默认 `retry_count=4` 的 fallback
+可以经历 2 次普通错误和 2 次 429 重试，但不能超过 4 次总重试；连续普通错误仍最多
+2 次，连续 429 仍最多 3 次。
+
 ### 5.2 普通瞬时错误退避
 
 普通 retryable 网络错误使用确定性序列，无随机 jitter：
@@ -131,9 +146,21 @@ min(300s, max(parsed_retry_after, exponential_baseline))
 - 动作 schema 或游戏语义验证失败；
 - 可修复的输出质量问题。
 
-如果模型网关返回的证据链表明 primary 和 provider fallback 已因 transport failure
-耗尽，动作层立即进入安全 fallback，不再启动下一次完整模型生成。这样可以避免
-“网关重试次数 x 动作重试次数”的乘法放大。
+`GenerateResult` 新增强类型 `failure_disposition`，默认值为 `none`，终退时只能取：
+
+- `transport_exhausted`：至少一个真实 provider attempt 为 `timeout` 或
+  `provider_error`，且整条 route chain 没有成功；包括连接错误、5xx、429、不可重试
+  provider 4xx，以及 transport/output 混合失败；
+- `output_repairable`：所有真实 provider 失败 attempts 都是 `invalid_output`；
+- `policy_rejected`：决策性失败来自 reasoning/structured-output 策略拒绝；
+- `route_unavailable`：没有任何可调用的 provider candidate。
+
+该字段由 ModelRouter 在 route chain 终退边界根据完整 attempts 设置，动作层不得重新
+解析异常字符串。动作层仅对 `output_repairable` 继续输出/语义修复；
+`transport_exhausted`、`policy_rejected` 和 `route_unavailable` 都立即进入安全
+fallback，不再启动下一次完整模型生成。这样可以避免“网关重试次数 x 动作重试次数”
+的乘法放大。transport/output 混合失败按 `transport_exhausted` 处理，优先阻止网络
+故障后的再次调用。
 
 空响应继续归因为 `invalid_output`，而不是 timeout；它可以进入动作层语义修复，但
 不消耗网络重试预算。
@@ -154,8 +181,10 @@ AttemptExecutionRecord(
 )
 ```
 
-每次真实 provider 调用对应一条独立 attempt；retry、provider fallback 和最终安全
-fallback 不得伪造或合并 provider attempt。
+每次真实 provider 调用对应一条独立 attempt；retry 和 provider fallback 不得合并
+真实 provider attempt。现有 synthetic `RouteKind.SAFE_FALLBACK` 记录继续保留，
+因为 `DecisionOutcome.TERMINAL_FALLBACK` 依赖它表达决策边界；它不是 provider 调用，
+不得计入 Runtime timeout provider-attempt 指标。
 
 ### 6.2 ActionTrace 投影
 
@@ -165,15 +194,24 @@ fallback 不得伪造或合并 provider attempt。
 runtime_timeout_count: int = 0
 ```
 
-它是 `execution_attempts` 中 `root_cause == "timeout"` 的派生投影。新 trace 在构建
-时计算该字段；旧 trace 缺少字段时按 0 读取。字段随 moderator-only 的
-`action_trace_audit` 输出，不进入公开游戏状态。
+它是 `execution_attempts` 中真实 provider attempts（排除
+`RouteKind.SAFE_FALLBACK`）里 `root_cause == "timeout"` 的派生投影。
+
+- 新 trace 构建时必须从 attempts 计算，不允许调用者手工提供不同值。
+- 旧 trace 如果缺少该字段但带有 attempts，归一化时从 attempts 回填。
+- 旧 trace 同时缺少字段和 attempts 时才按 0 读取。
+- 只有输入中显式携带该字段时才执行“输入值必须等于 attempts 派生值”的严格一致性
+  校验；字段缺失触发的是回填，不是漂移错误。
+
+字段随 moderator-only 的 `action_trace_audit` 输出，不进入公开游戏状态。
 
 ### 6.3 报告聚合
 
-- `compute_decision_execution_metrics()` 从 attempt 证据重新计算
-  `runtime_timeout_count`，不信任传入的派生计数。
-- 报告一致性检查验证 ActionTrace 投影与 attempt 事实相等。
+- `compute_decision_execution_metrics()` 从真实 provider attempt 证据重新计算
+  `runtime_timeout_count`，排除 synthetic safe-fallback record，不信任传入的派生
+  计数。
+- 报告一致性检查只对原始输入显式携带 `runtime_timeout_count` 的 trace 验证投影与
+  attempt 事实相等；字段缺失的历史 trace 先归一化回填。
 - `scripts/run_real_game_reports.py` 输出 `Runtime timeouts: N`。
 - acceptance/report 指标使用结构化 attempts，不扫描 WARNING 日志文本。
 
@@ -198,6 +236,11 @@ runtime_timeout_count: int = 0
 
 - 继续提供 `RootCause.TIMEOUT` 权威枚举。
 - 不新增含义重复的 `runtime_timeout` root cause。
+
+### `werewolf_agent/model_gateway/usage_records.py`
+
+- 定义 `FailureDisposition` 强类型枚举，并在 `GenerateResult` 上提供默认 `none`。
+- 保持旧 provider 构造调用兼容；只有 ModelRouter 终退边界设置非 `none` 值。
 
 ### `werewolf_agent/agents/*`
 
@@ -230,6 +273,9 @@ provider call
   -> terminal safe fallback
   -> action layer does not call ModelRouter again
 ```
+
+终态仍追加一条 synthetic `RouteKind.SAFE_FALLBACK` 决策记录，但该记录不是 provider
+attempt，不能增加 `runtime_timeout_count`。
 
 ### HTTP 429
 
@@ -269,14 +315,20 @@ provider returns empty/invalid structured output
 ### Router 测试
 
 - primary、fallback、429 的真实调用次数和 attempt ordinal 正确；
+- fallback chain 每个 candidate 重置预算，同一 candidate 的混合错误不重置总预算；
+- 混合错误同时受总预算和分类预算限制；
 - timeout attempts 全部为 `RootCause.TIMEOUT`；
 - 429 attempts 为 `RootCause.PROVIDER_ERROR`；
 - 空响应不触发网络 backoff；
 - usage、retry_count 与 attempts 保持一致。
+- safe-fallback synthetic record 继续支撑 terminal decision outcome，但不计入 Runtime
+  timeout。
 
 ### Agent 测试
 
 - transport failure 耗尽后只调用一次模型网关动作流程；
+- `FailureDisposition` 的四种终退值均有动作层分支测试；
+- transport/output 混合失败得到 `transport_exhausted`，不会重新调用网关；
 - invalid output 仍能进入解析/语义修复；
 - `runtime_timeout_count` 与 attempts 精确一致；
 - terminal fallback 保留完整失败证据。
@@ -291,7 +343,8 @@ provider returns empty/invalid structured output
 
 ### 指标和报告测试
 
-- ActionTrace 新旧 schema 往返；
+- ActionTrace 新旧 schema 往返：缺字段但有 attempts 时回填，显式错误计数时拒绝或
+  计入一致性错误，缺字段且无 attempts 时为 0；
 - `action_trace_audit` 可见性保持 moderator-only；
 - decision execution metrics 聚合 attempt-level timeout；
 - 派生计数漂移会触发一致性错误；
@@ -307,11 +360,13 @@ provider returns empty/invalid structured output
 - `git diff --check`；
 - 全局检查活动代码不存在 `timed_call`、`runtime_timer`、`_deadlines` 或阶段
   `expired()` 残留。
+- 更新 README 中对 `runtime.timers` 的模块说明，避免文档指向已删除模块。
 
 ## 10. 兼容性与迁移
 
 - `RootCause.TIMEOUT` 不改名。
-- `ActionTrace.runtime_timeout_count` 默认 0，旧记录可以读取。
+- `ActionTrace.runtime_timeout_count` 对旧记录按 attempts 回填；只有同时缺少 attempts
+  时默认为 0。
 - `ModelConfig.retry_count` 保留，默认提升为 4；显式低值继续生效。
 - `AGENT_TIMEOUTS` 保留 deprecated 兼容导出；删除它属于未来独立破坏性变更。
 - 删除 `timers.py` 会移除其类和函数导入，这是用户明确批准的 Runtime deadline
@@ -345,5 +400,8 @@ provider returns empty/invalid structured output
 5. 网关 transport failure 耗尽后动作层不重新调用网关。
 6. 每个 HTTP timeout 都有 `RootCause.TIMEOUT` attempt 证据。
 7. ActionTrace、审计事件和最终报告的 `runtime_timeout_count` 可追溯且一致。
-8. 旧 trace 与 `AGENT_TIMEOUTS` 导入兼容。
-9. 相关测试和静态检查全部完成并有最终汇总；超时的测试运行不得报告为通过。
+8. fallback candidate 与混合错误序列的重试总数符合双预算合同。
+9. synthetic safe-fallback record 继续支持终态决策，但不污染 provider timeout 指标。
+10. 旧 trace 与 `AGENT_TIMEOUTS` 导入兼容。
+11. README 不再引用已删除的 `runtime.timers` 活动能力。
+12. 相关测试和静态检查全部完成并有最终汇总；超时的测试运行不得报告为通过。
