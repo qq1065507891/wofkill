@@ -228,6 +228,7 @@ class _CapturingClient:
         self.last_url: str | None = None
         self.last_payload: dict | None = None
         self.last_headers: dict | None = None
+        self.last_timeout: int | None = None
         self._response = response_data or {
             "choices": [{"message": {"content": "ok"}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
@@ -237,6 +238,7 @@ class _CapturingClient:
         self.last_url = url
         self.last_payload = json
         self.last_headers = kwargs["headers"]
+        self.last_timeout = kwargs["timeout"]
         return _FakeResponse(self._response)
 
 
@@ -250,6 +252,35 @@ class _FakeResponse:
 
     def json(self) -> dict:
         return self._data
+
+
+@pytest.mark.parametrize("provider_name", ["openai", "glm", "anthropic", "minimax"])
+def test_all_provider_http_calls_receive_300_second_default_timeout(provider_name: str) -> None:
+    """四类 provider 均须把统一的 ModelConfig 默认 timeout 传给 HTTP 客户端。"""
+    from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+    from werewolf_agent.model_gateway.providers.glm import GLMProvider
+    from werewolf_agent.model_gateway.providers.minimax import MiniMaxProvider
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.usage_records import ModelConfig
+
+    anthropic_compatible = provider_name in {"anthropic", "minimax"}
+    client = _CapturingClient(
+        {"content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 1, "output_tokens": 1}}
+        if anthropic_compatible else None,
+    )
+    provider_class = {
+        "openai": OpenAIProvider,
+        "glm": GLMProvider,
+        "anthropic": AnthropicProvider,
+        "minimax": MiniMaxProvider,
+    }[provider_name]
+    provider = provider_class(
+        api_key="k", base_url="https://api.example/v1", http_client=client,
+    )
+
+    provider.generate("hello", ModelConfig(provider=provider_name, model="model"))
+
+    assert client.last_timeout == 300
 
 
 class TestOpenAIProviderPerProfile:

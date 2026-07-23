@@ -3,7 +3,7 @@
     功能描述：模型路由器网关 facade，负责配置解析、provider 路由、fallback 和用量追踪协调。
     作者：Mike
     创建日期：2025-01-15
-    修改日期：2026-07-16
+    修改日期：2026-07-23
     使用示例：内部模块，无对外接口
 """
 
@@ -41,11 +41,16 @@ from werewolf_agent.model_gateway.fallback_policy import (
 )
 from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver, bind_attempt
 from werewolf_agent.model_gateway.retry_policy import (
+    RetryBudget,
+    RetryKind,
     _failure_reason,
     _format_exception,
     _http_status_from_exception,
     _is_retryable_exception,
     _raw_error_from_exception,
+    _retry_after_from_exception,
+    retry_delay,
+    retry_kind_for_exception,
 )
 from werewolf_agent.model_gateway.reasoning_policy import (
     reasoning_capability_satisfies,
@@ -353,8 +358,12 @@ class ModelRouter:
                 reason=primary_skip_reason,
             )
 
-        max_retries = (getattr(config, "retry_count", 2) or 0) if provider else -1
-        for attempt in range(max_retries + 1):
+        primary_budget = RetryBudget(
+            RouteKind.PRIMARY,
+            int(getattr(config, "retry_count", 4) or 0),
+        )
+        attempt = 0
+        while provider is not None:
             primary_attempts += 1
             # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
             # On the first attempt only — retries already have backoff.
@@ -417,8 +426,6 @@ class ModelRouter:
                         config.provider,
                         config.model,
                     )
-                    if attempt < max_retries:
-                        continue
                     break
                 attempts.append(_attempt_record(
                     opaque_request_id, len(attempts) + 1, config, result,
@@ -468,15 +475,30 @@ class ModelRouter:
                     if generation_attempt_context:
                         generation_attempt_context.accept(tuple(attempts))
                     raise
-                if attempt < max_retries and _is_retryable_exception(exc):
-                    delay = _retry_delay_for_exception(exc, attempt)
+                retry_kind = retry_kind_for_exception(exc)
+                retry_index = (
+                    primary_budget.generic_retry_count
+                    if retry_kind is RetryKind.GENERIC
+                    else primary_budget.rate_limit_retry_count
+                )
+                if retry_kind is not None and primary_budget.try_consume(retry_kind):
+                    delay = retry_delay(
+                        retry_kind,
+                        RouteKind.PRIMARY,
+                        retry_index,
+                        retry_after=_retry_after_from_exception(exc),
+                    )
                     logger.warning(
-                        "Retryable error for agent=%s task=%s provider=%s (attempt %d/%d, retry in %.1fs): %s",
+                        "Retryable error route=%s agent=%s task=%s provider=%s "
+                        "(attempt %d/%d, category=%s, retry in %.1fs): %s",
+                        RouteKind.PRIMARY.value,
                         agent_id, task_type, config.provider,
-                        attempt + 1, max_retries + 1, delay,
+                        attempt + 1, primary_budget.max_retries_for(retry_kind) + 1,
+                        retry_kind.value, delay,
                         _format_exception(exc),
                     )
                     time.sleep(delay)
+                    attempt += 1
                     continue
                 logger.warning(
                     "Model generation failed for agent=%s task=%s provider=%s model=%s: %s",
@@ -631,8 +653,12 @@ class ModelRouter:
                 allow_text_tool_fallback=config.allow_text_tool_fallback,
             )
             config = replace(config, structured_output_mode=mode.value)
-            retries = getattr(config, "retry_count", 1) or 0
-            for retry_index in range(retries + 1):
+            retry_budget = RetryBudget(
+                RouteKind.PROVIDER_FALLBACK,
+                int(getattr(config, "retry_count", 4) or 0),
+            )
+            retry_index = 0
+            while True:
                 route_kind = (
                     RouteKind.PROVIDER_FALLBACK
                     if retry_index == 0 else RouteKind.RETRY
@@ -677,17 +703,6 @@ class ModelRouter:
                             route_kind, AttemptOutcome.FAILURE,
                             RootCause.INVALID_OUTPUT,
                         ))
-                        if retry_index < retries:
-                            delay = _retry_delay_for_exception(empty_error, retry_index)
-                            logger.warning(
-                                "Retryable fallback error for agent=%s task=%s "
-                                "provider=%s model=%s (attempt %d/%d, retry in %.1fs): %s",
-                                agent_id, task_type, config.provider, config.model,
-                                retry_index + 1, retries + 1, delay,
-                                _format_exception(empty_error),
-                            )
-                            time.sleep(delay)
-                            continue
                         break
                     attempts.append(_attempt_record(
                         request_id, len(attempts) + 1, config, result,
@@ -727,16 +742,30 @@ class ModelRouter:
                         route_kind, AttemptOutcome.FAILURE,
                         _root_cause(exc),
                     ))
-                    if retry_index < retries and _is_retryable_exception(exc):
-                        delay = _retry_delay_for_exception(exc, retry_index)
+                    retry_kind = retry_kind_for_exception(exc)
+                    category_retry_index = (
+                        retry_budget.generic_retry_count
+                        if retry_kind is RetryKind.GENERIC
+                        else retry_budget.rate_limit_retry_count
+                    )
+                    if retry_kind is not None and retry_budget.try_consume(retry_kind):
+                        delay = retry_delay(
+                            retry_kind,
+                            RouteKind.PROVIDER_FALLBACK,
+                            category_retry_index,
+                            retry_after=_retry_after_from_exception(exc),
+                        )
                         logger.warning(
-                            "Retryable fallback error for agent=%s task=%s "
-                            "provider=%s model=%s (attempt %d/%d, retry in %.1fs): %s",
+                            "Retryable fallback error route=%s agent=%s task=%s "
+                            "provider=%s model=%s (attempt %d/%d, category=%s, retry in %.1fs): %s",
+                            RouteKind.PROVIDER_FALLBACK.value,
                             agent_id, task_type, config.provider, config.model,
-                            retry_index + 1, retries + 1, delay,
+                            retry_index + 1, retry_budget.max_retries_for(retry_kind) + 1,
+                            retry_kind.value, delay,
                             _format_exception(exc),
                         )
                         time.sleep(delay)
+                        retry_index += 1
                         continue
                     break
             current_route = config

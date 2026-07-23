@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-19
+修改日期: 2026-07-23
 
 使用示例:
     >>> _resolve_config(model_profiles={}, llm_profiles={}, player_assignments={}, agent_id="p01", task_type="speech")[0].provider
@@ -59,9 +59,9 @@ def _resolve_config(
         temperature=model_profile.get("temperature", 0.5),
         max_tokens=model_profile.get("max_tokens"),
         top_p=model_profile.get("top_p", 0.9),
-        timeout=model_profile.get("timeout", 30),
+        timeout=model_profile.get("timeout", 300),
         allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
-        retry_count=int(model_profile.get("retry_count", 2)),
+        retry_count=int(model_profile.get("retry_count", 4)),
         structured_output_mode=structured_policy.primary_mode.value,
         structured_output_fallback_modes=tuple(
             mode.value for mode in structured_policy.fallback_modes
@@ -196,9 +196,9 @@ def _fallback_config(
         temperature=model_profile.get("temperature", 0.3),
         max_tokens=model_profile.get("max_tokens"),
         top_p=model_profile.get("top_p", 0.9),
-        timeout=model_profile.get("timeout", 10),
+        timeout=model_profile.get("timeout", 300),
         allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
-        retry_count=int(model_profile.get("retry_count", 1)),
+        retry_count=int(model_profile.get("retry_count", 4)),
         structured_output_mode=structured_policy.primary_mode.value,
         structured_output_fallback_modes=tuple(
             mode.value for mode in structured_policy.fallback_modes

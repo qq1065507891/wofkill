@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-21
+修改日期: 2026-07-23
 
 使用示例:
     >>> from werewolf_agent.model_gateway.usage_records import ModelConfig
@@ -44,9 +44,9 @@ class ModelConfig:
     temperature: float = 0.5
     max_tokens: int | None = None
     top_p: float = 0.9
-    timeout: int = 30
+    timeout: int = 300
     allow_text_tool_fallback: bool = False
-    retry_count: int = 2
+    retry_count: int = 4
     structured_output_mode: str = "auto"
     structured_output_fallback_modes: tuple[str, ...] = ()
     reasoning_level: str = "none"

@@ -151,6 +151,16 @@ def test_fallback_generic_budget_has_two_retries() -> None:
     assert budget.generic_retry_count == 2
 
 
+def test_retry_budget_exposes_effective_category_maximum_for_router_logs() -> None:
+    primary = RetryBudget(RouteKind.PRIMARY, config_retry_count=9)
+    fallback = RetryBudget(RouteKind.PROVIDER_FALLBACK, config_retry_count=9)
+
+    assert primary.max_retries_for(RetryKind.GENERIC) == 4
+    assert fallback.max_retries_for(RetryKind.GENERIC) == 2
+    assert primary.max_retries_for(RetryKind.RATE_LIMIT) == 3
+    assert fallback.max_retries_for(RetryKind.RATE_LIMIT) == 3
+
+
 @pytest.mark.parametrize("route_kind", [RouteKind.PRIMARY, RouteKind.PROVIDER_FALLBACK])
 def test_each_route_kind_has_three_rate_limit_retries(route_kind: RouteKind) -> None:
     budget = RetryBudget(route_kind, config_retry_count=4)

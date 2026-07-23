@@ -41,14 +41,20 @@ class RetryBudget:
     generic_retry_count: int = 0
     rate_limit_retry_count: int = 0
 
+    def max_retries_for(self, retry_kind: RetryKind) -> int:
+        """返回当前候选在该类别下可执行的有效重试上限。"""
+        category_limit = (
+            4 if self.route_kind is RouteKind.PRIMARY else 2
+        ) if retry_kind is RetryKind.GENERIC else 3
+        return min(max(self.config_retry_count, 0), category_limit)
+
     def can_retry(self, retry_kind: RetryKind) -> bool:
         """判断当前候选是否还有该类别的重试额度。"""
         if self.config_retry_count <= 0 or self.total_retry_count >= self.config_retry_count:
             return False
         if retry_kind is RetryKind.GENERIC:
-            generic_limit = 4 if self.route_kind is RouteKind.PRIMARY else 2
-            return self.generic_retry_count < generic_limit
-        return self.rate_limit_retry_count < 3
+            return self.generic_retry_count < self.max_retries_for(retry_kind)
+        return self.rate_limit_retry_count < self.max_retries_for(retry_kind)
 
     def try_consume(self, retry_kind: RetryKind) -> bool:
         """预留一次重试额度，并在成功时更新三个计数。"""

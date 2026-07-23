@@ -227,13 +227,24 @@ def test_primary_deepseek_v4_pro_model_profile_is_exact(yaml_config: dict) -> No
     assert profile["model"] == "DeepSeek-V4-Pro"
     assert profile["temperature"] == 0.5
     assert profile["top_p"] == 0.9
-    assert profile["timeout"] == 120
+    assert profile["timeout"] == 300
     assert profile["reasoning"] == {"level": "high"}
     assert profile["allow_text_tool_fallback"] is True
     assert profile["structured_output"] == {
         "mode": "text_json",
         "fallback_modes": [],
     }
+
+
+def test_all_explicit_model_profile_timeouts_are_300(yaml_config: dict) -> None:
+    """生产模型 profile 的显式 HTTP timeout 统一为五分钟。"""
+    timeouts = [
+        profile["timeout"]
+        for profile in yaml_config["model_profiles"].values()
+        if "timeout" in profile
+    ]
+    assert timeouts
+    assert set(timeouts) == {300}
 
 
 def test_ark_deepseek_v4_pro_secondary_model_profile_exists(yaml_config: dict) -> None:

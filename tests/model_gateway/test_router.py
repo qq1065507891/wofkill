@@ -108,6 +108,15 @@ class _SequenceProvider:
         )
 
 
+class _HttpError(RuntimeError):
+    """为路由重试测试提供带状态码与 Retry-After 的本地异常。"""
+
+    def __init__(self, status_code: int, retry_after: str | None = None) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+        self.headers = ({"Retry-After": retry_after} if retry_after else {})
+
+
 def _make_router(*, providers: dict | None = None):
     from werewolf_agent.model_gateway.router import ModelRouter
     profiles = providers or {}
@@ -227,6 +236,31 @@ class TestResolveConfig:
 
         assert fallback_config is not None
         assert fallback_config.max_tokens is None
+
+    def test_unspecified_route_timeout_and_retry_defaults_are_long_lived(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelConfig, ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p"},
+                "fallback": {"provider": "fallback", "model": "f"},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            validate_reasoning=False,
+        )
+
+        primary, _ = router.resolve_config("p01", "speech")
+        fallback = router._resolve_fallback_model("profile")
+
+        assert (ModelConfig(provider="mock", model="mock").timeout,
+                ModelConfig(provider="mock", model="mock").retry_count) == (300, 4)
+        assert (primary.timeout, primary.retry_count) == (300, 4)
+        assert fallback is not None
+        assert (fallback.timeout, fallback.retry_count) == (300, 4)
 
     def test_resolves_reasoning_request_without_claiming_provider_support(self) -> None:
         router = _make_router()
@@ -429,7 +463,7 @@ class TestGenerateWithMockProvider:
         ]
         assert result.attempts[-1].normalized_reasoning_status.value == "not_requested"
 
-    def test_empty_response_retries_before_fallback(self) -> None:
+    def test_empty_response_ends_primary_candidate_without_network_retry(self, monkeypatch) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
 
         empty = _EmptyTextProvider("primary")
@@ -439,9 +473,167 @@ class TestGenerateWithMockProvider:
             player_assignments={"p01": "profile"}, providers={"primary": empty},
             validate_reasoning=False,
         )
+        sleeps: list[float] = []
+        from werewolf_agent.model_gateway import router as router_module
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+
         result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
-        assert empty.calls == 2
-        assert [attempt.route_kind.value for attempt in result.attempts[:2]] == ["primary", "retry"]
+
+        assert empty.calls == 1
+        assert sleeps == []
+        assert result.attempts[0].root_cause.value == "invalid_output"
+        assert [attempt.route_kind.value for attempt in result.attempts[:2]] == ["primary", "safe_fallback"]
+
+    def test_primary_rate_limit_uses_candidate_budget_and_exact_delays(self, monkeypatch) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([_HttpError(429)] * 4, "primary")
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={"p": {
+                "provider": "primary", "model": "p", "retry_count": 9,
+                "reasoning": {"level": "high"},
+            }},
+            llm_profiles={"profile": {"default": {
+                "provider": "primary", "model_profile": "p",
+            }}},
+            player_assignments={"p01": "profile"}, providers={"primary": primary},
+            validate_reasoning=False,
+        )
+
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        assert primary.calls == 4
+        assert sleeps == [16.0, 32.0, 64.0]
+        assert [item.ordinal for item in result.attempts] == list(range(1, 6))
+        assert [item.root_cause.value for item in result.attempts[:4]] == [
+            "provider_error",
+        ] * 4
+        assert result.usage is not None
+        assert result.usage.retry_count == 3
+
+    def test_primary_generic_retry_cap_records_five_network_attempts(self, monkeypatch) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([_HttpError(503)] * 5, "primary")
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={"p": {"provider": "primary", "model": "p", "retry_count": 9,
+                                  "reasoning": {"level": "high"}}},
+            llm_profiles={"profile": {"default": {"provider": "primary", "model_profile": "p"}}},
+            player_assignments={"p01": "profile"}, providers={"primary": primary},
+            validate_reasoning=False,
+        )
+
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        assert primary.calls == 5
+        assert sleeps == [2.0, 4.0, 8.0, 16.0]
+        assert [item.ordinal for item in result.attempts] == list(range(1, 7))
+        assert [item.root_cause.value for item in result.attempts[:5]] == ["provider_error"] * 5
+
+    def test_zero_retry_count_makes_one_call_without_sleep(self, monkeypatch) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([_HttpError(503)], "primary")
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={"p": {"provider": "primary", "model": "p", "retry_count": 0,
+                                  "reasoning": {"level": "high"}}},
+            llm_profiles={"profile": {"default": {"provider": "primary", "model_profile": "p"}}},
+            player_assignments={"p01": "profile"}, providers={"primary": primary},
+            validate_reasoning=False,
+        )
+
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        assert primary.calls == 1
+        assert sleeps == []
+        assert [item.ordinal for item in result.attempts] == [1, 2]
+        assert result.attempts[0].root_cause.value == "provider_error"
+
+    def test_fallback_rate_limit_budget_is_independent_and_capped_at_three(self, monkeypatch) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        fallback = _SequenceProvider([_HttpError(429)] * 4, "fallback")
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "missing", "model": "p", "reasoning": {"level": "high"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 9,
+                             "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "missing", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"}, providers={"fallback": fallback},
+            validate_reasoning=False,
+        )
+
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        assert fallback.calls == 4
+        assert sleeps == [16.0, 32.0, 64.0]
+        assert [item.ordinal for item in result.attempts] == list(range(1, 7))
+        assert [item.root_cause.value for item in result.attempts[1:5]] == ["provider_error"] * 4
+
+    def test_fallback_budgets_reset_per_candidate_and_mixed_errors_share_total(self, monkeypatch) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([_HttpError(503), _HttpError(429), "ok"], "primary")
+        first = _SequenceProvider([_HttpError(503)] * 3, "first")
+        second = _SequenceProvider([_HttpError(503), _HttpError(503), "ok"], "second")
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p", "retry_count": 2,
+                            "reasoning": {"level": "high"}},
+                "first": {"provider": "first", "model": "f1", "retry_count": 4,
+                          "reasoning": {"level": "high"}},
+                "second": {"provider": "second", "model": "f2", "retry_count": 4,
+                           "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": [
+                    {"provider": "first", "model_profile": "first"},
+                    {"provider": "second", "model_profile": "second"},
+                ],
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "first": first, "second": second},
+            validate_reasoning=False,
+        )
+
+        primary_result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+        assert primary_result.text == "ok"
+        assert primary.calls == 3
+        assert sleeps == [2.0, 16.0]
+        assert primary_result.usage is not None
+        assert primary_result.usage.retry_count == 2
+
+        primary._responses = [_HttpError(503)]
+        sleeps.clear()
+        fallback_result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        assert first.calls == 3
+        assert second.calls == 3
+        assert fallback_result.text == "ok"
+        assert sleeps == [2.0, 2.0, 4.0, 2.0, 4.0]
+        assert [item.ordinal for item in fallback_result.attempts] == list(
+            range(1, len(fallback_result.attempts) + 1)
+        )
 
     def test_success_without_provider_usage_still_records_attempt_denominator(self) -> None:
         class NoUsageProvider(_StaticTextProvider):
@@ -689,22 +881,14 @@ class TestGenerateWithMockProvider:
         ]
         assert result.text == "ok"
 
-    @pytest.mark.parametrize(
-        ("responses", "expected_root"),
-        [
-            (["", "ok"], "invalid_output"),
-            ([RuntimeError("HTTP 503 service unavailable"), "ok"], "provider_error"),
-        ],
-    )
     def test_fallback_retry_uses_backoff_and_candidate_warning(
-        self, responses, expected_root, monkeypatch, caplog,
+        self, monkeypatch, caplog,
     ) -> None:
         from werewolf_agent.model_gateway import router as router_module
         from werewolf_agent.model_gateway.router import ModelRouter
 
-        provider = _SequenceProvider(responses, "fallback")
+        provider = _SequenceProvider([RuntimeError("HTTP 503 service unavailable"), "ok"], "fallback")
         sleeps: list[float] = []
-        monkeypatch.setattr(router_module, "_retry_delay_for_exception", lambda exc, attempt: 1.75)
         monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
         router = ModelRouter(
             model_profiles={
@@ -725,9 +909,9 @@ class TestGenerateWithMockProvider:
 
         assert result.text == "ok"
         assert provider.calls == 2
-        assert sleeps == [1.75]
+        assert sleeps == [2.0]
         assert result.attempts[0].root_cause.value == "provider_error"
-        assert result.attempts[1].root_cause.value == expected_root
+        assert result.attempts[1].root_cause.value == "provider_error"
         assert [item.ordinal for item in result.attempts] == [1, 2, 3]
         assert [item.route_kind.value for item in result.attempts] == [
             "primary",
@@ -738,7 +922,9 @@ class TestGenerateWithMockProvider:
         assert "provider=fallback" in warning
         assert "model=f" in warning
         assert "attempt 1/2" in warning
-        assert "retry in 1.8s" in warning
+        assert "route=provider_fallback" in warning
+        assert "category=generic" in warning
+        assert "retry in 2.0s" in warning
 
     def test_fallback_retry_records_one_transition_then_retry(
         self, monkeypatch,
