@@ -1025,11 +1025,11 @@ class TestRetryHelpers:
         from werewolf_agent.model_gateway.router import _is_retryable_exception
         assert not _is_retryable_exception(ValueError("bad"))
 
-    def test_retry_delay_increases_with_attempt(self) -> None:
+    def test_retry_delay_is_deterministic_and_increases_with_attempt(self) -> None:
         from werewolf_agent.model_gateway.router import _retry_delay_for_exception
         d1 = _retry_delay_for_exception(RuntimeError("test"), 0)
         d2 = _retry_delay_for_exception(RuntimeError("test"), 2)
-        assert d2 > d1
+        assert (d1, d2) == (2.0, 8.0)
 
 
 class TestFromYamlValidation:

@@ -80,12 +80,10 @@ def test_retry_helpers_are_reexported_from_router_facade() -> None:
     assert router._is_retryable_exception is retry_policy._is_retryable_exception
 
 
-def test_retry_delay_facade_uses_router_random_for_compatibility(monkeypatch) -> None:
-    monkeypatch.setattr(router.random, "uniform", lambda low, high: high)
-
+def test_retry_delay_facade_is_deterministic_for_compatibility() -> None:
     delay = router._retry_delay_for_exception(RuntimeError("test"), 2)
 
-    assert delay == 5.0
+    assert delay == 8.0
 
 
 def test_config_helpers_are_reexported_from_router_facade() -> None:
