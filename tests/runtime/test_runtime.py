@@ -92,7 +92,6 @@ from tests.runtime.test_wolf_flow import (
     test_wolf_consensus_explicit_no_kill_records_declared_event,
     test_wolf_consensus_kill_records_selected_target,
     test_wolf_consensus_does_not_execute_legacy_plan_evidence,
-    test_wolf_discussion_timer_expiration_forces_no_kill_timeout,
     test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan,
     test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan,
     test_wolf_discussion_drops_stale_targets_without_current_discussion_evidence,
@@ -172,7 +171,6 @@ from tests.runtime.test_graph_lifecycle import (
     test_reflection_node_does_not_report_success_without_valid_v2_entries,
     test_single_wolf_vote_runs_agent_in_calling_thread,
     test_dispatch_agent_runs_adapter_in_calling_thread_without_threading,
-    test_manual_timer_expiration_is_deterministic,
     test_action_trace_audit_flags_timeline_confusion,
     test_check_victory_good_wins,
     test_check_victory_no_winner_yet,
@@ -191,9 +189,7 @@ from tests.runtime.test_graph_lifecycle import (
 
 # test_day_discussion.py
 from tests.runtime.test_day_discussion import (
-    test_free_discussion_speech_timeout_records_event,
-    test_free_discussion_speech_timeout_advances_speech_queue,
-    test_free_discussion_timer_expiration_records_timeout,
+    test_free_discussion_eligible_speaker_calls_agent_and_advances,
     test_free_discussion_normal_speech_advances_speech_queue,
     test_free_discussion_keeps_action_trace_out_of_public_speech,
     test_day_speech_passes_wolf_team_plan_to_werewolf_agent,

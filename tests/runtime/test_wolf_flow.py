@@ -390,33 +390,6 @@ def test_wolf_consensus_kill_records_selected_target() -> None:
     assert event.type == "wolf_kill_selected"
     assert event.payload["target_id"] == target_id
 
-def test_wolf_consensus_legacy_deadline_state_does_not_skip_kill() -> None:
-    players = {
-        "w1": PlayerState(id="w1", role="werewolf", alive=True),
-        "v1": PlayerState(id="v1", role="villager", alive=True),
-    }
-    gs = GameState(game_id="wolf_legacy_deadline", players=players, night_number=1)
-
-    class LegacyDeadline:
-        def expired(self, key: str) -> bool:
-            return key == "wolf_discussion"
-
-    legacy_timer_key = "runtime" + "_timer"
-
-    result = wolf_consensus({
-        "game_state": gs,
-        "engine": _new_engine(),
-        "wolf_action": "kill",
-        "wolf_kill_target_id": "v1",
-        legacy_timer_key: LegacyDeadline(),
-    })
-
-    assert result["wolf_kill_target_id"] == "v1"
-    event = _last_non_broadcast_event(result["game_state"])
-    assert event.type == "wolf_kill_selected"
-    assert event.payload["target_id"] == "v1"
-
-
 def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monkeypatch) -> None:
     from werewolf_agent.runtime.nodes import night as night_mod
 

@@ -27,7 +27,7 @@ from werewolf_agent.runtime.graph import (
 # Free discussion (day speech)
 # ---------------------------------------------------------------------------
 
-def test_free_discussion_legacy_deadline_state_does_not_skip_agent(monkeypatch) -> None:
+def test_free_discussion_eligible_speaker_calls_agent_and_advances(monkeypatch) -> None:
     from werewolf_agent.runtime.nodes import day as day_mod
 
     gs = GameState(
@@ -49,8 +49,6 @@ def test_free_discussion_legacy_deadline_state_does_not_skip_agent(monkeypatch) 
         return {"speech_text": "normal speech"}
 
     monkeypatch.setattr(day_mod, "_dispatch_agent", fake_dispatch_agent)
-    legacy_timeout_key = "speech" + "_timed_out"
-
     result = day_mod.free_discussion({
         "game_state": gs,
         "engine": _new_engine(),
@@ -58,7 +56,6 @@ def test_free_discussion_legacy_deadline_state_does_not_skip_agent(monkeypatch) 
         "speech_order": ["p03", "p04"],
         "speech_index": 0,
         "current_speaker_id": "p03",
-        legacy_timeout_key: True,
     })
 
     assert calls == ["p03"]

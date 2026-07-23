@@ -387,13 +387,13 @@ def test_v1_checkpoint_no_kill_forms_trigger_third_night_recovery() -> None:
     ]
 
 
-def test_v1_timer_and_invalid_plan_forms_have_stable_reason_mapping() -> None:
+def test_v1_invalid_plan_forms_have_stable_reason_mapping() -> None:
     from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
 
     gs = _game_state(events=[
         GameEvent(
-            type="timer_expired",
-            payload={"night_number": 1, "timer_key": "wolf_discussion"},
+            type="wolf_plan_invalid_no_kill",
+            payload={"night_number": 1, "reason": "old plan text"},
         ),
         GameEvent(
             type="wolf_plan_invalid_no_kill",
@@ -405,7 +405,7 @@ def test_v1_timer_and_invalid_plan_forms_have_stable_reason_mapping() -> None:
 
     recovery = result["game_state"].events[-2]
     assert recovery.payload["original_reasons"] == [
-        "provider_unavailable",
+        "plan_generation_failed",
         "plan_generation_failed",
         "invalid_backup",
     ]

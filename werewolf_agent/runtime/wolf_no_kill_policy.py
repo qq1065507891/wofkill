@@ -389,11 +389,6 @@ def _normalize_legacy_wolf_choice(
         ):
             return None
         reason = "plan_generation_failed"
-    elif event.type == "timer_expired":
-        timer_key = event.payload.get("timer_key", event.payload.get("phase"))
-        if timer_key not in {"wolf_discussion", "wolf_consensus", "wolf_team_plan"}:
-            return None
-        reason = "provider_unavailable"
     else:
         return None
 
