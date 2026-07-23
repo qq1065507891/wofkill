@@ -316,7 +316,11 @@ def _root_cause(item: DecisionAttempt | Mapping[str, Any]) -> RootCause:
 
 
 def _provider_attempted(item: DecisionAttempt | Mapping[str, Any]) -> bool:
-    value = item.get("provider_attempted", True) if isinstance(item, Mapping) else item.provider_attempted
+    value = (
+        item.get("provider_attempted", True)
+        if isinstance(item, Mapping)
+        else getattr(item, "provider_attempted", True)
+    )
     return value is True
 
 

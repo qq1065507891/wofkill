@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -135,6 +136,22 @@ def test_runtime_timeout_count_uses_provider_attempts_only_for_records_and_mappi
 
     assert summarize_attempt_counts(attempts).runtime_timeout_count == 2
     assert summarize_attempt_counts(serialized).runtime_timeout_count == 2
+
+
+def test_runtime_timeout_count_defaults_legacy_objects_and_excludes_skipped_provider() -> None:
+    legacy_timeout = SimpleNamespace(
+        route_kind=RouteKind.PRIMARY,
+        root_cause=RootCause.TIMEOUT,
+    )
+    skipped_timeout = SimpleNamespace(
+        route_kind=RouteKind.RETRY,
+        root_cause=RootCause.TIMEOUT,
+        provider_attempted=False,
+    )
+
+    assert summarize_attempt_counts(
+        [legacy_timeout, skipped_timeout]
+    ).runtime_timeout_count == 1
 
 
 def test_timeout_count_normalizes_legacy_traces_without_field_presence_drift() -> None:
