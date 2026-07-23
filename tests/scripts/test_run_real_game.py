@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -984,6 +985,47 @@ def test_report_helpers_are_split_from_run_real_game_facade() -> None:
     assert run_real_game.print_pace_report is run_real_game_reports.print_pace_report
     assert run_real_game.print_quality_audit is run_real_game_reports.print_quality_audit
     assert run_real_game.check_leakage is run_real_game_reports.check_leakage
+
+
+def test_usage_report_prints_structured_runtime_timeout_count(capsys) -> None:
+    from scripts.run_real_game_reports import print_usage_stats
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord, AttemptOutcome, EvidenceKind, OpaqueRequestId,
+        ReasoningLevel, ReasoningStatus, RootCause, RouteKind,
+    )
+    from werewolf_agent.model_gateway.usage_records import UsageRecord
+
+    timeout = AttemptExecutionRecord(
+        opaque_request_id=OpaqueRequestId.new("game", "abcdef12"), ordinal=1,
+        provider="openai", model="reasoner", route_kind=RouteKind.PRIMARY,
+        root_cause=RootCause.TIMEOUT, attempt_outcome=AttemptOutcome.FAILURE,
+        requested_reasoning_level=ReasoningLevel.HIGH,
+        normalized_reasoning_status=ReasoningStatus.CONFIRMED,
+        reasoning_token_count=1, evidence_kind=EvidenceKind.TOKEN_COUNT,
+    )
+    success = replace(
+        timeout, ordinal=2, route_kind=RouteKind.RETRY,
+        root_cause=RootCause.NONE, attempt_outcome=AttemptOutcome.SUCCESS,
+    )
+    usage = UsageRecord(
+        agent_id="p01", task_type="vote", provider="openai", model="reasoner",
+        attempts=(timeout, success),
+    )
+    runner = SimpleNamespace(
+        state=GameState(game_id="g-timeout", events=[GameEvent(
+            type="action_trace_audit", payload={"action_trace": {
+                "execution_attempts": (timeout, success),
+                "runtime_timeout_count": 999,
+            }},
+        )]),
+        _agent_registry=SimpleNamespace(_agents={"p01": SimpleNamespace(
+            model_router=SimpleNamespace(get_usage_log=lambda: [usage]),
+        )}),
+    )
+
+    print_usage_stats(runner)
+
+    assert "Runtime timeouts: 1" in capsys.readouterr().out.splitlines()
 
 
 def test_quality_audit_handles_vote_trace_without_parsed_action(capsys) -> None:

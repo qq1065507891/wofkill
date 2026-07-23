@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
+from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
 
 
 def reflection_verification_metrics(game_state: Any) -> dict[str, int]:
@@ -148,6 +149,10 @@ def print_usage_stats(runner: Any) -> None:
             "execution_attempts", ()
         )
     ]
+    print(
+        "Runtime timeouts: "
+        f"{summarize_attempt_counts(action_attempts).runtime_timeout_count}"
+    )
     reasoning = _reasoning_evidence_summary(
         usage_log,
         action_attempts=action_attempts,

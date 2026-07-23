@@ -25,6 +25,7 @@ from werewolf_agent.model_gateway.reasoning_policy import (
 from werewolf_agent.runtime.decision_outcomes import (
     DecisionOutcome,
     normalize_decision_execution_trace,
+    summarize_attempt_counts,
     translate_decision_outcome,
     translate_serialized_decision_outcome,
 )
@@ -39,6 +40,7 @@ def compute_decision_execution_metrics(
     attempt_count = 0
     retry_count = 0
     provider_fallback_count = 0
+    runtime_timeout_count = 0
     decision_count = 0
     invalid_sequence_count = 0
     consistency_errors = 0
@@ -61,6 +63,8 @@ def compute_decision_execution_metrics(
 
     for record in _iter_action_trace_records(games):
         trace = record["trace"]
+        runtime_timeout_count_explicit = "runtime_timeout_count" in trace
+        timeout_consistency_checked = False
         task_type = record.get("explicit_task_type")
         minimum_level: ReasoningLevel | None = None
         if task_type:
@@ -75,6 +79,14 @@ def compute_decision_execution_metrics(
             missing_task_type_count += 1
         raw_attempts = trace.get("execution_attempts")
         if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
+            supplied_timeout_count = trace.get("runtime_timeout_count")
+            if (
+                runtime_timeout_count_explicit
+                and type(supplied_timeout_count) is int
+                and supplied_timeout_count >= 0
+                and supplied_timeout_count != 0
+            ):
+                consistency_errors += 1
             decision_count += 1
             invalid_sequence_count += 1
             if minimum_level is not None:
@@ -82,7 +94,6 @@ def compute_decision_execution_metrics(
                 critical_request_count += 1
             continue
         try:
-            normalized_trace = normalize_decision_execution_trace(trace)
             if all(isinstance(item, AttemptExecutionRecord) for item in raw_attempts):
                 translated = translate_decision_outcome(tuple(raw_attempts))
             elif all(isinstance(item, Mapping) for item in raw_attempts):
@@ -95,6 +106,37 @@ def compute_decision_execution_metrics(
             if minimum_level is not None:
                 critical_request_count += 1
             continue
+
+        derived_timeout_count = summarize_attempt_counts(
+            translated.attempts
+        ).runtime_timeout_count
+        try:
+            normalized_trace = normalize_decision_execution_trace(trace)
+        except (KeyError, TypeError, ValueError):
+            supplied_timeout_count = trace.get("runtime_timeout_count")
+            if (
+                not runtime_timeout_count_explicit
+                or type(supplied_timeout_count) is not int
+                or supplied_timeout_count < 0
+            ):
+                decision_count += 1
+                invalid_sequence_count += 1
+                if minimum_level is not None:
+                    critical_request_count += 1
+                continue
+            normalized_trace = dict(trace)
+            if not {
+                "attempt_count",
+                "provider_fallback_count",
+                "generated_by",
+                "terminal_failure_code",
+            }.issubset(trace):
+                normalized_trace["normalized_from_schema_version"] = "1"
+            consistency_errors += int(
+                supplied_timeout_count
+                != derived_timeout_count
+            )
+            timeout_consistency_checked = True
 
         decision_count += 1
         if minimum_level is not None:
@@ -137,6 +179,7 @@ def compute_decision_execution_metrics(
         attempt_count += translated.attempt_count
         retry_count += translated.retry_count
         provider_fallback_count += translated.provider_fallback_count
+        runtime_timeout_count += derived_timeout_count
         for attempt in translated.attempts:
             root_causes[attempt.root_cause.value] += 1
             attempt_outcomes[attempt.attempt_outcome.value] += 1
@@ -165,6 +208,14 @@ def compute_decision_execution_metrics(
                 trace.get(key) != value
                 for key, value in expected_fields.items()
             )
+        if runtime_timeout_count_explicit and not timeout_consistency_checked:
+            supplied_timeout_count = trace.get("runtime_timeout_count")
+            if (
+                type(supplied_timeout_count) is int
+                and supplied_timeout_count >= 0
+                and supplied_timeout_count != derived_timeout_count
+            ):
+                consistency_errors += 1
 
         has_provider_fallback = any(
             attempt.route_kind is RouteKind.PROVIDER_FALLBACK
@@ -193,6 +244,7 @@ def compute_decision_execution_metrics(
         "attempt_count": attempt_count,
         "retry_count": retry_count,
         "provider_fallback_count": provider_fallback_count,
+        "runtime_timeout_count": runtime_timeout_count,
         "root_cause_counts": dict(sorted(root_causes.items())),
         "attempt_outcome_counts": dict(sorted(attempt_outcomes.items())),
         "decision_outcome_counts": dict(sorted(decision_outcomes.items())),

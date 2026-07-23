@@ -273,6 +273,134 @@ def test_execution_report_accepts_json_normalized_attempts() -> None:
     assert metrics["decision_outcome_counts"] == {"retry_success": 1}
     assert metrics["attempt_count"] == 2
     assert metrics["retry_count"] == 1
+    assert metrics["runtime_timeout_count"] == 1
+
+
+def test_execution_report_aggregates_only_real_provider_timeouts() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    timeout = _attempt(
+        1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT,
+    )
+    success = _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS)
+    traces = [
+        {"execution_attempts": (timeout, success)},
+        {"execution_attempts": (
+            _attempt(
+                1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+                cause=RootCause.PROVIDER_ERROR,
+            ),
+            _attempt(
+                2, RouteKind.PROVIDER_FALLBACK, AttemptOutcome.SUCCESS,
+                provider="backup",
+            ),
+        )},
+        {"execution_attempts": (
+            _attempt(
+                1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+                cause=RootCause.INVALID_OUTPUT,
+            ),
+            _attempt(2, RouteKind.REPAIR, AttemptOutcome.SUCCESS),
+        )},
+        {"execution_attempts": (
+            _attempt(
+                1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+                cause=RootCause.PROVIDER_ERROR,
+            ),
+            _attempt(
+                2, RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
+                cause=RootCause.TIMEOUT,
+            ),
+        )},
+        {"execution_attempts": (
+            replace(timeout, provider_attempted=False), success,
+        )},
+    ]
+
+    metrics = compute_decision_execution_metrics([
+        {"events": [{"type": "action_trace_audit", "payload": {
+            "action_trace": trace,
+        }} for trace in traces[:2]]},
+        {"events": [{"type": "action_trace_audit", "payload": {
+            "action_trace": trace,
+        }} for trace in traces[2:]]},
+    ])
+
+    assert metrics["runtime_timeout_count"] == 1
+
+
+def test_execution_report_backfills_legacy_timeout_count_and_records_explicit_drift() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    timeout = _attempt(
+        1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT,
+    )
+    success = _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS)
+    metrics = compute_decision_execution_metrics([{
+        "events": [
+            {"type": "action_trace_audit", "payload": {"action_trace": {
+                "execution_attempts": (timeout, success),
+            }}},
+            {"type": "action_trace_audit", "payload": {"action_trace": {
+                "runtime_timeout_count": 0,
+            }}},
+            {"type": "action_trace_audit", "payload": {"action_trace": {}}},
+            {"type": "action_trace_audit", "payload": {"action_trace": {
+                "runtime_timeout_count": 1,
+            }}},
+            {"type": "action_trace_audit", "payload": {"action_trace": {
+                "execution_attempts": (timeout, success),
+                "runtime_timeout_count": 0,
+            }}},
+        ],
+    }])
+
+    assert metrics["runtime_timeout_count"] == 2
+    assert metrics["attempt_retry_consistency_error_count"] == 2
+
+
+@pytest.mark.parametrize("provider_attempted", [0, 1, None, "true"])
+def test_execution_report_rejects_malformed_provider_attempted_timeout(
+    provider_attempted: object,
+) -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    metrics = compute_decision_execution_metrics([{
+        "events": [{"type": "action_trace_audit", "payload": {
+            "action_trace": {"execution_attempts": [
+                {
+                    "opaque_request_id": {"value": "game:abcdef12"},
+                    "ordinal": 1,
+                    "provider": "primary",
+                    "model": "model-a",
+                    "route_kind": "primary",
+                    "root_cause": "timeout",
+                    "attempt_outcome": "attempt_failure",
+                    "requested_reasoning_level": "high",
+                    "normalized_reasoning_status": "confirmed",
+                    "reasoning_token_count": 1,
+                    "evidence_kind": "token_count",
+                    "provider_attempted": provider_attempted,
+                },
+                {
+                    "opaque_request_id": {"value": "game:abcdef12"},
+                    "ordinal": 2,
+                    "provider": "primary",
+                    "model": "model-a",
+                    "route_kind": "retry",
+                    "root_cause": "none",
+                    "attempt_outcome": "attempt_success",
+                    "requested_reasoning_level": "high",
+                    "normalized_reasoning_status": "confirmed",
+                    "reasoning_token_count": 1,
+                    "evidence_kind": "token_count",
+                },
+            ]},
+        }}],
+    }])
+
+    assert metrics["runtime_timeout_count"] == 0
+    assert metrics["decision_execution_invalid_sequence_count"] == 1
 
 
 def test_retry_consistency_accepts_two_attempts_with_one_retry_and_no_errors() -> None:
