@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-16
-修改日期: 2026-07-20
+修改日期: 2026-07-23
 
 使用示例:
     >>> policy = NoKillPolicy(max_consecutive_pre_resolution_no_kill=2)
@@ -389,6 +389,12 @@ def _normalize_legacy_wolf_choice(
         ):
             return None
         reason = "plan_generation_failed"
+    elif event.type == "timer_expired":
+        # 仅在读取 V1 历史检查点时归一化；当前运行时不再产生该事件。
+        timer_key = event.payload.get("timer_key", event.payload.get("phase"))
+        if timer_key not in {"wolf_discussion", "wolf_consensus", "wolf_team_plan"}:
+            return None
+        reason = "provider_unavailable"
     else:
         return None
 

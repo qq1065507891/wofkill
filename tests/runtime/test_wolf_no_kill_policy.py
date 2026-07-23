@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-16
-修改日期: 2026-07-18
+修改日期: 2026-07-23
 
 使用示例:
     >>> python -m pytest tests/runtime/test_wolf_no_kill_policy.py -q
@@ -406,6 +406,31 @@ def test_v1_invalid_plan_forms_have_stable_reason_mapping() -> None:
     recovery = result["game_state"].events[-2]
     assert recovery.payload["original_reasons"] == [
         "plan_generation_failed",
+        "plan_generation_failed",
+        "invalid_backup",
+    ]
+
+
+def test_v1_timer_expired_is_input_only_no_kill_history() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    gs = _game_state(events=[
+        GameEvent(
+            type="timer_expired",
+            payload={"night_number": 1, "timer_key": "wolf_discussion"},
+        ),
+        GameEvent(
+            type="wolf_plan_invalid_no_kill",
+            payload={"night_number": 2, "reason": "old plan text"},
+        ),
+    ])
+
+    result = NoKillPolicy().resolve(gs, reason_code="invalid_backup")
+
+    assert result["wolf_kill_target_id"] is not None
+    recovery = result["game_state"].events[-2]
+    assert recovery.payload["original_reasons"] == [
+        "provider_unavailable",
         "plan_generation_failed",
         "invalid_backup",
     ]

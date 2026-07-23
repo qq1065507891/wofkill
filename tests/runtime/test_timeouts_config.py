@@ -16,8 +16,11 @@ _DEADLINE_STATE_TOKENS = frozenset({
     "runtime_timer",
     "speech_timed_out",
     "speech_seconds_limit",
-    "timer_expired",
-    "timer_key",
+})
+_ACTIVE_DEADLINE_SYMBOLS = frozenset({
+    "runtime_timer",
+    "_timer_expired",
+    "timed_call",
 })
 _DELETED_TIMER_IMPORTS = frozenset({"ManualTimer", "RealTimer", "NoopTimer"})
 
@@ -34,7 +37,7 @@ def _literal_string(node: ast.AST) -> str | None:
     return None
 
 
-def test_runtime_tests_do_not_hide_deadline_symbols_in_string_concatenation() -> None:
+def test_runtime_and_tests_do_not_reintroduce_active_deadline_symbols() -> None:
     root = Path(__file__).resolve().parents[2]
     scanned = [
         *sorted((root / "werewolf_agent" / "runtime").rglob("*.py")),
@@ -51,11 +54,11 @@ def test_runtime_tests_do_not_hide_deadline_symbols_in_string_concatenation() ->
         }
         assert not strings.intersection(_DEADLINE_STATE_TOKENS), path
         assert not any(
-            isinstance(node, ast.FunctionDef) and node.name == "expired"
+            isinstance(node, ast.Name) and node.id in _ACTIVE_DEADLINE_SYMBOLS
             for node in ast.walk(tree)
         ), path
         assert not any(
-            isinstance(node, ast.Attribute) and node.attr == "expired"
+            isinstance(node, ast.Attribute) and node.attr in _ACTIVE_DEADLINE_SYMBOLS
             for node in ast.walk(tree)
         ), path
         assert not any(
@@ -67,6 +70,43 @@ def test_runtime_tests_do_not_hide_deadline_symbols_in_string_concatenation() ->
             isinstance(node, ast.alias) and node.name in _DELETED_TIMER_IMPORTS
             for node in ast.walk(tree)
         ), path
+        assert not any(
+            isinstance(node, ast.ClassDef) and node.name in _DELETED_TIMER_IMPORTS
+            for node in ast.walk(tree)
+        ), path
+
+
+def test_authoritative_ruleset_and_docs_do_not_advertise_runtime_deadlines() -> None:
+    root = Path(__file__).resolve().parents[2]
+    ruleset_text = (
+        root / "config" / "rulesets" / "pre_witch_hunter_idiot_mixed.yaml"
+    ).read_text(encoding="utf-8")
+    design_text = (
+        root / "docs" / "design" / "werewolf-agent-v1-design.md"
+    ).read_text(encoding="utf-8")
+    guide_text = (
+        root / "狼人杀多智能体项目小白指南 v1.1.1.md"
+    ).read_text(encoding="utf-8")
+
+    forbidden_ruleset = (
+        "timeout_policy:",
+        "timers:",
+        "wolf_discussion_seconds:",
+        "day_speech_seconds:",
+        "per_player_time_limit_seconds:",
+        "timeout_event:",
+        "speech_timeout",
+    )
+    assert not any(token in ruleset_text for token in forbidden_ruleset)
+
+    assert "同步调用" in design_text
+    assert "provider HTTP timeout" in design_text
+    assert "`timer_expired`" in design_text
+    assert "仅用于读取历史 V1" in design_text
+    assert "wolf_discussion_seconds" not in design_text
+    assert "speech_timeout" not in design_text
+    assert "计时、检查点" not in guide_text
+
 
 def test_timeout_compatibility_facades_share_one_inert_object() -> None:
     from werewolf_agent.runtime import agent_action_pipeline, timeouts

@@ -163,9 +163,6 @@ roles:
       target_filter: alive_player
       can_self_kill: true
       can_no_kill: true
-      timeout_policy:
-        default_action: no_kill
-        event_type: wolf_no_kill_timeout
     day_action:
       self_destruct:
         enabled: true
@@ -175,9 +172,9 @@ roles:
         skip_exile_vote: true
         check_victory_before_night: true
     notes:
-      - 夜间共同睁眼限时讨论，并决定击杀一名玩家或主动空刀。
+      - 夜间共同睁眼讨论，并决定击杀一名玩家或主动空刀。
       - 可以自刀，可以主动空刀，也可以白天自爆。
-      - 狼队夜间讨论超时且未形成合法最终动作时，默认本夜空刀并记录 wolf_no_kill_timeout。
+      - 狼队未形成合法最终动作时，按统一空刀策略记录具体原因并安全结算。
       - 白天自爆后无遗言，跳过剩余发言和放逐投票，先检查胜负，未结束则进入夜晚。
 
   hybrid:
@@ -263,19 +260,6 @@ night_flow:
     seer_result_visible_to: seer_only
     witch_information_visible_to: witch_only
 
-timers:
-  wolf_discussion_seconds: 480
-  day_speech_seconds: 180
-  last_words_seconds: 180
-  sheriff_speech_seconds: 60
-  timeout_policy:
-    wolf_discussion:
-      default_action: no_kill
-      event_type: wolf_no_kill_timeout
-    day_speech:
-      default_action: end_turn
-      event_type: speech_timeout
-
 day_flow:
   # D1-flow-rewire (2026-06-08): V1 design is "天亮 → 警长竞选 → 死讯广播
   # → 遗言 → 自由讨论" for D1, and "死讯广播 → 遗言 → 自由讨论" for D2+.
@@ -315,8 +299,6 @@ day_flow:
     sheriff_chooses_order: true
     no_sheriff_order_policy: random_start_then_seat_order
     torn_badge_order_policy: random_start_then_seat_order
-    per_player_time_limit_seconds: 180
-    timeout_event: speech_timeout
   vote:
     allow_abstain: false
     first_tie_policy: pk_speech_then_revote

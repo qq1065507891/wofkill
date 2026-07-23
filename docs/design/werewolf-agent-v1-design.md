@@ -75,10 +75,10 @@ config/rulesets/pre_witch_hunter_idiot_mixed.yaml
 
 狼人：
 
-- 夜间共同睁眼，在限定时间内讨论并决定当晚行动：击杀一名玩家，或主动选择空刀。
+- 夜间共同睁眼，讨论并决定当晚行动：击杀一名玩家，或主动选择空刀。
 - 狼人可以自刀。
 - 狼人可以主动空刀。主动空刀是合法战术动作，可用于制造平安夜信息差并在白天抗推好人；系统必须记录为 `wolf_no_kill_declared`，不得把主动空刀视为异常或自动补刀。
-- 狼人夜间讨论有时间限制。若计时结束时狼队没有形成合法最终动作，法官默认本夜空刀，并记录为 `wolf_no_kill_timeout`。超时空刀与主动空刀在结算上都不会产生狼刀死亡，但事件原因必须区分，便于复盘和评测。
+- 狼队未形成合法最终动作时，统一空刀策略按结构化 `reason_code` 安全结算；这是模型输出或 provider 失败的回退，不是 Runtime deadline。
 - 狼人白天可以自爆；自爆后立即出局且无遗言，结束当前白天，跳过剩余发言和放逐投票，先检查胜负，若未结束则直接进入夜晚。
 - 若自爆狼人持有警徽，视为警长出局，按警徽规则选择移交警徽或撕掉警徽。
 - 白天通过伪装成好人、悍跳、倒钩、冲票、抗推等方式帮助狼人阵营获胜。
@@ -126,7 +126,7 @@ config/rulesets/pre_witch_hunter_idiot_mixed.yaml
 
 标准夜间流程：
 
-1. 狼人睁眼，限时讨论并提交当晚行动：击杀一名玩家或空刀；若超时未提交合法行动，默认空刀。
+1. 狼人睁眼，讨论并提交当晚行动：击杀一名玩家或空刀；若未提交合法行动，按统一空刀策略结算。
 2. 女巫睁眼，得知当晚刀口，选择是否使用解药或毒药。
 3. 预言家睁眼，查验一名玩家阵营属性。
 4. 首夜猎人、白痴睁眼，让法官确认身份和技能状态。
@@ -136,11 +136,11 @@ config/rulesets/pre_witch_hunter_idiot_mixed.yaml
 
 狼人夜间行动事件必须显式区分：
 
-- `wolf_kill_selected`：狼队在时限内选择合法刀口。
-- `wolf_no_kill_declared`：狼队在时限内主动选择空刀。
-- `wolf_no_kill_timeout`：狼队讨论超时或未形成合法最终动作，系统默认空刀。
+- `wolf_kill_selected`：狼队选择合法刀口。
+- `wolf_no_kill_declared`：狼队主动选择空刀。
+- `wolf_no_kill_timeout`：为了存量记录兼容而保留的空刀事件名；当前语义以 `reason_code` 为准，不表示 Runtime 计时器到期。
 
-只有 `wolf_kill_selected` 会为后续女巫节点提供当晚刀口；主动空刀和超时空刀均不会产生狼刀死亡，也不会给女巫提供可救刀口。
+只有 `wolf_kill_selected` 会为后续女巫节点提供当晚刀口；主动空刀和安全回退空刀均不会产生狼刀死亡，也不会给女巫提供可救刀口。旧检查点中的 `timer_expired` 仅用于读取历史 V1 事件并归一化既有空刀；当前运行时不产生该事件。
 
 ### 3.4 白天流程
 
@@ -174,8 +174,8 @@ V1 区分首日（D1）与后续日（D2+）流程。
 - 警长决定白天发言顺序。
 - 无警长时随机选择发言起点，再按座次方向执行。
 - V1 标准规则中，若警徽被撕掉导致本局无警长，后续所有白天发言均随机选择起点，再按座次方向执行。
-- 每名玩家的白天发言有时间限制。到时仍未完成发言时，系统自动结束该玩家发言并进入下一位，记录 `speech_timeout`；超时结束是流程控制事件，不改变投票权、身份状态或胜负规则。
-- 发言超时时不得伪造玩家发言内容；若需要在公开时间线展示，可显示为空发言或系统占位，但 Agent 复盘必须能区分真实发言和超时未发言。
+- 每名玩家的白天发言由 Runtime 同步调用 Agent adapter；获得有效结果或明确回退后再进入下一位。
+- Runtime 不伪造玩家发言内容；模型服务的 provider HTTP timeout 与重试由 `config/models.yaml` 配置，不进入游戏运行状态。
 - 白天投票出局者都有遗言。
 - 夜晚倒牌只有第一晚有遗言。
 - 狼人自爆后，该白天没有放逐投票阶段。
@@ -556,7 +556,7 @@ ModelRouter.generate(agent_id, task_type, context)
 
 - 按 `agent_id` 读取玩家自己的 `llm_profile`。
 - 按 `task_type` 选择模型，例如 `speech`、`vote`、`night_action`、`deception`、`reflection`。
-- 统一注入 temperature、max_tokens、top_p、timeout、重试和 fallback。
+- 统一注入 temperature、max_tokens、top_p、provider HTTP timeout、重试和 fallback。
 - 统一记录 provider、model、prompt_tokens、completion_tokens、latency_ms、estimated_cost、fallback_reason。
 - 支持按实验配置切换路由策略，方便比较“同人格不同模型”和“同模型不同人格”。
 
@@ -687,11 +687,11 @@ llm_profiles:
 夜晚沟通原则：
 
 - 狼人夜晚不应只提交单点刀人动作，而应先进入 `wolf_discussion`。
-- `wolf_discussion` 支持狼人内部多轮讨论，讨论内容只进入狼人私有视角，并受 `wolf_discussion_seconds` 限制。
+- `wolf_discussion` 支持狼人内部多轮讨论，讨论内容只进入狼人私有视角。
 - `wolf_team_plan` 节点紧接 `wolf_discussion`：由 alive werewolves 排序首位作为队长调用一次 LLM，产出 Pydantic `WolfTeamPlan`（含 4 角色分工 `fake_seer`/`pusher`/`hooker`/`deep_cover` + 击杀目标 `night_kill_primary`/`backup` + `public_story` + `reasoning`）。LLM 失败时回退到正则抽取 + 静态分配（`werewolf_agent/runtime/wolf_strategy.py` + `_build_wolf_team_plan`），并 emit `wolf_team_plan_fallback` 审计事件标记 `reason`。`reasoning` 字段含队长决策依据，仅 `werewolf_team_only` 可见，绝不进入公开视角。
 - `wolf_consensus` 负责达成最终夜间行动，合法输出只有 `kill(target_id)` 或 `no_kill(reason)`。`kill` 必须给出合法存活目标；`no_kill` 表示狼队主动空刀。
-- 如果 `wolf_discussion_seconds` 到期时仍未形成合法最终行动，V1 默认本夜空刀并记录 `wolf_no_kill_timeout`，不再随机兜底刀人。该策略保留狼人通过空刀制造信息差的玩法，同时避免运行时无限等待。
-- 女巫节点必须在狼人夜间行动结算之后执行；只有当晚存在 `wolf_kill_selected` 时，女巫才能得知刀口并选择是否使用解药。若当晚是主动空刀或超时空刀，女巫没有可救刀口，但仍可按规则选择是否使用毒药；预言家查验在女巫行动之后执行。
+- Runtime 在当前调用线程中同步调用 Agent adapter；狼队未形成合法最终行动时，统一空刀策略按具体 `reason_code` 结算，不依赖流程 deadline。
+- 女巫节点必须在狼人夜间行动结算之后执行；只有当晚存在 `wolf_kill_selected` 时，女巫才能得知刀口并选择是否使用解药。若当晚是主动空刀或安全回退空刀，女巫没有可救刀口，但仍可按规则选择是否使用毒药；预言家查验在女巫行动之后执行。
 - `first_night_hybrid_master` 只在首夜身份确认阶段执行，用于记录 `hybrid_master_id` 和不可泄露的主人绑定关系；该节点产物不得进入狼队夜聊或公开事件。
 - 预言家、女巫、猎人、白痴等角色不能看到狼人讨论，只能看到符合自身视角的夜间结果。
 - `night_death_last_words` 只在第一晚存在夜间死亡时触发；第二晚及之后的夜间死亡不触发遗言。
@@ -703,7 +703,7 @@ llm_profiles:
 - 有警长时，发言顺序由警长选择并写入 `speech_order`；若警长未给出有效选择，则由 `RuleEngine` 随机选择起点兜底。
 - 无警长时，V1 标准规则随机选择发言起点，再按座次方向执行；若警徽被撕掉，本局后续白天均使用该规则。
 - 后发言玩家拥有更完整的公开发言上下文；先发言玩家不能看到尚未发生的发言。
-- 每个 `day_speech` 节点必须绑定发言人和发言时长上限。到时未产出有效公开发言时，系统记录 `speech_timeout` 并进入下一位发言人；若已有部分发言内容，可记录为该玩家公开发言，同时附带超时结束标记。
+- 每个 `day_speech` 节点必须绑定发言人，同步获得有效公开发言或明确回退后进入下一位发言人。
 - 白天至少包含自由讨论、多轮发言摘要和最终投票；有警长且警徽未撕时才进入 `sheriff_endorse` 归票动作。
 - 放逐投票首次平票后进入 `tie_pk_speech` 和 `tie_revote`；再次平票则无人出局，直接进入夜晚。
 - 自爆、平票、无人出局、警长死亡等分支必须通过条件边进入对应节点，而不是在 Agent 自然语言里临时裁判。
