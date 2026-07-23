@@ -24,7 +24,6 @@ from werewolf_agent.runtime.nodes._shared import (
     _dispatch_agent,
     _judge_broadcast,
     _player_display,
-    AGENT_TIMEOUTS,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.skill_opportunity_events import (
@@ -93,7 +92,6 @@ def sheriff_pk_speech(state: RuntimeState) -> dict[str, Any]:
             agent_sheriff_election_speech,
             candidate_id,
             pk_candidates,
-            timeout_override=AGENT_TIMEOUTS.day_speech,
             decision_identity=decision_identity,
             exposure_collector=exposure_collector,
         )

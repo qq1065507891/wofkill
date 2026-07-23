@@ -178,7 +178,6 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                 round_state,
                 _compat("agent_wolf_discussion", agent_wolf_discussion),
                 wolf_id,
-                timeout_override=AGENT_TIMEOUTS.wolf_discussion_per_player,
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
             )

@@ -43,7 +43,6 @@ from werewolf_agent.evaluation.balance_public_claims import (
     sanitize_public_text,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.nodes.day_finish import _commit_victory
 from werewolf_agent.runtime.skill_opportunity_events import (
     build_private_skill_event,
@@ -123,7 +122,6 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 shot_state,
                 agent_hunter_shot,
                 death.player_id,
-                timeout_override=AGENT_TIMEOUTS.hunter_shot,
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
             )
@@ -326,7 +324,6 @@ def sheriff_badge_transfer(state: RuntimeState) -> dict[str, Any]:
             state,
             agent_badge_decision,
             gs.sheriff_id,
-            timeout_override=AGENT_TIMEOUTS.day_vote,
             decision_identity=decision_identity,
             exposure_collector=exposure_collector,
         )
@@ -455,7 +452,6 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
                 state,
                 agent_pk_speech,
                 candidate_id,
-                timeout_override=AGENT_TIMEOUTS.day_speech,
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
             )

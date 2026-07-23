@@ -50,6 +50,23 @@ def test_runner_config_routes_cli_output_dir_to_emergency_artifacts(tmp_path) ->
     assert config.emergency_artifact_dir == tmp_path
 
 
+def test_runner_cli_no_longer_accepts_agent_timeout_arguments() -> None:
+    from scripts import run_real_game
+
+    parser = run_real_game._build_argument_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--timeout", "1"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--no-timeout"])
+
+    args = parser.parse_args(["--seed", "42", "--game-id", "sync-cli"])
+    config = run_real_game._build_runner_config(
+        args, game_repo=None, memory_coordinator=None,
+    )
+    assert config.seed == 42
+    assert config.game_id == "sync-cli"
+
+
 def test_terminal_log_message_distinguishes_finished_and_aborted(caplog) -> None:
     from scripts import run_real_game
 

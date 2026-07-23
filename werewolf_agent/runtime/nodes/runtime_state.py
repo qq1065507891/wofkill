@@ -68,7 +68,6 @@ class RuntimeState(TypedDict, total=False):
     cognition_state_manager: Any
     runtime_timer: Any
     consecutive_no_exile_days: int
-    agent_call_timeout: float
     wolf_discussion_round: int
     wolf_team_plan: dict[str, Any]
     wolf_consensus_evidence: str

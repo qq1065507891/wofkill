@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import threading
 from dataclasses import replace
 
 from typing import Any
@@ -252,17 +253,18 @@ def test_reflection_node_does_not_report_success_without_valid_v2_entries() -> N
     assert payload["player_count"] == 2
     assert len(payload["failures"]) == 2
 
-def test_single_wolf_vote_uses_global_agent_timeout(monkeypatch) -> None:
+def test_single_wolf_vote_runs_agent_in_calling_thread(monkeypatch) -> None:
     engine = _new_engine()
     players = {
         "p01": PlayerState(id="p01", role="werewolf", alive=True),
         "p02": PlayerState(id="p02", role="villager", alive=True),
     }
     gs = GameState(game_id="wolf_timeout_config", players=players, night_number=1)
-    captured: dict[str, float] = {}
+    caller_thread_id = threading.get_ident()
 
     class Agent:
         def act(self, context):
+            assert threading.get_ident() == caller_thread_id
             return (
                 PlayerAction(action_type=ActionType.WOLF_KILL, target_id="p02"),
                 RetryInfo(),
@@ -272,38 +274,36 @@ def test_single_wolf_vote_uses_global_agent_timeout(monkeypatch) -> None:
         def get_agent(self, player_id):
             return Agent()
 
-    def fake_timed_call(fn, *args, timeout, fallback=None):
-        captured["timeout"] = timeout
-        return fn(*args)
+    def forbid_thread(*args, **kwargs):
+        raise AssertionError("runtime agent call must not create a worker thread")
 
-    monkeypatch.setattr("werewolf_agent.runtime.timers.timed_call", fake_timed_call)
+    monkeypatch.setattr(threading, "Thread", forbid_thread)
 
     result = _single_wolf_vote(
         {
             "game_state": gs,
             "engine": engine,
-            "agent_call_timeout": 120.0,
         },
         engine,
         Registry(),
         "p01",
     )
 
-    assert captured["timeout"] == 180.0
     assert result["wolf_action"] == "kill"
     assert result["wolf_kill_target_id"] == "p02"
 
-def test_dispatch_agent_direct_call_when_timeout_zero(monkeypatch) -> None:
+def test_dispatch_agent_runs_adapter_in_calling_thread_without_threading(monkeypatch) -> None:
     from werewolf_agent.runtime.nodes import _shared as shared_mod
-    import time
-    sleeps: list[float] = []
+    import inspect
+    caller_thread_id = threading.get_ident()
 
-    def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
+    def forbid_thread(*args, **kwargs):
+        raise AssertionError("runtime agent call must not create a worker thread")
 
-    monkeypatch.setattr(time, "sleep", fake_sleep)
+    monkeypatch.setattr(threading, "Thread", forbid_thread)
 
     def fake_agent_adapter(state, engine, registry, player_id):
+        assert threading.get_ident() == caller_thread_id
         return {"ok": player_id}
 
     class Registry:
@@ -315,14 +315,36 @@ def test_dispatch_agent_direct_call_when_timeout_zero(monkeypatch) -> None:
             "game_state": GameState(game_id="wait_before_request"),
             "engine": _new_engine(),
             "agent_registry": Registry(),
-            "agent_call_timeout": 0,
         },
         fake_agent_adapter,
         "p01",
     )
 
     assert result == {"ok": "p01"}
-    assert len(sleeps) == 0
+    assert "timeout_override" not in inspect.signature(shared_mod._dispatch_agent).parameters
+
+
+def test_dispatch_agent_keeps_agent_failure_as_safe_empty_result() -> None:
+    from werewolf_agent.runtime.nodes import _shared as shared_mod
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    def failing_agent_adapter(state, engine, registry, player_id):
+        raise ValueError("invalid agent action")
+
+    result = shared_mod._dispatch_agent(
+        {
+            "game_state": GameState(game_id="safe-agent-failure"),
+            "engine": _new_engine(),
+            "agent_registry": Registry(),
+        },
+        failing_agent_adapter,
+        "p01",
+    )
+
+    assert result is None
 
 def test_manual_timer_expiration_is_deterministic() -> None:
     from werewolf_agent.runtime.timers import ManualTimer

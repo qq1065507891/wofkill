@@ -1114,8 +1114,6 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         help="Explicit run-scoped game ID (default: g_<seed>)",
     )
     parser.add_argument("--max-steps", type=int, default=500, help="Max graph steps")
-    parser.add_argument("--timeout", type=float, default=120.0, help="Agent timeout (seconds)")
-    parser.add_argument("--no-timeout", action="store_true", help="Disable agent timeout")
     parser.add_argument("--delay", type=int, default=0, help="Inter-call delay ms (0=random 3-6s, >0=fixed, <0=none)")
     parser.add_argument(
         "--output-dir",
@@ -1143,7 +1141,6 @@ def _build_runner_config(
         persona_config_path=str(
             ROOT / "config" / "personas" / "jingcheng_style_prototypes.yaml"
         ),
-        agent_call_timeout=0 if args.no_timeout else args.timeout,
         repository=game_repo,
         memory_coordinator=memory_coordinator,
         agent_call_delay_ms=args.delay,
@@ -1194,7 +1191,6 @@ def main() -> None:
     print(f"  API key:      {_format_api_key_status(api_key)}")
     print(f"  Seed:         {args.seed or 'auto'}")
     print(f"  Max steps:    {args.max_steps}")
-    print(f"  Timeout:      {'disabled' if args.no_timeout else f'{args.timeout}s'}")
 
     # Connectivity test
     print("\n  Testing API connectivity...")

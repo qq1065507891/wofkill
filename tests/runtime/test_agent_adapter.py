@@ -25,8 +25,15 @@ def test_agent_adapter_reexports_dispatch_helpers() -> None:
 
 def test_shared_agent_timeouts_remain_importable() -> None:
     from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+    from werewolf_agent.runtime import agent_action_pipeline
+    from werewolf_agent.runtime.nodes import _shared, day, night, sheriff
 
     assert agent_adapter.AGENT_TIMEOUTS is AGENT_TIMEOUTS
+    assert agent_action_pipeline.AGENT_TIMEOUTS is AGENT_TIMEOUTS
+    assert _shared.AGENT_TIMEOUTS is AGENT_TIMEOUTS
+    assert day.AGENT_TIMEOUTS is AGENT_TIMEOUTS
+    assert night.AGENT_TIMEOUTS is AGENT_TIMEOUTS
+    assert sheriff.AGENT_TIMEOUTS is AGENT_TIMEOUTS
 
 
 class TestSheriffPickSpeechOrderContract:

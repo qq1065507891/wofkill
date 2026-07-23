@@ -32,7 +32,6 @@ class GameRunnerConfig:
     use_agent_registry: bool = False
     model_config_path: str = ""
     persona_config_path: str = ""
-    agent_call_timeout: float = 0
     ruleset_registry: Any = None
     repository: Any = None
     memory_coordinator: Any = None

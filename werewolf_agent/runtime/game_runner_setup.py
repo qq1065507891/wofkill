@@ -74,8 +74,6 @@ class GameRunnerSetupMixin:
         rt["agent_call_delay_ms"] = self._config.agent_call_delay_ms
         if self._rag_service is not None:
             rt["rag_service"] = self._rag_service
-        if self._config.agent_call_timeout > 0:
-            rt["agent_call_timeout"] = self._config.agent_call_timeout
         rt["cognition_state_manager"] = self._cognition_state_manager
         if self._restored_memory is not None:
             rt["restored_memory"] = self._restored_memory

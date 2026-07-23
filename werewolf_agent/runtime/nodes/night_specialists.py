@@ -27,7 +27,6 @@ from werewolf_agent.runtime.nodes.night_witch_node import night_witch as night_w
 from werewolf_agent.runtime.seer_night_directives import build_seer_legal_targets
 from werewolf_agent.runtime.skill_opportunity_events import build_private_skill_event
 from werewolf_agent.runtime.nodes._shared import (
-    AGENT_TIMEOUTS,
     RuntimeState,
     logger,
     _action_audit_events,
@@ -185,7 +184,6 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     result = _compat("_dispatch_agent", _dispatch_agent)(
         state,
         _compat("agent_night_seer", agent_night_seer),
-        timeout_override=AGENT_TIMEOUTS.seer_check,
         decision_identity=decision_identity,
         exposure_collector=exposure_collector,
     )
@@ -317,7 +315,6 @@ def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
             state,
             _compat("agent_hybrid_choose_master", agent_hybrid_choose_master),
             hybrid_id,
-            timeout_override=AGENT_TIMEOUTS.seer_check,
             decision_identity=hybrid_decision_identity,
             exposure_collector=hybrid_exposure_collector,
         )

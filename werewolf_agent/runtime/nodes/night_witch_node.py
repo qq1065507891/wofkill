@@ -19,7 +19,6 @@ from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.agent_adapter import agent_night_witch
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes._shared import (
-    AGENT_TIMEOUTS,
     RuntimeState,
     _action_audit_events,
     _allocate_decision_identity,
@@ -129,7 +128,6 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
     result = _compat("_dispatch_agent", _dispatch_agent)(
         state,
         _compat("agent_night_witch", agent_night_witch),
-        timeout_override=AGENT_TIMEOUTS.witch_action,
         decision_identity=decision_identity,
         exposure_collector=exposure_collector,
     )

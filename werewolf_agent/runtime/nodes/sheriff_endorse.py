@@ -56,7 +56,6 @@ def sheriff_endorse(state: RuntimeState) -> dict[str, Any]:
         state,
         _sheriff_endorse_adapter,
         sheriff_id,
-        timeout_override=120,
         decision_identity=decision_identity,
         exposure_collector=exposure_collector,
     )

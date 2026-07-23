@@ -36,7 +36,6 @@ from werewolf_agent.runtime.event_metadata import (
     validate_v2_event_identity,
     validate_v2_event_log_identity,
 )
-from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeline import phase_label
 from werewolf_agent.runtime.wolf_no_kill_policy import (
     NO_KILL_REASON_CODES,
@@ -103,11 +102,6 @@ def _timer_expired(state: RuntimeState, key: str) -> bool:
     return bool(expired(key))
 
 
-def _agent_timeout(state: RuntimeState) -> float:
-    """返回单次 agent 调用超时时间，0 表示不包装。"""
-    return float(state.get("agent_call_timeout") or 0)
-
-
 def _player_display(state: RuntimeState, player_id: str) -> str:
     """返回展示名，例如 '陈思远(p01)'。"""
     registry = state.get("agent_registry")
@@ -118,21 +112,10 @@ def _player_display(state: RuntimeState, player_id: str) -> str:
     return player_id
 
 
-def _call_agent(fn, state: RuntimeState, *args, timeout_override: float | None = None, **kwargs):
-    """调用 agent adapter，可按配置包一层 timeout。"""
-    timeout = timeout_override if timeout_override is not None else _agent_timeout(state)
-    if timeout > 0:
-        if kwargs:
-            return timed_call(lambda *inner_args: fn(*inner_args, **kwargs), *args, timeout=timeout)
-        return timed_call(fn, *args, timeout=timeout, **kwargs)
-    return fn(*args, **kwargs)
-
-
 def _dispatch_agent(
     state: RuntimeState,
     fn,
     *extra_args,
-    timeout_override: float | None = None,
     post_game: bool = False,
     **extra_kwargs,
 ) -> dict[str, Any] | None:
@@ -149,16 +132,22 @@ def _dispatch_agent(
     if delay_ms > 0:
         time.sleep(delay_ms / 1000.0)
     engine = state["engine"]
-    return _call_agent(
-        fn,
-        state,
-        state,
-        engine,
-        registry,
-        *extra_args,
-        **extra_kwargs,
-        timeout_override=timeout_override,
-    )
+    try:
+        return fn(
+            state,
+            engine,
+            registry,
+            *extra_args,
+            **extra_kwargs,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Agent dispatch failed for %s: %s: %s",
+            getattr(fn, "__qualname__", repr(fn)),
+            type(exc).__name__,
+            exc,
+        )
+        return None
 
 
 def _hunter_reaction_resolved(
@@ -596,11 +585,9 @@ def _deaths_already_announced(gs: GameState) -> bool:
 
 
 __all__ = [
-    "_agent_timeout",
     "_alive_non_wolves",
     "_alive_wolves",
     "_build_wolf_team_plan",
-    "_call_agent",
     "_deaths_already_announced",
     "_dispatch_agent",
     "_ensure_day_incremented",

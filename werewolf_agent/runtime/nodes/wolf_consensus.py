@@ -20,7 +20,6 @@ from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.agent_adapter import agent_wolf_consensus
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes._shared import (
-    AGENT_TIMEOUTS,
     RuntimeState,
     _action_audit_events,
     _alive_wolves,
@@ -84,7 +83,6 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
         result = _compat("_dispatch_agent", _dispatch_agent)(
             state,
             _compat("agent_wolf_consensus", agent_wolf_consensus),
-            timeout_override=AGENT_TIMEOUTS.wolf_consensus,
             decision_identities=decision_identities,
             exposure_collectors=exposure_collectors,
         )

@@ -35,11 +35,9 @@ from werewolf_agent.runtime.nodes.action_audit import (
 )
 from werewolf_agent.runtime.nodes.node_helpers import (
     logger,
-    _agent_timeout,
     _alive_non_wolves,
     _alive_wolves,
     _build_wolf_team_plan,
-    _call_agent,
     _deaths_already_announced,
     _dispatch_agent,
     _has_pending_hunter_shot,
@@ -65,7 +63,6 @@ from werewolf_agent.runtime.nodes.runtime_state import (
     _new_engine,
     _stable_seed,
 )
-from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import detect_timeline_confusion, phase_label
 
@@ -77,7 +74,6 @@ _PATCHED_DEPENDENCIES = {
     "detect_timeline_confusion": (_action_audit,),
     "logger": (_node_helpers,),
     "phase_label": (_node_helpers, _judge_broadcast_helpers),
-    "timed_call": (_node_helpers,),
 }
 
 
@@ -103,15 +99,12 @@ __all__ = [
     "detect_timeline_confusion",
     "logger",
     "phase_label",
-    "timed_call",
     "_action_audit_events",
     "_action_trace_event",
-    "_agent_timeout",
     "_alive_non_wolves",
     "_alive_wolves",
     "_allocate_decision_identity",
     "_build_wolf_team_plan",
-    "_call_agent",
     "_deaths_already_announced",
     "_dispatch_agent",
     "_has_pending_hunter_shot",

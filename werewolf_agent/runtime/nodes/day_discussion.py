@@ -38,7 +38,6 @@ from werewolf_agent.runtime.sheriff_policy import (
     choose_no_sheriff_speech_order,
     choose_sheriff_led_speech_order,
 )
-from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.skill_opportunity_events import (
     append_private_skill_event,
     can_select_self_destruct,
@@ -108,7 +107,6 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 state,
                 agent_sheriff_pick_speech_order,
                 gs.sheriff_id,
-                timeout_override=AGENT_TIMEOUTS.day_speech,
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
                 include_action_trace=True,
@@ -246,7 +244,6 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                     state,
                     agent_day_speech,
                     speaker_id,
-                    timeout_override=AGENT_TIMEOUTS.day_speech,
                     decision_identity=decision_identity,
                     exposure_collector=exposure_collector,
                 )

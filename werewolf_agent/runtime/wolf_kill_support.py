@@ -32,7 +32,6 @@ from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.strategy import (
     evaluate_wolf_kill_target as _evaluate_wolf_kill_target,
 )
-from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 
 logger = logging.getLogger(__name__)
 
@@ -141,16 +140,11 @@ def _single_wolf_vote(
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
-    timeout = float(state.get("wolf_vote_timeout") or AGENT_TIMEOUTS.wolf_consensus)
-    if timeout > 0:
-        from werewolf_agent.runtime.timers import timed_call
-        action_result = timed_call(agent.act, context, timeout=timeout, fallback=None)
-    else:
-        try:
-            action_result = agent.act(context)
-        except Exception as exc:
-            logger.warning("Wolf vote failed for %s: %s: %s", wolf_id, type(exc).__name__, exc)
-            action_result = None
+    try:
+        action_result = agent.act(context)
+    except Exception as exc:
+        logger.warning("Wolf vote failed for %s: %s: %s", wolf_id, type(exc).__name__, exc)
+        action_result = None
 
     if action_result is None:
         return {"wolf_action": "no_kill", "wolf_kill_target_id": None}

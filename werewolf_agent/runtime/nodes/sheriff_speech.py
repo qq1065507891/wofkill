@@ -23,7 +23,6 @@ from werewolf_agent.runtime.skill_opportunity_events import (
     is_live_werewolf,
 )
 from werewolf_agent.runtime.nodes._shared import (
-    AGENT_TIMEOUTS,
     RuntimeState,
     logger,
     _action_audit_events,
@@ -110,7 +109,6 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                 agent_sheriff_election_speech,
                 candidate_id,
                 candidates,
-                timeout_override=AGENT_TIMEOUTS.day_speech,
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
             )

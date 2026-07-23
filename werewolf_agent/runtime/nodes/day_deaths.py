@@ -34,7 +34,6 @@ from werewolf_agent.runtime.nodes._shared import (
     _player_display,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import phase_label
 from werewolf_agent.evaluation.balance_public_claims import (
     public_speech_history,
@@ -173,7 +172,6 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
                 call_state,
                 agent_exile_last_words,
                 pid,
-                timeout_override=AGENT_TIMEOUTS.day_speech,
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
             )
@@ -248,7 +246,6 @@ def exile_last_words(state: RuntimeState) -> dict[str, Any]:
             state,
             agent_exile_last_words,
             exiled_id,
-            timeout_override=AGENT_TIMEOUTS.day_speech,
             decision_identity=decision_identity,
             exposure_collector=exposure_collector,
         )
