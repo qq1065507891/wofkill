@@ -19,7 +19,6 @@ pwsh -File scripts/run_audit_closure_soak.ps1 -Seeds (714001..714010)
 param(
     [Parameter(Mandatory = $true)][int[]]$Seeds,
     [int]$MaxSteps = 500,
-    [double]$TimeoutSeconds = 120,
     [int]$DelayMilliseconds = 0,
     [string]$PythonCommand = 'python',
     [string]$ArtifactRoot = ''
@@ -121,7 +120,6 @@ try {
             --seed $seed `
             --game-id $gameId `
             --max-steps $MaxSteps `
-            --timeout $TimeoutSeconds `
             --delay $DelayMilliseconds `
             --output-dir $gameOutputDir 2>&1
         $runExitCode = $LASTEXITCODE

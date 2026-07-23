@@ -217,6 +217,20 @@ def test_soak_runs_exactly_ten_isolated_games_then_analyzer_and_evaluator(
     assert state["game_log_path"] == "sentinel-log-path"
 
 
+def test_soak_does_not_pass_removed_agent_timeout_options(
+    tmp_path: Path,
+    fake_python: tuple[Path, Path],
+) -> None:
+    result, calls, _, _ = _run_soak(tmp_path, fake_python)
+
+    assert result.returncode == 0, result.stderr
+    runner_calls = [call for call in calls if call["script"] == "run_real_game.py"]
+    assert runner_calls
+    assert all("--timeout" not in call["args"] for call in runner_calls)
+    assert all("--no-timeout" not in call["args"] for call in runner_calls)
+    assert "TimeoutSeconds" not in SOAK_SCRIPT.read_text(encoding="utf-8")
+
+
 def test_soak_requires_ten_explicit_seeds(
     tmp_path: Path,
     fake_python: tuple[Path, Path],
