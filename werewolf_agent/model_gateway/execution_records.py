@@ -105,6 +105,7 @@ class AttemptExecutionRecord:
     normalized_reasoning_status: ReasoningStatus
     reasoning_token_count: int
     evidence_kind: EvidenceKind
+    provider_attempted: bool = True
 
     def __post_init__(self) -> None:
         enum_fields = (
@@ -119,6 +120,8 @@ class AttemptExecutionRecord:
             raise TypeError("execution record enum fields require enum instances")
         if not isinstance(self.opaque_request_id, OpaqueRequestId):
             raise ValueError("opaque_request_id must be created by the internal boundary")
+        if not isinstance(self.provider_attempted, bool):
+            raise TypeError("provider_attempted must be a bool")
         if self.ordinal < 1:
             raise ValueError("ordinal must be >= 1")
         if self.reasoning_token_count < 0:

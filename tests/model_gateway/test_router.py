@@ -583,6 +583,112 @@ class TestGenerateWithMockProvider:
 
         assert result.failure_disposition is FailureDisposition.OUTPUT_REPAIRABLE
 
+    def test_skipped_primary_remains_non_provider_evidence_across_repair_reentry(self) -> None:
+        from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
+        from werewolf_agent.model_gateway.router import FailureDisposition, ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "missing", "model": "p", "retry_count": 0, "reasoning": {"level": "high"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "missing", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"fallback": _EmptyTextProvider("fallback")},
+        )
+        context = GenerationAttemptContext("p01x")
+
+        first = router.generate(
+            "p01", "speech", "hello", jitter_seconds=(0, 0),
+            generation_attempt_context=context,
+        )
+        context.reject_latest_output()
+        second = router.generate(
+            "p01", "speech", "repair", jitter_seconds=(0, 0),
+            generation_attempt_context=context,
+        )
+
+        assert first.failure_disposition is FailureDisposition.OUTPUT_REPAIRABLE
+        assert second.failure_disposition is FailureDisposition.OUTPUT_REPAIRABLE
+        assert context.attempts[0].provider_attempted is False
+
+    def test_structured_tool_not_implemented_becomes_terminal_policy_result(self) -> None:
+        from werewolf_agent.model_gateway.router import FailureDisposition, ModelRouter
+
+        router = ModelRouter(
+            model_profiles={"primary": {
+                "provider": "primary", "model": "p", "retry_count": 0,
+                "reasoning": {"level": "high"},
+            }},
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": _SequenceProvider([NotImplementedError("tools unsupported")], "primary")},
+        )
+
+        result = router.generate(
+            "p01", "speech", "hello", tools=[{}],
+            tool_choice={"type": "tool", "name": "submit_player_action"},
+            jitter_seconds=(0, 0),
+        )
+
+        assert result.failure_disposition is FailureDisposition.POLICY_REJECTED
+        assert [attempt.route_kind.value for attempt in result.attempts] == [
+            "primary", "safe_fallback",
+        ]
+        assert result.attempts[0].root_cause.value == "policy_rejection"
+
+    def test_structured_tool_not_implemented_can_use_fallback_candidate(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([NotImplementedError("tools unsupported")], "primary")
+        fallback = _StaticTextProvider("ok", "fallback")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "high"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "fallback": fallback},
+        )
+
+        result = router.generate(
+            "p01", "speech", "hello", tools=[{}],
+            tool_choice={"type": "tool", "name": "submit_player_action"},
+            jitter_seconds=(0, 0),
+        )
+
+        assert result.text == "ok"
+        assert [attempt.root_cause.value for attempt in result.attempts] == [
+            "policy_rejection", "none",
+        ]
+
+    def test_non_structured_not_implemented_still_raises(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        router = ModelRouter(
+            model_profiles={"primary": {
+                "provider": "primary", "model": "p", "retry_count": 0,
+                "reasoning": {"level": "high"},
+            }},
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": _SequenceProvider([NotImplementedError("bug")], "primary")},
+        )
+
+        with pytest.raises(NotImplementedError, match="bug"):
+            router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
     def test_root_cause_uses_explicit_timeout_types_not_class_name(self) -> None:
         import httpx
         from werewolf_agent.model_gateway.execution_records import RootCause

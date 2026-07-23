@@ -90,6 +90,10 @@ from werewolf_agent.model_gateway.usage_records import (
 logger = logging.getLogger(__name__)
 
 
+class _StructuredOutputPolicyError(RuntimeError):
+    """已知结构化工具能力拒绝的内部终态标记。"""
+
+
 __all__ = [
     "EmptyModelResponseError",
     "FailureDisposition",
@@ -347,7 +351,6 @@ class ModelRouter:
         primary_attempts = 0
         primary_audit_config = config
         primary_skip_root: RootCause | None = None
-        skipped_attempt_ordinals: set[int] = set()
 
         if primary_skip_reason is not None:
             (
@@ -361,7 +364,6 @@ class ModelRouter:
                 route_kind=first_route,
                 reason=primary_skip_reason,
             )
-            skipped_attempt_ordinals.add(attempts[-1].ordinal)
 
         primary_budget = RetryBudget(
             RouteKind.PRIMARY,
@@ -472,12 +474,25 @@ class ModelRouter:
                 return result
             except Exception as exc:
                 primary_error = exc
+                structured_tool_policy_rejection = (
+                    isinstance(exc, NotImplementedError)
+                    and effective_tool_choice is not None
+                )
                 attempts.append(_attempt_record(
                     opaque_request_id, len(attempts) + 1, config, None,
                     first_route if attempt == 0 else RouteKind.RETRY,
-                    AttemptOutcome.FAILURE, _root_cause(exc),
+                    AttemptOutcome.FAILURE,
+                    (
+                        RootCause.POLICY_REJECTION
+                        if structured_tool_policy_rejection else _root_cause(exc)
+                    ),
                 ))
                 if isinstance(exc, NotImplementedError):
+                    if structured_tool_policy_rejection:
+                        primary_error = _StructuredOutputPolicyError(
+                            "structured_output_unsupported"
+                        )
+                        break
                     if generation_attempt_context:
                         generation_attempt_context.accept(tuple(attempts))
                     raise
@@ -534,6 +549,8 @@ class ModelRouter:
         )
         if chain_result is not None:
             return chain_result
+        if isinstance(fallback_error, _StructuredOutputPolicyError):
+            route_failure = "structured_output_unsupported"
         fallback_provider = None
 
         # Record failure
@@ -548,10 +565,7 @@ class ModelRouter:
                 terminal_root,
                 terminal=True,
             ))
-        failure_disposition = _failure_disposition_from_attempts(
-            tuple(attempts),
-            skipped_attempt_ordinals=frozenset(skipped_attempt_ordinals),
-        )
+        failure_disposition = _failure_disposition_from_attempts(tuple(attempts))
         failure_usage = _record_failure_usage(
             usage_log=self._usage_log,
             usage_lock=self._usage_lock,
@@ -750,11 +764,27 @@ class ModelRouter:
                     return result, None, None
                 except Exception as exc:
                     final_fallback_error = exc
+                    structured_tool_policy_rejection = (
+                        isinstance(exc, NotImplementedError)
+                        and effective_choice is not None
+                    )
                     attempts.append(_attempt_record(
                         request_id, len(attempts) + 1, config, None,
                         route_kind, AttemptOutcome.FAILURE,
-                        _root_cause(exc),
+                        (
+                            RootCause.POLICY_REJECTION
+                            if structured_tool_policy_rejection else _root_cause(exc)
+                        ),
                     ))
+                    if isinstance(exc, NotImplementedError):
+                        if structured_tool_policy_rejection:
+                            final_fallback_error = _StructuredOutputPolicyError(
+                                "structured_output_unsupported"
+                            )
+                            break
+                        if generation_attempt_context:
+                            generation_attempt_context.accept(tuple(attempts))
+                        raise
                     retry_kind = retry_kind_for_exception(exc)
                     category_retry_index = (
                         retry_budget.generic_retry_count
@@ -913,6 +943,7 @@ def _record_skipped_primary_attempt(
         effective_route,
         AttemptOutcome.FAILURE,
         root_cause,
+        provider_attempted=False,
     ))
     return audit_config, RuntimeError(reason), root_cause
 
@@ -934,6 +965,8 @@ def _root_cause(exc: Exception) -> RootCause:
 
 def _fallback_route_failure_code(primary_error: Exception | None) -> str | None:
     """内容错误保留给结构化修复；仅切换型故障报告路由不可用。"""
+    if isinstance(primary_error, _StructuredOutputPolicyError):
+        return "structured_output_unsupported"
     if isinstance(primary_error, EmptyModelResponseError):
         return None
     return FALLBACK_ROUTE_UNAVAILABLE
@@ -949,6 +982,7 @@ def _attempt_record(
     root_cause: RootCause,
     *,
     terminal: bool = False,
+    provider_attempted: bool | None = None,
 ) -> AttemptExecutionRecord:
     """把 provider 规范化结果翻译成 Task0 的唯一逐次证据类型。"""
     level = ReasoningLevel(config.reasoning_level)
@@ -986,4 +1020,5 @@ def _attempt_record(
         normalized_reasoning_status=status,
         reasoning_token_count=tokens,
         evidence_kind=evidence,
+        provider_attempted=(not terminal if provider_attempted is None else provider_attempted),
     )

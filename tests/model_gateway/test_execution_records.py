@@ -90,6 +90,16 @@ def test_generate_result_defaults_to_no_failure_disposition() -> None:
         result.reasoning_status = "drifted"  # type: ignore[misc]
 
 
+def test_execution_record_preserves_skipped_provider_marker_across_mapping() -> None:
+    """跳过 provider 的事实必须随跨轮次审计记录持久保存。"""
+    skipped = replace(_reasoned_attempt(), provider_attempted=False)
+
+    restored = AttemptExecutionRecord(**skipped.__dict__)
+
+    assert restored == skipped
+    assert restored.provider_attempted is False
+
+
 def test_provider_package_exports_remain_stable() -> None:
     from werewolf_agent.model_gateway import providers
 

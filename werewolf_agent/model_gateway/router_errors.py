@@ -172,8 +172,6 @@ def _empty_result(
 
 def _failure_disposition_from_attempts(
     attempts: tuple[AttemptExecutionRecord, ...],
-    *,
-    skipped_attempt_ordinals: frozenset[int] = frozenset(),
 ) -> FailureDisposition:
     """依据完整尝试链计算终态归因，忽略安全终退和未实际调用的占位记录。"""
     real_failures = tuple(
@@ -181,7 +179,7 @@ def _failure_disposition_from_attempts(
         for attempt in attempts
         if (
             attempt.route_kind is not RouteKind.SAFE_FALLBACK
-            and attempt.ordinal not in skipped_attempt_ordinals
+            and attempt.provider_attempted
             and attempt.root_cause is not RootCause.NONE
         )
     )
