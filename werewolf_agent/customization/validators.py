@@ -3,7 +3,7 @@
 功能描述：**：上传定制化模板的安全 YAML 校验器，含注入检测。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-23
 使用示例：内部模块，无对外接口
 """
 
@@ -91,7 +91,6 @@ ALLOWED_CONSTRAINTS = frozenset(
         "witch_can_self_save",
         "witch_can_use_both_potions_same_night",
         "werewolf_can_no_kill",
-        "wolf_timeout_default",
         "max_consecutive_pre_resolution_no_kill",
         "hybrid_enabled",
     }
@@ -102,7 +101,6 @@ DEFAULT_RULESET_NORMALIZED = {
         "witch_can_self_save": False,
         "witch_can_use_both_potions_same_night": False,
         "werewolf_can_no_kill": True,
-        "wolf_timeout_default": "no_kill",
         "max_consecutive_pre_resolution_no_kill": 2,
         "hybrid_enabled": True,
     }

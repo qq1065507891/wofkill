@@ -16,6 +16,28 @@ def test_default_custom_ruleset_template_validates() -> None:
     assert result.summary["player_count"] == 12
     assert result.normalized["ruleset_id"]
     assert result.normalized["status"] == "playable"
+    assert "wolf_timeout_default" not in result.normalized["constraints"]
+
+
+def test_ruleset_rejects_obsolete_wolf_timeout_default_constraint() -> None:
+    """Runtime 超时语义已删除，定制规则不得继续暴露旧字段。"""
+    text = """
+ruleset_id: obsolete_timeout_constraint
+player_count: 1
+roles:
+  villager: {count: 1, faction: good}
+constraints:
+  wolf_timeout_default: no_kill
+"""
+
+    result = validate_ruleset_yaml(text)
+
+    assert result.valid is False
+    assert any(
+        error.field == "constraints.wolf_timeout_default"
+        and error.code == "unknown_constraint"
+        for error in result.errors
+    )
 
 
 def test_ruleset_rejects_role_count_mismatch() -> None:

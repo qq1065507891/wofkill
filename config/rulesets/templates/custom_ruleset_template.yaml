@@ -49,5 +49,4 @@ constraints:
   witch_can_self_save: false
   witch_can_use_both_potions_same_night: false
   werewolf_can_no_kill: true
-  wolf_timeout_default: no_kill
   hybrid_enabled: true

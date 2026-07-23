@@ -132,7 +132,7 @@ def _is_retryable_exception(exc: Exception) -> bool:
         return True
     try:
         import httpx
-        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+        if isinstance(exc, httpx.TransportError):
             return True
         if isinstance(exc, httpx.HTTPStatusError):
             return exc.response.status_code >= 500 or exc.response.status_code == 429

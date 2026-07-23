@@ -3,7 +3,7 @@
 验证 ModelRouter 的配置解析、provider 路由、重试与 fallback 记录。
 
 作者: Project contributors
-修改日期: 2026-07-16
+修改日期: 2026-07-23
 """
 
 import pytest
@@ -766,6 +766,97 @@ class TestGenerateWithMockProvider:
         assert sleeps == [2.0, 4.0, 8.0, 16.0]
         assert [item.ordinal for item in result.attempts] == list(range(1, 7))
         assert [item.root_cause.value for item in result.attempts[:5]] == ["provider_error"] * 5
+
+    def test_httpx_transport_errors_use_primary_generic_retry_schedule(
+        self, monkeypatch,
+    ) -> None:
+        import httpx
+
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider(
+            [
+                httpx.ReadError("read failed"),
+                httpx.WriteError("write failed"),
+                httpx.RemoteProtocolError("peer closed"),
+                httpx.ReadError("read failed again"),
+                "ok",
+            ],
+            "primary",
+        )
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={"p": {
+                "provider": "primary", "model": "p", "retry_count": 9,
+                "reasoning": {"level": "high"},
+            }},
+            llm_profiles={"profile": {"default": {
+                "provider": "primary", "model_profile": "p",
+            }}},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary},
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            "p01", "reflection", "hello", jitter_seconds=(0, 0)
+        )
+
+        assert result.text == "ok"
+        assert primary.calls == 5
+        assert sleeps == [2.0, 4.0, 8.0, 16.0]
+
+    def test_httpx_transport_errors_use_fallback_generic_retry_schedule(
+        self, monkeypatch,
+    ) -> None:
+        import httpx
+
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        fallback = _SequenceProvider(
+            [
+                httpx.ReadError("read failed"),
+                httpx.RemoteProtocolError("peer closed"),
+                "ok",
+            ],
+            "fallback",
+        )
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "missing", "model": "p",
+                    "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback", "model": "f", "retry_count": 9,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {
+                    "provider": "missing", "model_profile": "primary",
+                },
+                "fallback": {
+                    "provider": "fallback", "model_profile": "fallback",
+                },
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"fallback": fallback},
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            "p01", "reflection", "hello", jitter_seconds=(0, 0)
+        )
+
+        assert result.text == "ok"
+        assert fallback.calls == 3
+        assert sleeps == [2.0, 4.0]
 
     def test_zero_retry_count_makes_one_call_without_sleep(self, monkeypatch) -> None:
         from werewolf_agent.model_gateway import router as router_module

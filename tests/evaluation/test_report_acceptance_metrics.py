@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-19
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -332,6 +332,55 @@ def test_execution_report_deduplicates_wolf_consensus_trace_projection() -> None
     assert metrics["root_cause_counts"] == {"none": 1, "timeout": 1}
     assert metrics["decision_outcome_counts"] == {"retry_success": 1}
     assert metrics["attempt_retry_consistency_error_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "game_ids",
+    [
+        ("g1", "g2"),
+        (None, None),
+    ],
+    ids=["explicit-game-id", "input-game-identity"],
+)
+def test_execution_report_does_not_merge_same_request_id_across_games(
+    game_ids: tuple[str | None, str | None],
+) -> None:
+    """请求 ID 只在同一局内去重，跨局重复值仍是两次决策。"""
+    from werewolf_agent.evaluation.balance_audit import (
+        compute_decision_execution_metrics,
+    )
+
+    trace = {
+        "execution_attempts": (
+            _attempt(1, RouteKind.PRIMARY, AttemptOutcome.SUCCESS),
+        ),
+        "attempt_count": 1,
+        "retry_count": 0,
+        "provider_fallback_count": 0,
+        "runtime_timeout_count": 0,
+        "generated_by": "model",
+        "terminal_failure_code": None,
+    }
+    games = []
+    for index, game_id in enumerate(game_ids):
+        game = {
+            "events": [{
+                "type": "action_trace_audit",
+                "payload": {
+                    "trace_id": f"trace-{index}",
+                    "task_type": "vote",
+                    "action_trace": dict(trace),
+                },
+            }],
+        }
+        if game_id is not None:
+            game["game_id"] = game_id
+        games.append(game)
+
+    metrics = compute_decision_execution_metrics(games)
+
+    assert metrics["decision_count"] == 2
+    assert metrics["attempt_count"] == 2
 
 
 def test_execution_report_merges_richer_wolf_trace_without_losing_audit_context() -> None:

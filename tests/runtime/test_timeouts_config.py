@@ -124,6 +124,19 @@ def test_timeout_compatibility_facades_share_one_inert_object() -> None:
     assert all(facade is facades[0] for facade in facades)
 
 
+def test_timeout_compatibility_module_is_explicitly_deprecated_and_inert() -> None:
+    from werewolf_agent.runtime import timeouts
+
+    module_doc = timeouts.__doc__ or ""
+    source = Path(timeouts.__file__).read_text(encoding="utf-8")
+
+    assert "deprecated" in module_doc.lower()
+    assert "inert" in module_doc.lower()
+    assert "不控制 provider" in module_doc
+    assert "closed by the provider" not in source
+    assert "wall-clock headroom" not in source
+
+
 def test_runtime_does_not_keep_deadline_plumbing() -> None:
     import inspect
     from pathlib import Path

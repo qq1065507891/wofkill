@@ -363,7 +363,7 @@ def _iter_action_traces(games: list[dict[str, Any]]):
 def _iter_action_trace_records(games: list[dict[str, Any]]):
     records = list(_iter_raw_action_trace_records(games))
     parent = list(range(len(records)))
-    request_owner: dict[str, int] = {}
+    request_owner: dict[tuple[tuple[str, str | int], str], int] = {}
 
     def find(index: int) -> int:
         while parent[index] != index:
@@ -379,9 +379,10 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
 
     for index, record in enumerate(records):
         for request_id in _trace_request_ids(record["trace"]):
-            previous = request_owner.get(request_id)
+            request_key = (record["game_identity"], request_id)
+            previous = request_owner.get(request_key)
             if previous is None:
-                request_owner[request_id] = index
+                request_owner[request_key] = index
             else:
                 union(previous, index)
 
@@ -393,7 +394,8 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
 
 
 def _iter_raw_action_trace_records(games: list[dict[str, Any]]):
-    for game in games:
+    for game_index, game in enumerate(games):
+        game_identity = _stable_game_identity(game, game_index)
         for event in game.get("events", []):
             payload = event.get("payload") or {}
             trace = payload.get("action_trace")
@@ -404,6 +406,7 @@ def _iter_raw_action_trace_records(games: list[dict[str, Any]]):
                     "task": _trace_task(payload, trace, event.get("type")),
                     "explicit_task_type": _explicit_trace_task(payload, trace),
                     "game": game,
+                    "game_identity": game_identity,
                     "representation": (
                         "individual"
                         if event.get("type") == "action_trace_audit"
@@ -421,6 +424,7 @@ def _iter_raw_action_trace_records(games: list[dict[str, Any]]):
                     "task": _trace_task(payload, {}, event.get("type")),
                     "explicit_task_type": _explicit_trace_task(payload, {}),
                     "game": game,
+                    "game_identity": game_identity,
                     "representation": "individual",
                 }
             traces = payload.get("action_traces")
@@ -433,8 +437,20 @@ def _iter_raw_action_trace_records(games: list[dict[str, Any]]):
                             "task": _trace_task(payload, item, event.get("type")),
                             "explicit_task_type": _explicit_trace_task(payload, item),
                             "game": game,
+                            "game_identity": game_identity,
                             "representation": "nested",
                         }
+
+
+def _stable_game_identity(
+    game: Mapping[str, Any],
+    game_index: int,
+) -> tuple[str, str | int]:
+    """返回批次内稳定局身份，缺少 game_id 时隔离每个输入游戏。"""
+    game_id = game.get("game_id")
+    if game_id is not None and str(game_id).strip():
+        return ("game_id", str(game_id))
+    return ("input_index", game_index)
 
 
 def _trace_request_ids(trace: Mapping[str, Any]) -> frozenset[str]:

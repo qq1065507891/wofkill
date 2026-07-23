@@ -1,9 +1,13 @@
 ﻿# -*- coding: utf-8 -*-
-"""Central timeout contract for real-game agent calls.
-    作者: Mike
-    创建日期: 2025-01-15
-    修改日期: 2026-07-05
-    使用示例: 内部模块，无对外接口
+"""
+提供 deprecated/inert 的 Agent 超时配置兼容对象。
+
+这些数值仅供旧导入方读取，不控制 provider HTTP 调用或 Runtime deadline。
+
+作者: Mike
+创建日期: 2025-01-15
+修改日期: 2026-07-23
+使用示例: 内部模块，无对外接口
 """
 
 from __future__ import annotations
@@ -13,20 +17,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class AgentTimeouts:
+    """保留旧字段形状的惰性兼容配置。"""
+
     wolf_discussion_per_player: float = 180.0
     wolf_discussion_total: float = 600.0
     wolf_consensus: float = 180.0
-    # P0-R2: seer/witch timeouts bumped 2x (180s → 360s) to reduce
-    # empty_response rate.  Game trace g_3528592081: 17/82 actions ended
-    # in empty_response, mostly seer (5) and villager (3). Seer check
-    # and witch action prompts are larger and more structured, so the
-    # model needs more wall-clock headroom before the connection is
-    # closed by the provider. Other phases are unchanged.
     seer_check: float = 360.0
     witch_action: float = 360.0
-    # Backward-compat aliases for tests/external code that referenced
-    # the old `seer` / `witch` field names. Keep them in sync with
-    # the renamed fields so existing call sites continue to work.
+    # 保留旧 seer/witch 字段名，避免外部导入方在迁移期间中断。
     seer: float = 360.0
     witch: float = 360.0
     day_speech: float = 240.0

@@ -3,7 +3,7 @@
 运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
 作者: Project contributors
-修改日期: 2026-07-18
+修改日期: 2026-07-23
 
 使用示例:
     python scripts/run_real_game.py --seed 42 --max-steps 500
@@ -1213,7 +1213,7 @@ def main() -> None:
     _test_model_cfg = router._model_profiles.get(_test_model_profile, {})
     print(f"  Test agent:  {_test_agent} (profile={_test_profile})")
     print(f"  Test model:  provider={_test_default.get('provider','?')} model={_test_model_cfg.get('model','?')} timeout={_test_model_cfg.get('timeout','?')}s")
-    print(f"  Calling API (this may take up to {int((_test_model_cfg.get('timeout') or 60) * 3)}s with retries)...", flush=True)
+    print("  Calling API...", flush=True)
 
     test_result = router.generate(
         agent_id=_test_agent,

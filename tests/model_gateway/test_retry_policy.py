@@ -8,6 +8,7 @@
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from werewolf_agent.model_gateway.execution_records import RouteKind
@@ -132,6 +133,21 @@ def test_status_only_provider_errors_are_classified_before_message_heuristics() 
 def test_explicit_ordinary_4xx_overrides_misleading_retryable_message(client_error: Exception) -> None:
     assert not _is_retryable_exception(client_error)
     assert retry_kind_for_exception(client_error) is None
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        httpx.ReadError("read failed"),
+        httpx.WriteError("write failed"),
+        httpx.RemoteProtocolError("peer closed connection"),
+    ],
+)
+def test_httpx_transport_errors_are_generic_retries(
+    transport_error: httpx.TransportError,
+) -> None:
+    assert _is_retryable_exception(transport_error)
+    assert retry_kind_for_exception(transport_error) is RetryKind.GENERIC
 
 
 def test_primary_generic_budget_has_four_retries() -> None:

@@ -3,7 +3,7 @@
 验证真实游戏脚本的报告辅助函数与结构化质量指标。
 
 作者: Project contributors
-修改日期: 2026-07-18
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -66,6 +67,16 @@ def test_runner_cli_no_longer_accepts_agent_timeout_arguments() -> None:
     )
     assert config.seed == 42
     assert config.game_id == "sync-cli"
+
+
+def test_connectivity_message_does_not_claim_inaccurate_timeout_upper_bound() -> None:
+    """连接探测的 route 数量可变，不得用 timeout 倍数声称固定上界。"""
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts" / "run_real_game.py"
+    ).read_text(encoding="utf-8")
+
+    assert "Calling API..." in source
+    assert "Calling API (this may take up to" not in source
 
 
 def test_terminal_log_message_distinguishes_finished_and_aborted(caplog) -> None:
