@@ -116,7 +116,8 @@ git commit -m "feat: define deterministic model retry policy"
 - Modify: `config/models.yaml:1-125`
 - Modify: `werewolf_agent/model_gateway/router.py:338-535,600-741,790-793`
 - Modify: `tests/model_gateway/test_router.py:174-229,432-783,1023-1033`
-- Modify: `tests/model_gateway/test_providers.py:141-161`
+- Modify: `tests/model_gateway/test_openai.py` at request timeout capture cases
+- Modify: `tests/model_gateway/test_per_profile_url_and_extra_body.py:255-510`
 - Modify: provider-specific tests under `tests/model_gateway/test_anthropic_provider.py` and `tests/model_gateway/test_minimax_provider_routing.py`
 
 - [ ] **Step 1: 写缺省配置和 provider 透传 RED 测试**
@@ -147,7 +148,7 @@ assert ModelConfig(provider="openai", model="m").retry_count == 4
 - [ ] **Step 3: 运行 RED 测试**
 
 ```powershell
-python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\router-budget-red tests/model_gateway/test_retry_policy.py tests/model_gateway/test_router.py tests/model_gateway/test_providers.py tests/model_gateway/test_anthropic_provider.py tests/model_gateway/test_minimax_provider_routing.py -q
+python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\router-budget-red tests/model_gateway/test_retry_policy.py tests/model_gateway/test_router.py tests/model_gateway/test_openai.py tests/model_gateway/test_per_profile_url_and_extra_body.py tests/model_gateway/test_anthropic_provider.py tests/model_gateway/test_minimax_provider_routing.py -q
 ```
 
 Expected: 新的次数/等待/默认值断言 FAIL，证明仍在使用旧 jitter、旧 parser 默认或统一 fallback loop 预算。
@@ -168,7 +169,7 @@ primary 建立一个预算；fallback chain 每进入一个新的 provider/model
 - [ ] **Step 6: 运行 GREEN 测试**
 
 ```powershell
-python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\router-budget-green tests/model_gateway/test_retry_policy.py tests/model_gateway/test_router.py tests/model_gateway/test_router_split_helpers.py tests/model_gateway/test_provider_fallback_policy.py tests/model_gateway/test_providers.py tests/model_gateway/test_anthropic_provider.py tests/model_gateway/test_minimax_provider_routing.py -q
+python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\router-budget-green tests/model_gateway/test_retry_policy.py tests/model_gateway/test_router.py tests/model_gateway/test_router_split_helpers.py tests/model_gateway/test_provider_fallback_policy.py tests/model_gateway/test_openai.py tests/model_gateway/test_per_profile_url_and_extra_body.py tests/model_gateway/test_anthropic_provider.py tests/model_gateway/test_minimax_provider_routing.py -q
 git diff --check
 ```
 
@@ -259,22 +260,24 @@ git commit -m "fix: prevent action retry after transport exhaustion"
 - Modify: `werewolf_agent/runtime/game_runner_config.py` at `agent_call_timeout`
 - Modify: `werewolf_agent/runtime/game_runner_setup.py` at RuntimeState initialization
 - Modify: `werewolf_agent/runtime/nodes/runtime_state.py:45-72`
+- Modify: `scripts/run_real_game.py:1105-1155`
 - Modify: timeout_override call sites in `werewolf_agent/runtime/nodes/day_deaths.py`, `day_discussion.py`, `day_vote.py`, `night_specialists.py`, `night_witch_node.py`, `sheriff_endorse.py`, `sheriff_pk.py`, `sheriff_speech.py`, `skills.py`, `wolf_consensus.py`, `wolf_discussion.py`
 - Modify: `werewolf_agent/runtime/nodes/__init__.py`
 - Modify: `werewolf_agent/runtime/nodes/_shared.py:68-106`
 - Modify: `tests/runtime/test_graph_lifecycle.py:255-335`
 - Modify: `tests/runtime/test_wolf_kill_support.py`
+- Modify: `tests/scripts/test_run_real_game.py:30-55,1245-1300`
 
 - [ ] **Step 1: 把旧 timeout 行为测试改成同步线程合同 RED 测试**
 
 替换 `test_single_wolf_vote_uses_global_agent_timeout`、`test_dispatch_agent_direct_call_when_timeout_zero`：记录调用方 thread id 与 Agent 内 thread id，断言相同；monkeypatch `threading.Thread` 为一旦实例化就失败，断言 `_dispatch_agent()` 和狼刀单人投票仍成功。删除对 `timed_call` monkeypatch 的依赖。
 
-再加静态合同测试：`inspect.signature(_dispatch_agent)` 不含 `timeout_override`，Runtime 配置/状态不含 `agent_call_timeout` 或 `wolf_vote_timeout`。
+再加静态合同测试：`inspect.signature(_dispatch_agent)` 不含 `timeout_override`，Runtime 配置/状态不含 `agent_call_timeout` 或 `wolf_vote_timeout`。真实游戏 CLI 测试断言 parser 不再注册 `--timeout`/`--no-timeout`，`_build_runner_config()` 不再传入已删除字段，现有 seed/game-id/output-dir/delay 映射保持不变。
 
 - [ ] **Step 2: 运行 RED 测试**
 
 ```powershell
-python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\runtime-sync-red tests/runtime/test_graph_lifecycle.py tests/runtime/test_wolf_kill_support.py tests/runtime/test_game_runner.py -q
+python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\runtime-sync-red tests/runtime/test_graph_lifecycle.py tests/runtime/test_wolf_kill_support.py tests/runtime/test_game_runner.py tests/scripts/test_run_real_game.py -q
 ```
 
 Expected: timeout 参数仍存在或 `timed_call` 仍创建线程，导致新断言 FAIL。
@@ -286,25 +289,27 @@ Expected: timeout 参数仍存在或 `timed_call` 仍创建线程，导致新断
 - 所有调用点删除 timeout 参数和活动 `AGENT_TIMEOUTS` 导入；
 - `wolf_kill_support.py` 在已有 try/except 内直接 `agent.act(context)`；
 - 删除 active Runtime 对 `agent_call_timeout`、`wolf_vote_timeout` 的配置/状态读取；
+- 从 `scripts/run_real_game.py` 删除 `--timeout`/`--no-timeout` 参数、`agent_call_timeout` 配置传递及旧 timeout 状态输出，保证真实游戏入口仍能构造 `GameRunnerConfig`；
 - 保留现有异常捕获和安全 fallback，不新增线程或 async 包装。
 
 - [ ] **Step 4: 收紧兼容 facade**
 
-`runtime.nodes._shared` 删除 `timed_call` re-export，因为 timer API 已获批准删除；`runtime.agent_adapter`、`runtime.agent_action_pipeline`、`runtime.nodes._shared` 仍 re-export 同一个 `runtime.timeouts.AGENT_TIMEOUTS` 对象。生产节点不得读取它。
+`runtime.nodes._shared` 删除 `timed_call` re-export，因为 timer API 已获批准删除；`runtime.agent_adapter`、`runtime.agent_action_pipeline`、`runtime.nodes._shared`，以及现有 `runtime.nodes.day`、`runtime.nodes.night`、`runtime.nodes.sheriff` facade 仍 re-export 同一个 `runtime.timeouts.AGENT_TIMEOUTS` 对象。对六个入口逐一写 identity 测试；生产节点不得读取它。
 
 - [ ] **Step 5: 运行 GREEN 测试**
 
 ```powershell
-python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\runtime-sync-green tests/runtime/test_graph_lifecycle.py tests/runtime/test_wolf_kill_support.py tests/runtime/test_agent_adapter.py tests/runtime/test_game_runner.py -q
+python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\runtime-sync-green tests/runtime/test_graph_lifecycle.py tests/runtime/test_wolf_kill_support.py tests/runtime/test_agent_adapter.py tests/runtime/test_timeouts_config.py tests/runtime/test_game_runner.py tests/scripts/test_run_real_game.py -q
+rg -n "agent_call_timeout|--no-timeout|--timeout|timeout_override" werewolf_agent/runtime scripts/run_real_game.py
 git diff --check
 ```
 
-Expected: 全部 PASS；Agent 与 Runtime 在同一线程，任何路径都不实例化 timeout worker thread。
+Expected: 全部 PASS；Agent 与 Runtime 在同一线程，任何路径都不实例化 timeout worker thread；残留扫描无命中。
 
 - [ ] **Step 6: 提交同步 Runtime 调用**
 
 ```powershell
-git add werewolf_agent/runtime tests/runtime/test_graph_lifecycle.py tests/runtime/test_wolf_kill_support.py tests/runtime/test_agent_adapter.py tests/runtime/test_game_runner.py
+git add werewolf_agent/runtime scripts/run_real_game.py tests/runtime/test_graph_lifecycle.py tests/runtime/test_wolf_kill_support.py tests/runtime/test_agent_adapter.py tests/runtime/test_timeouts_config.py tests/runtime/test_game_runner.py tests/scripts/test_run_real_game.py
 git commit -m "refactor: call runtime agents synchronously"
 ```
 
@@ -328,7 +333,7 @@ git commit -m "refactor: call runtime agents synchronously"
 
 - [ ] **Step 1: 先把阶段测试改写为“不会因 deadline 跳过”RED 测试**
 
-删除对 `ManualTimer`、`RealTimer`、`NoopTimer` 的导入与 fixture。将白天发言、狼队讨论和狼队共识测试改为：满足正常前置状态时节点调用 Agent 并推进，而不是生成 `speech_timeout`、`wolf_no_kill_timeout` 或提前跳过。删除只验证 timer 自身实现的单元测试。
+删除对 `ManualTimer`、`RealTimer`、`NoopTimer` 的导入与 fixture。将白天发言、狼队讨论和狼队共识测试改为：满足正常前置状态时节点调用 Agent 并推进，而不是因为 deadline 生成 `speech_timeout`、deadline-origin `wolf_no_kill_timeout` 或提前跳过。其他真实 Agent/transport 失败所需的安全 no-kill 证据不属于本任务，不得顺带删除。删除只验证 timer 自身实现的单元测试。
 
 `tests/runtime/test_timeouts_config.py` 改成兼容测试：各 facade 的 `AGENT_TIMEOUTS` identity 相同，并扫描 active Runtime 模块不出现 `AGENT_TIMEOUTS.` 行为读取；常量具体数值不再是生产合同。
 
@@ -358,7 +363,7 @@ Expected: `runtime_timer`/expired 分支仍导致阶段跳过，或 active impor
 
 ```powershell
 python -m pytest --override-ini="addopts=" -p no:cacheprovider --basetemp E:\NLP\agent\wofkill\.tmp\deadline-removal-green tests/runtime/test_day_discussion.py tests/runtime/test_day_discussion_nodes.py tests/runtime/test_wolf_flow.py tests/runtime/test_wolf_night_nodes.py tests/runtime/test_timeouts_config.py tests/integration/test_post_july14_repair_closure.py -q
-rg -n "timed_call|runtime_timer|_deadlines|ManualTimer|RealTimer|NoopTimer|_timer_expired|speech_timed_out|timeout_override" werewolf_agent tests README.md
+rg -n "timed_call|runtime_timer|_deadlines|ManualTimer|RealTimer|NoopTimer|_timer_expired|speech_timed_out|timeout_override|agent_call_timeout|--no-timeout|--timeout" werewolf_agent scripts/run_real_game.py README.md
 git diff --check
 ```
 
