@@ -37,7 +37,6 @@ from werewolf_agent.runtime.nodes._shared import (
     _player_display,
     _player_ids,
     _stable_seed,
-    _timer_expired,
 )
 from werewolf_agent.runtime.nodes.night_entry import (
     enter_night,
@@ -92,5 +91,4 @@ __all__ = [
     "_player_display",
     "_player_ids",
     "_stable_seed",
-    "_timer_expired",
 ]

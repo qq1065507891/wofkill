@@ -27,64 +27,60 @@ from werewolf_agent.runtime.graph import (
 # Free discussion (day speech)
 # ---------------------------------------------------------------------------
 
-def test_free_discussion_speech_timeout_records_event() -> None:
-    gs = GameState(game_id="speech_timeout", day_number=1)
+def test_free_discussion_legacy_deadline_state_does_not_skip_agent(monkeypatch) -> None:
+    from werewolf_agent.runtime.nodes import day as day_mod
 
-    result = free_discussion({
+    gs = GameState(
+        game_id="speech_legacy_deadline",
+        day_number=1,
+        players={
+            "p03": PlayerState(id="p03", role="villager", alive=True),
+            "p04": PlayerState(id="p04", role="villager", alive=True),
+        },
+    )
+    calls: list[str] = []
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    def fake_dispatch_agent(state, fn, speaker_id, **kwargs):
+        calls.append(speaker_id)
+        return {"speech_text": "normal speech"}
+
+    monkeypatch.setattr(day_mod, "_dispatch_agent", fake_dispatch_agent)
+    legacy_timeout_key = "speech" + "_timed_out"
+
+    result = day_mod.free_discussion({
         "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+        "speech_order": ["p03", "p04"],
+        "speech_index": 0,
         "current_speaker_id": "p03",
-        "speech_timed_out": True,
-        "speech_seconds_limit": 90,
+        legacy_timeout_key: True,
     })
 
-    event = result["game_state"].events[-1]
-    assert event.type == "speech_timeout"
-    assert event.payload == {
-        "player_id": "p03",
-        "day_number": 1,
-        "seconds_limit": 90,
-    }
+    assert calls == ["p03"]
+    assert any(event.type == "speech" for event in result["game_state"].events)
+    assert result["current_speaker_id"] == "p04"
 
 
-def test_free_discussion_speech_timeout_advances_speech_queue() -> None:
+def test_free_discussion_normal_speech_advances_speech_queue() -> None:
     gs = GameState(game_id="speech_queue", day_number=1)
 
     result = free_discussion({
         "game_state": gs,
         "speech_order": ["p01", "p02"],
         "speech_index": 0,
-        "speech_timed_out": True,
-        "speech_seconds_limit": 90,
+        "speech_text": "正常发言",
     })
 
     assert result["speech_index"] == 1
     assert result["current_speaker_id"] == "p02"
-    assert result["game_state"].events[-1].type == "speech_timeout"
+    assert result["game_state"].events[-1].type == "speech"
 
-def test_free_discussion_timer_expiration_records_timeout() -> None:
-    from werewolf_agent.runtime.timers import ManualTimer
-
-    players = {
-        "p01": PlayerState(id="p01", role="villager", alive=True),
-        "p02": PlayerState(id="p02", role="villager", alive=True),
-    }
-    gs = GameState(game_id="speech_timer", players=players, day_number=1)
-
-    result = free_discussion({
-        "game_state": gs,
-        "engine": _new_engine(),
-        "speech_order": ["p01", "p02"],
-        "speech_index": 0,
-        "current_speaker_id": "p01",
-        "speech_seconds_limit": 30,
-        "runtime_timer": ManualTimer(expired_keys={"speech:p01"}),
-    })
-
-    assert result["game_state"].events[-1].type == "speech_timeout"
-    assert result["game_state"].events[-1].payload["seconds_limit"] == 30
-    assert result["current_speaker_id"] == "p02"
-
-def test_free_discussion_normal_speech_advances_speech_queue() -> None:
+def test_free_discussion_pre_supplied_speech_advances_speech_queue() -> None:
     gs = GameState(game_id="speech_queue_normal", day_number=1)
 
     result = free_discussion({
@@ -189,7 +185,6 @@ def test_free_discussion_empty_model_speech_keeps_private_decision_opportunity(
         ("missing_registry", "agent_unavailable"),
         ("none_result", "agent_unavailable"),
         ("exception", "agent_dispatch_error"),
-        ("timeout", "speech_timeout"),
     ],
 )
 def test_free_discussion_always_records_safe_speech_opportunity(
@@ -223,9 +218,6 @@ def test_free_discussion_always_records_safe_speech_opportunity(
             raise TimeoutError("PRIVATE provider detail")
 
         monkeypatch.setattr(day_mod, "_dispatch_agent", fail_dispatch)
-    elif mode == "timeout":
-        state["speech_timed_out"] = True
-
     result = day_mod.free_discussion(state)
     final_state = result["game_state"]
     audits = [event for event in final_state.events if event.type == "action_trace_audit"]

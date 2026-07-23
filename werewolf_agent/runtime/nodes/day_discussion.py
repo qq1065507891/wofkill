@@ -27,7 +27,6 @@ from werewolf_agent.runtime.nodes._shared import (
     _dispatch_agent,
     _judge_broadcast,
     _player_display,
-    _timer_expired,
 )
 from werewolf_agent.evaluation.balance_public_claims import (
     public_speech_history,
@@ -52,7 +51,6 @@ from werewolf_agent.runtime.agent_action_audit import (
 def _terminal_speech_trace(reason: str) -> dict[str, Any]:
     """构造不含模型私密内容的稳定发言机会审计。"""
     failure_stage = {
-        "speech_timeout": "runtime",
         "pre_supplied_speech_text": "runtime",
         "agent_dispatch_error": "provider",
         "self_destruct_before_speech": "runtime",
@@ -164,45 +162,10 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         return {
             "speech_index": next_index,
             "current_speaker_id": next_speaker,
-            "speech_timed_out": False,
             "speech_text": "",
             "speech_order": speech_order,
         }
 
-    timed_out = state.get("speech_timed_out", False) or (
-        speaker_id is not None and _timer_expired(state, f"speech:{speaker_id}")
-    )
-
-    if speaker_id and timed_out:
-        decision_identity = _allocate_decision_identity(
-            state,
-            player_id=speaker_id,
-            phase="speech",
-            task_type="speech",
-            day_number=gs.day_number,
-            night_number=gs.night_number,
-        )
-        exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
-        events = _action_audit_events(
-            state=state,
-            player_id=speaker_id,
-            phase="speech",
-            action_trace=_terminal_speech_trace("speech_timeout"),
-            decision_identity=decision_identity,
-            exposure_collector=exposure_collector,
-            day_number=gs.day_number,
-            night_number=gs.night_number,
-        )
-        events.append(GameEvent(
-            type="speech_timeout",
-            payload={
-                "player_id": speaker_id,
-                "day_number": gs.day_number,
-                "seconds_limit": state.get("speech_seconds_limit", 0),
-            },
-        ))
-        gs = replace(gs, events=gs.events + events)
-        return {"game_state": gs, **advance_speaker()}
     if speaker_id:
         # 法官公告当前发言人。
         gs, _ = _judge_broadcast(

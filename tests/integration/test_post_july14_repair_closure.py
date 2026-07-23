@@ -48,7 +48,6 @@ from werewolf_agent.runtime.skill_opportunity_events import (
     append_self_destruct_opportunity,
     append_self_destruct_selected,
 )
-from werewolf_agent.runtime.timers import ManualTimer
 from werewolf_agent.runtime.wolf_discussion_directives import (
     build_validated_wolf_target_stance,
 )
@@ -223,12 +222,15 @@ def test_third_pre_resolution_no_kill_recovers_deterministically() -> None:
         phase="night",
         night_number=1,
     )
-    first = wolf_consensus({
+    from werewolf_agent.runtime.nodes.wolf_discussion import wolf_team_plan_node
+
+    provider_failure = wolf_team_plan_node({
         "game_state": game_state,
         "engine": _engine(),
-        "wolf_action": "kill",
-        "wolf_kill_target_id": "v1",
-        "runtime_timer": ManualTimer(expired_keys={"wolf_discussion"}),
+    })
+    first = wolf_consensus({
+        "game_state": provider_failure["game_state"],
+        "engine": _engine(),
     })
     second = wolf_consensus({
         "game_state": replace(first["game_state"], night_number=2),
@@ -378,7 +380,7 @@ def test_running_wolf_discussion_checkpoint_aborts_at_step_limit(tmp_path) -> No
     assert payload["phase"] == "wolf_discussion"
 
 
-def test_runtime_no_kill_event_has_complete_v2_audit_identity() -> None:
+def test_provider_failure_no_kill_event_has_complete_v2_audit_identity() -> None:
     """真实空刀和合法落刀节点都具有完整、稳定的 V2 审计身份。"""
     game_state = GameState(
         game_id="closure-v2-no-kill",
@@ -386,10 +388,15 @@ def test_runtime_no_kill_event_has_complete_v2_audit_identity() -> None:
         phase="night",
         night_number=1,
     )
-    result = wolf_consensus({
+    from werewolf_agent.runtime.nodes.wolf_discussion import wolf_team_plan_node
+
+    provider_failure = wolf_team_plan_node({
         "game_state": game_state,
         "engine": _engine(),
-        "runtime_timer": ManualTimer(expired_keys={"wolf_discussion"}),
+    })
+    result = wolf_consensus({
+        "game_state": provider_failure["game_state"],
+        "engine": _engine(),
     })
     events = result["game_state"].events
 
@@ -664,20 +671,25 @@ def test_closure_public_skill_payload_has_zero_sensitive_fields() -> None:
         "use_antidote": True,
         "poison_target_id": None,
     })
-    timeout_result = wolf_consensus({
+    from werewolf_agent.runtime.nodes.wolf_discussion import wolf_team_plan_node
+
+    failure_plan = wolf_team_plan_node({
         "game_state": GameState(
-            game_id="closure-public-timeout",
+            game_id="closure-public-provider-failure",
             players=_players(),
             phase="night",
             night_number=1,
         ),
         "engine": _engine(),
-        "runtime_timer": ManualTimer(expired_keys={"wolf_discussion"}),
+    })
+    provider_failure_result = wolf_consensus({
+        "game_state": failure_plan["game_state"],
+        "engine": _engine(),
     })
     produced_states = (
         result["game_state"],
         majority_result["game_state"],
-        timeout_result["game_state"],
+        provider_failure_result["game_state"],
     )
     public_events = [
         event for produced_state in produced_states

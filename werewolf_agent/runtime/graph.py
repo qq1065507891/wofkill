@@ -59,7 +59,6 @@ from werewolf_agent.runtime.nodes._shared import (  # noqa: F401
     _public_vote_reason,
     _sheriff_died_this_batch,
     _stable_seed,
-    _timer_expired,
     _with_vote_target_in_trace,
 )
 

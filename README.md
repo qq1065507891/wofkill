@@ -123,7 +123,7 @@ V1.1 增加了本地运行硬化和生产适配边界，但默认开发路径仍
 
 - Runtime：`LocalRuntimeExecutor` 提供单进程 per-game lock、后台运行状态和 paused-game step 拦截。多进程部署使用 `RedisRuntimeExecutor`（V1.2 新增）。
 - Redis：`RedisRuntimeExecutor` 提供分布式 per-game 锁（TTL + 刷新）和 JSON 状态追踪，Redis 不可用时优雅降级。
-- Timer：`runtime.timers` 提供 `ManualTimer` / `NoopTimer`，用于狼队讨论和白天发言的流程超时测试；真实 provider 调用取消仍是后续工作。
+- Runtime 同步调用 Agent；实际网络边界由 provider HTTP timeout 控制，运行时不再维护流程 deadline 或计时器。
 - MCP：`TransportMCPProvider` 可以包装真实 transport，但 MCP 结果仍统一标注为 suggestion-only。
 - RAG：`create_vector_store()` 支持 `auto`、`local`、`embedding`、`siliconflow`、`pgvector`；Qdrant 不启用。
 - Storage：`ProductionStorageConfig` / `create_game_repository()` 支持 SQLite 和 PostgreSQL；Docker 默认使用 `pgvector/pgvector:pg16`。
@@ -155,9 +155,9 @@ python -m pytest tests/storage/test_storage.py -q
 
 - RuleEngine 是裁判真值来源；LLM、RAG、外部案例不能修改规则判断。
 - 玩家视角不能看到 `moderator_full`、其他玩家私有状态、隐藏身份或禁用夜间信息。
-- 狼队可以主动空刀；狼队夜间讨论超时且未形成合法操作时默认空刀。
-- 只有 `wolf_kill_selected` 会向女巫暴露当前夜刀口；主动空刀和超时空刀不会产生可救刀口。
-- 白天每名玩家发言有时间限制，超时记录 `speech_timeout` 并推进发言队列。
+- 狼队可以主动空刀；真实 Agent/transport 失败或共识不满足时按安全策略空刀。
+- 只有 `wolf_kill_selected` 会向女巫暴露当前夜刀口；主动空刀和安全失败空刀不会产生可救刀口。
+- 白天满足前置条件的发言者同步调用 Agent，并在结果记录后推进发言队列。
 - 评测 replay 必须使用记录中的 `ruleset_snapshot` 复原规则。
 
 ## 评测报告导出

@@ -346,15 +346,6 @@ def test_dispatch_agent_keeps_agent_failure_as_safe_empty_result() -> None:
 
     assert result is None
 
-def test_manual_timer_expiration_is_deterministic() -> None:
-    from werewolf_agent.runtime.timers import ManualTimer
-
-    timer = ManualTimer(expired_keys={"speech:p01"})
-
-    assert timer.expired("speech:p01") is True
-    assert timer.expired("speech:p02") is False
-
-
 def test_action_trace_audit_flags_timeline_confusion() -> None:
     event = _action_trace_event(
         player_id="p01",

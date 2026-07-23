@@ -29,7 +29,6 @@ from werewolf_agent.runtime.nodes._shared import (
     _judge_broadcast,
     _planned_wolf_kill,
     _player_display,
-    _timer_expired,
     logger,
 )
 from werewolf_agent.runtime.wolf_no_kill_policy import no_kill_policy_for_state
@@ -54,14 +53,6 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     """兼容旧式 agent 或脚本动作，但所有空刀统一交给 NoKillPolicy。"""
     gs: GameState = state["game_state"]
     policy = no_kill_policy_for_state(state)
-
-    if _timer_expired(state, "wolf_discussion"):
-        logger.debug("  [狼人决策] 讨论超时，空刀")
-        return policy.resolve(
-            gs,
-            reason_code="provider_unavailable",
-            extra_payload={"legacy_reason": "timer_expired"},
-        )
 
     if state.get("agent_registry") and not state.get("wolf_action"):
         wolves = _compat("_alive_wolves", _alive_wolves)(gs)

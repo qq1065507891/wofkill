@@ -92,16 +92,6 @@ def _find_role(gs: GameState, role: str) -> str | None:
     return next((pid for pid, p in gs.players.items() if p.role == role and p.alive), None)
 
 
-def _timer_expired(state: RuntimeState, key: str) -> bool:
-    timer = state.get("runtime_timer")
-    if timer is None:
-        return False
-    expired = getattr(timer, "expired", None)
-    if expired is None:
-        return False
-    return bool(expired(key))
-
-
 def _player_display(state: RuntimeState, player_id: str) -> str:
     """返回展示名，例如 '陈思远(p01)'。"""
     registry = state.get("agent_registry")
@@ -605,5 +595,4 @@ __all__ = [
     "_player_display",
     "_player_ids",
     "_sheriff_died_this_batch",
-    "_timer_expired",
 ]

@@ -55,7 +55,6 @@ from werewolf_agent.runtime.nodes._shared import (
     _judge_broadcast,
     _player_display,
     _public_vote_reason,
-    _timer_expired,
     _with_vote_target_in_trace,
 )
 from werewolf_agent.runtime.sheriff_policy import (
@@ -86,7 +85,6 @@ _PATCHED_DEPENDENCIES = {
     "_judge_broadcast": (_day_deaths, _day_discussion, _day_vote, _day_finish),
     "_player_display": (_day_deaths, _day_discussion, _day_vote),
     "_public_vote_reason": (_day_vote,),
-    "_timer_expired": (_day_discussion,),
     "_with_vote_target_in_trace": (_day_vote,),
 }
 
@@ -118,7 +116,6 @@ __all__ = [
     "_judge_broadcast",
     "_player_display",
     "_public_vote_reason",
-    "_timer_expired",
     "_with_vote_target_in_trace",
     "agent_day_speech",
     "agent_day_vote",

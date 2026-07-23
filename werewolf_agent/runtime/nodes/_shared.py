@@ -55,7 +55,6 @@ from werewolf_agent.runtime.nodes.node_helpers import (
     _player_display,
     _player_ids,
     _sheriff_died_this_batch,
-    _timer_expired,
 )
 from werewolf_agent.runtime.nodes.runtime_state import (
     RULESET_PATH,
@@ -127,6 +126,5 @@ __all__ = [
     "_public_vote_reason",
     "_sheriff_died_this_batch",
     "_stable_seed",
-    "_timer_expired",
     "_with_vote_target_in_trace",
 ]

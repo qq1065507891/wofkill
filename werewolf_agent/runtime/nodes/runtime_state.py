@@ -47,8 +47,6 @@ class RuntimeState(TypedDict, total=False):
     speech_order: list[str]
     speech_index: int
     speech_text: str
-    speech_timed_out: bool
-    speech_seconds_limit: int
     exile_votes: dict[str, str]
     exile_vote_day: int
     exile_vote_revote: bool
@@ -66,7 +64,6 @@ class RuntimeState(TypedDict, total=False):
     rag_service: Any
     restored_memory: Any
     cognition_state_manager: Any
-    runtime_timer: Any
     consecutive_no_exile_days: int
     wolf_discussion_round: int
     wolf_team_plan: dict[str, Any]

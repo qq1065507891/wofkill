@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import replace
 from typing import Any
 
@@ -22,7 +21,6 @@ from werewolf_agent.runtime.event_metadata import new_game_event, stamp_new_even
 from werewolf_agent.runtime.agent_adapter import agent_wolf_discussion
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes._shared import (
-    AGENT_TIMEOUTS,
     RuntimeState,
     logger,
     _action_audit_events,
@@ -142,19 +140,8 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
 
     logger.debug(f"  [狼人密谈] 狼人: {[_player_display(state, w) for w in wolves]}，共{round_count}轮")
 
-    discussion_start = time.monotonic()
     _ensure_runtime_audit_state(state)
     for round_number in range(1, round_count + 1):
-        # Check total discussion timeout
-
-        elapsed = time.monotonic() - discussion_start
-
-        if elapsed >= AGENT_TIMEOUTS.wolf_discussion_total:
-
-            logger.debug(f"  [狼人密谈] 讨论总超时({elapsed:.0f}s/{AGENT_TIMEOUTS.wolf_discussion_total:.0f}s)，跳过剩余轮次")
-
-            break
-
         round_state = dict(state)
 
         round_state["wolf_discussion_round"] = round_number
