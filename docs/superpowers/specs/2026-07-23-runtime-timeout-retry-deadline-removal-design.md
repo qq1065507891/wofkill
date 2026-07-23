@@ -63,7 +63,10 @@ Runtime 直接同步调用 Agent。provider HTTP 客户端超时时抛出异常�
 满足游戏状态前置条件时正常执行，不再因 Runtime deadline 静默跳过。
 
 `werewolf_agent.runtime.timeouts.AGENT_TIMEOUTS` 保留为 deprecated 兼容入口，避免
-外部导入立即失败，但生产 Runtime 不再引用这些常量。兼容入口不构成活动 deadline。
+外部导入立即失败。现有兼容 facade（至少包括 `runtime.agent_adapter`、
+`runtime.agent_action_pipeline` 和 `runtime.nodes._shared`）继续 re-export 同一个对象；
+facade 导入不构成行为调用。生产 Runtime 的节点、调度和流程控制不得读取这些常量，
+兼容入口不构成活动 deadline。
 
 ### 4.3 Provider HTTP timeout
 
@@ -80,8 +83,12 @@ HTTP timeout 是唯一超时边界。它必须由 provider 客户端真正中止
 
 ### 5.1 配置兼容与有效预算
 
-`ModelConfig.retry_count` 保留，默认从 2 改为 4。它仍允许 profile 显式降低重试
-次数或以 `retry_count: 0` 关闭重试。路由类型再施加上限：
+`ModelConfig.retry_count` 保留，默认从 2 改为 4。所有“profile 未显式配置
+`retry_count`”的解析入口必须同步使用 4：包括 `ModelConfig` dataclass 默认值、
+primary `_resolve_config()` 当前的缺省值 2，以及 fallback `_fallback_config()` 当前的
+缺省值 1。不能只改 dataclass 而让 YAML 路由解析继续保留旧默认。
+
+profile 仍可显式降低重试次数或以 `retry_count: 0` 关闭重试。路由类型再施加上限：
 
 | 错误类型 | 路由 | 最大重试次数 | 有效预算 |
 | --- | --- | ---: | --- |
@@ -368,7 +375,8 @@ provider returns empty/invalid structured output
 - `ActionTrace.runtime_timeout_count` 对旧记录按 attempts 回填；只有同时缺少 attempts
   时默认为 0。
 - `ModelConfig.retry_count` 保留，默认提升为 4；显式低值继续生效。
-- `AGENT_TIMEOUTS` 保留 deprecated 兼容导出；删除它属于未来独立破坏性变更。
+- `AGENT_TIMEOUTS` 及既有 facade re-export 保留 deprecated 兼容导出；删除它们属于
+  未来独立破坏性变更。只有兼容 import 可以引用该对象，活动 Runtime 行为不得读取。
 - 删除 `timers.py` 会移除其类和函数导入，这是用户明确批准的 Runtime deadline
   API 移除范围。
 
