@@ -586,6 +586,54 @@ class TestGenerateWithMockProvider:
         assert [item.ordinal for item in result.attempts] == list(range(1, 7))
         assert [item.root_cause.value for item in result.attempts[1:5]] == ["provider_error"] * 4
 
+    def test_mixed_fallback_retry_log_separates_total_and_category_progress(
+        self, monkeypatch, caplog,
+    ) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        fallback = _SequenceProvider(
+            [_HttpError(429), _HttpError(429), _HttpError(429), _HttpError(503), "ok"],
+            "fallback",
+        )
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "missing", "model": "p", "reasoning": {"level": "high"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 4,
+                             "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "missing", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"}, providers={"fallback": fallback},
+            validate_reasoning=False,
+        )
+
+        with caplog.at_level("WARNING"):
+            result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        retry_logs = [
+            record.getMessage() for record in caplog.records
+            if "route=provider_fallback" in record.getMessage()
+        ]
+        assert result.text == "ok"
+        assert fallback.calls == 5
+        assert sleeps == [16.0, 32.0, 64.0, 2.0]
+        assert len(retry_logs) == 4
+        expected_progress = [
+            "total_retry=1/4 category=rate_limit category_retry=1/3 delay_seconds=16.0",
+            "total_retry=2/4 category=rate_limit category_retry=2/3 delay_seconds=32.0",
+            "total_retry=3/4 category=rate_limit category_retry=3/3 delay_seconds=64.0",
+            "total_retry=4/4 category=generic category_retry=1/2 delay_seconds=2.0",
+        ]
+        for message, progress in zip(retry_logs, expected_progress):
+            assert "candidate=fallback/f" in message
+            assert progress in message
+            assert "attempt 4/3" not in message
+
     def test_fallback_budgets_reset_per_candidate_and_mixed_errors_share_total(self, monkeypatch) -> None:
         from werewolf_agent.model_gateway import router as router_module
         from werewolf_agent.model_gateway.router import ModelRouter
@@ -623,14 +671,14 @@ class TestGenerateWithMockProvider:
         assert primary_result.usage is not None
         assert primary_result.usage.retry_count == 2
 
-        primary._responses = [_HttpError(503)]
+        primary._responses = [_HttpError(503)] * 3
         sleeps.clear()
         fallback_result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
 
         assert first.calls == 3
         assert second.calls == 3
         assert fallback_result.text == "ok"
-        assert sleeps == [2.0, 2.0, 4.0, 2.0, 4.0]
+        assert sleeps == [2.0, 4.0, 2.0, 4.0, 2.0, 4.0]
         assert [item.ordinal for item in fallback_result.attempts] == list(
             range(1, len(fallback_result.attempts) + 1)
         )
@@ -921,10 +969,12 @@ class TestGenerateWithMockProvider:
         warning = "\n".join(record.getMessage() for record in caplog.records)
         assert "provider=fallback" in warning
         assert "model=f" in warning
-        assert "attempt 1/2" in warning
         assert "route=provider_fallback" in warning
+        assert "candidate=fallback/f" in warning
+        assert "total_retry=1/1" in warning
         assert "category=generic" in warning
-        assert "retry in 2.0s" in warning
+        assert "category_retry=1/1" in warning
+        assert "delay_seconds=2.0" in warning
 
     def test_fallback_retry_records_one_transition_then_retry(
         self, monkeypatch,

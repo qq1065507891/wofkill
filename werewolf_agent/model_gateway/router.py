@@ -488,14 +488,15 @@ class ModelRouter:
                         retry_index,
                         retry_after=_retry_after_from_exception(exc),
                     )
-                    logger.warning(
-                        "Retryable error route=%s agent=%s task=%s provider=%s "
-                        "(attempt %d/%d, category=%s, retry in %.1fs): %s",
-                        RouteKind.PRIMARY.value,
-                        agent_id, task_type, config.provider,
-                        attempt + 1, primary_budget.max_retries_for(retry_kind) + 1,
-                        retry_kind.value, delay,
-                        _format_exception(exc),
+                    _log_retry(
+                        agent_id=agent_id,
+                        task_type=task_type,
+                        config=config,
+                        route_kind=RouteKind.PRIMARY,
+                        budget=primary_budget,
+                        retry_kind=retry_kind,
+                        delay=delay,
+                        exc=exc,
                     )
                     time.sleep(delay)
                     attempt += 1
@@ -755,14 +756,15 @@ class ModelRouter:
                             category_retry_index,
                             retry_after=_retry_after_from_exception(exc),
                         )
-                        logger.warning(
-                            "Retryable fallback error route=%s agent=%s task=%s "
-                            "provider=%s model=%s (attempt %d/%d, category=%s, retry in %.1fs): %s",
-                            RouteKind.PROVIDER_FALLBACK.value,
-                            agent_id, task_type, config.provider, config.model,
-                            retry_index + 1, retry_budget.max_retries_for(retry_kind) + 1,
-                            retry_kind.value, delay,
-                            _format_exception(exc),
+                        _log_retry(
+                            agent_id=agent_id,
+                            task_type=task_type,
+                            config=config,
+                            route_kind=RouteKind.PROVIDER_FALLBACK,
+                            budget=retry_budget,
+                            retry_kind=retry_kind,
+                            delay=delay,
+                            exc=exc,
                         )
                         time.sleep(delay)
                         retry_index += 1
@@ -815,6 +817,45 @@ class ModelRouter:
             "llm_profiles": dict(self._llm_profiles),
             "player_assignments": dict(self._player_assignments),
         }
+
+
+def _log_retry(
+    *,
+    agent_id: str,
+    task_type: str,
+    config: ModelConfig,
+    route_kind: RouteKind,
+    budget: RetryBudget,
+    retry_kind: RetryKind,
+    delay: float,
+    exc: Exception,
+) -> None:
+    """记录候选总预算与当前类别预算，避免混合类别时分母歧义。"""
+    category_retry_count = (
+        budget.generic_retry_count
+        if retry_kind is RetryKind.GENERIC
+        else budget.rate_limit_retry_count
+    )
+    logger.warning(
+        "Retryable model error route=%s candidate=%s/%s agent=%s task=%s "
+        "provider=%s model=%s total_retry=%d/%d category=%s "
+        "category_retry=%d/%d delay_seconds=%.1f: %s",
+        route_kind.value,
+        config.provider,
+        config.model,
+        agent_id,
+        task_type,
+        config.provider,
+        config.model,
+        budget.total_retry_count,
+        max(budget.config_retry_count, 0),
+        retry_kind.value,
+        category_retry_count,
+        budget.max_retries_for(retry_kind),
+        delay,
+        _format_exception(exc),
+    )
+
 
 def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
     from werewolf_agent.model_gateway.retry_policy import _retry_delay_for_exception as _impl
