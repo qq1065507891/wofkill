@@ -476,7 +476,7 @@ def _attempt_request_id(attempt: Any) -> str | None:
 def _merge_action_trace_records(
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """为同一请求身份的多个投影选择完整 trace 并保留 timeout 校验。"""
+    """为同一请求身份合并完整 attempts 与独立审计上下文。"""
     selected = max(
         records,
         key=lambda record: (
@@ -502,11 +502,42 @@ def _merge_action_trace_records(
         and explicit_timeout_counts
     ):
         selected_trace["runtime_timeout_count"] = explicit_timeout_counts[0]
-    return {
+    merged = {
         **selected,
         "trace": selected_trace,
         "explicit_timeout_counts": tuple(explicit_timeout_counts),
     }
+    individual_records = [
+        record
+        for record in records
+        if record.get("representation") == "individual"
+    ]
+    if not individual_records:
+        return merged
+
+    audit_context = individual_records[0]
+    for key in ("actor", "task", "game"):
+        merged[key] = audit_context[key]
+    explicit_task_types = _distinct_explicit_task_types(individual_records)
+    if len(explicit_task_types) == 1:
+        merged["explicit_task_type"] = explicit_task_types[0]
+    elif len(explicit_task_types) > 1:
+        # 同一请求的独立审计对关键任务不一致时，不能任选一方计入覆盖率。
+        merged["explicit_task_type"] = None
+    return merged
+
+
+def _distinct_explicit_task_types(
+    records: list[dict[str, Any]],
+) -> list[str]:
+    """保序收集独立审计的明确任务类型，类型冲突由调用方失败闭合。"""
+    task_types: list[str] = []
+    for record in records:
+        task_type = record.get("explicit_task_type")
+        if not task_type or task_type in task_types:
+            continue
+        task_types.append(task_type)
+    return task_types
 
 
 def _explicit_timeout_counts(

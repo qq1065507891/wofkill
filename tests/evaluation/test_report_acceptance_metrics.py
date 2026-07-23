@@ -334,8 +334,8 @@ def test_execution_report_deduplicates_wolf_consensus_trace_projection() -> None
     assert metrics["attempt_retry_consistency_error_count"] == 0
 
 
-def test_execution_report_merges_richer_wolf_trace_without_losing_timeout_check() -> None:
-    """同组副本要保留完整 attempts 和任一显式 timeout 计数。"""
+def test_execution_report_merges_richer_wolf_trace_without_losing_audit_context() -> None:
+    """同组副本要保留完整 attempts、timeout 校验和独立审计任务上下文。"""
     from werewolf_agent.evaluation.balance_audit import (
         compute_decision_execution_metrics,
     )
@@ -375,8 +375,8 @@ def test_execution_report_merges_richer_wolf_trace_without_losing_timeout_check(
             {"type": "action_trace_audit", "payload": {
                 "player_id": "p02",
                 "phase": "wolf_consensus",
-                "task_type": "wolf_consensus",
-                "trace_id": "g1:p02:wolf_consensus:D0:N1:wolf_consensus:0",
+                "task_type": "wolf_team_plan",
+                "trace_id": "g1:p02:wolf_consensus:D0:N1:wolf_team_plan:0",
                 "action_trace": individual_trace,
             }},
             {"type": "wolf_kill_selected", "payload": {
@@ -392,6 +392,11 @@ def test_execution_report_merges_richer_wolf_trace_without_losing_timeout_check(
     assert metrics["retry_count"] == 1
     assert metrics["runtime_timeout_count"] == 1
     assert metrics["attempt_retry_consistency_error_count"] == 0
+    assert metrics["reasoning_task_type_missing_count"] == 0
+    assert metrics["critical_task_reasoning_request_count"] == 3
+    assert metrics["critical_task_reasoning_requested_count"] == 3
+    assert metrics["critical_task_reasoning_status_request_count"] == 1
+    assert metrics["critical_task_reasoning_status_explicit_count"] == 1
 
 
 def test_execution_report_keeps_equal_traces_with_distinct_request_ids() -> None:
@@ -441,6 +446,45 @@ def test_execution_report_keeps_equal_traces_with_distinct_request_ids() -> None
     assert metrics["attempt_count"] == 2
     assert metrics["runtime_timeout_count"] == 0
     assert metrics["decision_outcome_counts"] == {"direct_success": 2}
+
+
+def test_execution_report_fails_closed_on_conflicting_audit_task_context() -> None:
+    """同一请求的独立审计任务冲突时不能任选一个关键任务。"""
+    from werewolf_agent.evaluation.balance_audit import (
+        compute_decision_execution_metrics,
+    )
+
+    trace = {
+        "execution_attempts": (
+            _attempt(1, RouteKind.PRIMARY, AttemptOutcome.SUCCESS),
+        ),
+        "attempt_count": 1,
+        "retry_count": 0,
+        "provider_fallback_count": 0,
+        "runtime_timeout_count": 0,
+        "generated_by": "model",
+        "terminal_failure_code": None,
+    }
+    metrics = compute_decision_execution_metrics([{
+        "events": [
+            {"type": "action_trace_audit", "payload": {
+                "player_id": "p02",
+                "task_type": "wolf_team_plan",
+                "trace_id": "trace-1",
+                "action_trace": trace,
+            }},
+            {"type": "action_trace_audit", "payload": {
+                "player_id": "p02",
+                "task_type": "speech",
+                "trace_id": "trace-2",
+                "action_trace": dict(trace),
+            }},
+        ],
+    }])
+
+    assert metrics["decision_count"] == 1
+    assert metrics["reasoning_task_type_missing_count"] == 1
+    assert metrics["critical_task_reasoning_request_count"] == 0
 
 
 def test_execution_report_aggregates_only_real_provider_timeouts() -> None:
@@ -835,6 +879,14 @@ def test_provider_fallback_keep_requires_critical_task_policy_minimum() -> None:
         ),
         requested_reasoning_level=ReasoningLevel.MEDIUM,
     )
+    judge_first = replace(
+        first,
+        opaque_request_id=OpaqueRequestId.new("game", "1234abcd"),
+    )
+    judge_fallback = replace(
+        medium_fallback,
+        opaque_request_id=OpaqueRequestId.new("game", "1234abcd"),
+    )
     metrics = compute_decision_execution_metrics([{"events": [
         {
             "type": "action_trace_audit",
@@ -844,11 +896,13 @@ def test_provider_fallback_keep_requires_critical_task_policy_minimum() -> None:
             },
         },
         {
-            "type": "action_trace_audit",
-            "payload": {
-                "task_type": "judge_phase",
-                "action_trace": {"execution_attempts": (first, medium_fallback)},
-            },
+                "type": "action_trace_audit",
+                "payload": {
+                    "task_type": "judge_phase",
+                    "action_trace": {
+                        "execution_attempts": (judge_first, judge_fallback),
+                    },
+                },
         },
     ]}])
 
