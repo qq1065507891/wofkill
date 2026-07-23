@@ -29,6 +29,7 @@ from werewolf_agent.model_gateway.router import (
     GenerateResult,
     ModelConfig,
     ModelRouter,
+    StructuredOutputUnsupportedError,
     UsageRecord,
 )
 from werewolf_agent.model_gateway.final_prompt_observer import (
@@ -578,7 +579,9 @@ class NoToolProvider:
         )
         # Returns None or raises an error for tool_choice
         if tool_choice:
-            raise NotImplementedError("This provider does not support tool_choice")
+            raise StructuredOutputUnsupportedError(
+                "This provider does not support tool_choice"
+            )
         return GenerateResult(
             text="plain text response",
             provider=self.name,

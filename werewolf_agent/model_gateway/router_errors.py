@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-模型路由器用量记录与失败结果构造。
+模型路由器的用量记录、失败结果构造与终态失败归因。
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-16
+修改日期: 2026-07-23
 
 使用示例:
     >>> isinstance(_empty_result(config_provider="mock", config_model="mock", active_mode="native_tool"), object)
@@ -193,8 +193,6 @@ def _failure_disposition_from_attempts(
         for attempt in real_failures
     ):
         return FailureDisposition.OUTPUT_REPAIRABLE
-    if real_failures and real_failures[-1].root_cause is RootCause.POLICY_REJECTION:
-        return FailureDisposition.POLICY_REJECTED
     if any(
         attempt.root_cause is RootCause.POLICY_REJECTION
         for attempt in attempts

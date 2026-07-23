@@ -100,6 +100,21 @@ def test_execution_record_preserves_skipped_provider_marker_across_mapping() -> 
     assert restored.provider_attempted is False
 
 
+def test_skipped_provider_error_cannot_masquerade_as_transport_failure() -> None:
+    from werewolf_agent.model_gateway.router_errors import (
+        _failure_disposition_from_attempts,
+    )
+
+    skipped = replace(
+        _reasoned_attempt(),
+        attempt_outcome=AttemptOutcome.FAILURE,
+        root_cause=RootCause.PROVIDER_ERROR,
+        provider_attempted=False,
+    )
+
+    assert _failure_disposition_from_attempts((skipped,)) is FailureDisposition.ROUTE_UNAVAILABLE
+
+
 def test_provider_package_exports_remain_stable() -> None:
     from werewolf_agent.model_gateway import providers
 

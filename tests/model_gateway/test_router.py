@@ -616,7 +616,11 @@ class TestGenerateWithMockProvider:
         assert context.attempts[0].provider_attempted is False
 
     def test_structured_tool_not_implemented_becomes_terminal_policy_result(self) -> None:
-        from werewolf_agent.model_gateway.router import FailureDisposition, ModelRouter
+        from werewolf_agent.model_gateway.router import (
+            FailureDisposition,
+            ModelRouter,
+            StructuredOutputUnsupportedError,
+        )
 
         router = ModelRouter(
             model_profiles={"primary": {
@@ -627,7 +631,9 @@ class TestGenerateWithMockProvider:
                 "default": {"provider": "primary", "model_profile": "primary"},
             }},
             player_assignments={"p01": "profile"},
-            providers={"primary": _SequenceProvider([NotImplementedError("tools unsupported")], "primary")},
+            providers={"primary": _SequenceProvider([
+                StructuredOutputUnsupportedError("tools unsupported")
+            ], "primary")},
         )
 
         result = router.generate(
@@ -643,9 +649,14 @@ class TestGenerateWithMockProvider:
         assert result.attempts[0].root_cause.value == "policy_rejection"
 
     def test_structured_tool_not_implemented_can_use_fallback_candidate(self) -> None:
-        from werewolf_agent.model_gateway.router import ModelRouter
+        from werewolf_agent.model_gateway.router import (
+            ModelRouter,
+            StructuredOutputUnsupportedError,
+        )
 
-        primary = _SequenceProvider([NotImplementedError("tools unsupported")], "primary")
+        primary = _SequenceProvider([
+            StructuredOutputUnsupportedError("tools unsupported")
+        ], "primary")
         fallback = _StaticTextProvider("ok", "fallback")
         router = ModelRouter(
             model_profiles={
@@ -671,7 +682,7 @@ class TestGenerateWithMockProvider:
             "policy_rejection", "none",
         ]
 
-    def test_non_structured_not_implemented_still_raises(self) -> None:
+    def test_unrelated_not_implemented_with_tool_choice_still_raises(self) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
 
         router = ModelRouter(
@@ -687,7 +698,11 @@ class TestGenerateWithMockProvider:
         )
 
         with pytest.raises(NotImplementedError, match="bug"):
-            router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+            router.generate(
+                "p01", "speech", "hello", tools=[{}],
+                tool_choice={"type": "tool", "name": "submit_player_action"},
+                jitter_seconds=(0, 0),
+            )
 
     def test_root_cause_uses_explicit_timeout_types_not_class_name(self) -> None:
         import httpx

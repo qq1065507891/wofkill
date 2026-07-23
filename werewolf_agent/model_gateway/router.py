@@ -84,14 +84,11 @@ from werewolf_agent.model_gateway.usage_records import (
     LLMProvider,
     MockProvider,
     ModelConfig,
+    StructuredOutputUnsupportedError,
     UsageRecord,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class _StructuredOutputPolicyError(RuntimeError):
-    """已知结构化工具能力拒绝的内部终态标记。"""
 
 
 __all__ = [
@@ -102,6 +99,7 @@ __all__ = [
     "MockProvider",
     "ModelConfig",
     "ModelRouter",
+    "StructuredOutputUnsupportedError",
     "UsageRecord",
     "_call_provider_generate",
     "_failure_reason",
@@ -475,7 +473,7 @@ class ModelRouter:
             except Exception as exc:
                 primary_error = exc
                 structured_tool_policy_rejection = (
-                    isinstance(exc, NotImplementedError)
+                    isinstance(exc, StructuredOutputUnsupportedError)
                     and effective_tool_choice is not None
                 )
                 attempts.append(_attempt_record(
@@ -487,12 +485,12 @@ class ModelRouter:
                         if structured_tool_policy_rejection else _root_cause(exc)
                     ),
                 ))
+                if structured_tool_policy_rejection:
+                    primary_error = StructuredOutputUnsupportedError(
+                        "structured_output_unsupported"
+                    )
+                    break
                 if isinstance(exc, NotImplementedError):
-                    if structured_tool_policy_rejection:
-                        primary_error = _StructuredOutputPolicyError(
-                            "structured_output_unsupported"
-                        )
-                        break
                     if generation_attempt_context:
                         generation_attempt_context.accept(tuple(attempts))
                     raise
@@ -549,7 +547,7 @@ class ModelRouter:
         )
         if chain_result is not None:
             return chain_result
-        if isinstance(fallback_error, _StructuredOutputPolicyError):
+        if isinstance(fallback_error, StructuredOutputUnsupportedError):
             route_failure = "structured_output_unsupported"
         fallback_provider = None
 
@@ -765,7 +763,7 @@ class ModelRouter:
                 except Exception as exc:
                     final_fallback_error = exc
                     structured_tool_policy_rejection = (
-                        isinstance(exc, NotImplementedError)
+                        isinstance(exc, StructuredOutputUnsupportedError)
                         and effective_choice is not None
                     )
                     attempts.append(_attempt_record(
@@ -776,12 +774,12 @@ class ModelRouter:
                             if structured_tool_policy_rejection else _root_cause(exc)
                         ),
                     ))
+                    if structured_tool_policy_rejection:
+                        final_fallback_error = StructuredOutputUnsupportedError(
+                            "structured_output_unsupported"
+                        )
+                        break
                     if isinstance(exc, NotImplementedError):
-                        if structured_tool_policy_rejection:
-                            final_fallback_error = _StructuredOutputPolicyError(
-                                "structured_output_unsupported"
-                            )
-                            break
                         if generation_attempt_context:
                             generation_attempt_context.accept(tuple(attempts))
                         raise
@@ -965,7 +963,7 @@ def _root_cause(exc: Exception) -> RootCause:
 
 def _fallback_route_failure_code(primary_error: Exception | None) -> str | None:
     """内容错误保留给结构化修复；仅切换型故障报告路由不可用。"""
-    if isinstance(primary_error, _StructuredOutputPolicyError):
+    if isinstance(primary_error, StructuredOutputUnsupportedError):
         return "structured_output_unsupported"
     if isinstance(primary_error, EmptyModelResponseError):
         return None

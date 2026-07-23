@@ -36,6 +36,10 @@ class FailureDisposition(str, Enum):
     ROUTE_UNAVAILABLE = "route_unavailable"
 
 
+class StructuredOutputUnsupportedError(RuntimeError):
+    """Provider 明确拒绝当前结构化工具调用能力。"""
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """单次模型调用解析后的配置。
@@ -260,5 +264,6 @@ __all__ = [
     "LLMProvider",
     "MockProvider",
     "ModelConfig",
+    "StructuredOutputUnsupportedError",
     "UsageRecord",
 ]
