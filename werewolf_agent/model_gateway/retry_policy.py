@@ -119,6 +119,8 @@ def _is_retryable_exception(exc: Exception) -> bool:
     status_code = _http_status_from_exception(exc)
     if status_code == 429 or 500 <= status_code <= 599:
         return True
+    if 400 <= status_code <= 499:
+        return False
     exc_str = type(exc).__name__.lower()
     if "connect" in exc_str or "timeout" in exc_str:
         return True
@@ -147,6 +149,8 @@ def retry_kind_for_exception(exc: Exception) -> RetryKind | None:
         return RetryKind.RATE_LIMIT
     if 500 <= status_code <= 599:
         return RetryKind.GENERIC
+    if 400 <= status_code <= 499:
+        return None
     if not _is_retryable_exception(exc):
         return None
     message = str(exc).lower()

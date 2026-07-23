@@ -81,15 +81,20 @@ class _Response:
 
 
 class _ProviderError(Exception):
-    def __init__(self, status_code: int, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        headers: dict[str, str] | None = None,
+        message: str = "provider transport failed",
+    ) -> None:
         self.response = _Response(status_code, headers)
-        super().__init__("provider transport failed")
+        super().__init__(message)
 
 
 class _StatusOnlyError(Exception):
-    def __init__(self, status_code: int) -> None:
+    def __init__(self, status_code: int, message: str = "provider transport failed") -> None:
         self.status_code = status_code
-        super().__init__("provider transport failed")
+        super().__init__(message)
 
 
 def test_exception_classification_keeps_rate_limits_distinct_from_generic_retries() -> None:
@@ -113,6 +118,18 @@ def test_status_only_provider_errors_are_classified_before_message_heuristics() 
     assert _retry_delay_for_exception(response_rate_limit, 0) == 45
     assert _is_retryable_exception(server_error)
     assert retry_kind_for_exception(server_error) is RetryKind.GENERIC
+    assert not _is_retryable_exception(client_error)
+    assert retry_kind_for_exception(client_error) is None
+
+
+@pytest.mark.parametrize(
+    "client_error",
+    [
+        _StatusOnlyError(400, "upstream mentioned 429 and 503"),
+        _ProviderError(400, message="upstream mentioned 429 and 503"),
+    ],
+)
+def test_explicit_ordinary_4xx_overrides_misleading_retryable_message(client_error: Exception) -> None:
     assert not _is_retryable_exception(client_error)
     assert retry_kind_for_exception(client_error) is None
 
