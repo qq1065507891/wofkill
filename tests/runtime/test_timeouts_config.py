@@ -45,3 +45,33 @@ def test_runtime_does_not_keep_per_call_timeout_plumbing() -> None:
         for candidate in paths:
             source = candidate.read_text(encoding="utf-8")
             assert not any(token in source for token in forbidden), candidate
+
+
+def test_current_operator_docs_do_not_advertise_removed_runtime_timeouts() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    operator_docs = [
+        root / "狼人杀多智能体项目小白指南 v1.1.1.md",
+        root / "handoff.md",
+    ]
+    forbidden = ("--timeout", "--no-timeout", "agent_call_timeout", "-TimeoutSeconds")
+
+    for path in operator_docs:
+        text = path.read_text(encoding="utf-8")
+        assert not any(token in text for token in forbidden), path
+        assert "同步" in text
+        assert "config/models.yaml" in text
+
+
+def test_wolf_consensus_log_does_not_mislabel_generic_failure_as_timeout() -> None:
+    import importlib
+    import inspect
+
+    wolf_consensus_module = importlib.import_module(
+        "werewolf_agent.runtime.nodes.wolf_consensus"
+    )
+
+    source = inspect.getsource(wolf_consensus_module)
+    assert "Agent调用超时" not in source
+    assert "Agent调用失败或未返回有效结果" in source

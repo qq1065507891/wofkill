@@ -87,7 +87,7 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
             exposure_collectors=exposure_collectors,
         )
         if result is None:
-            logger.debug("  [狼人决策] Agent调用超时，空刀")
+            logger.debug("  [狼人决策] Agent调用失败或未返回有效结果，空刀")
             return policy.resolve(gs, reason_code="provider_unavailable")
 
         action = result.get("wolf_action", "kill")

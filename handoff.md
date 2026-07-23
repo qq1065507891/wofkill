@@ -202,9 +202,10 @@ $env:LANGSMITH_TRACING = "false"
 .\scripts\run_audit_closure_soak.ps1 `
   -Seeds (714001..714010) `
   -MaxSteps 500 `
-  -TimeoutSeconds 120 `
   -DelayMilliseconds 0
 ```
+
+Runtime 会在当前调用线程中同步执行 Agent；模型服务的 HTTP 超时与重试继续由 `config/models.yaml` 中对应 provider 的配置控制。
 
 新产物应位于：
 
