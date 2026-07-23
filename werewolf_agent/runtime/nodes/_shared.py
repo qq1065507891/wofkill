@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-13
+修改日期: 2026-07-23
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes._shared import RuntimeState

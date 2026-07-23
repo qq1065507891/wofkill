@@ -4,7 +4,7 @@ GameRunner 的配置数据结构。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-16
+修改日期: 2026-07-23
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_config import GameRunnerConfig

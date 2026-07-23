@@ -3,7 +3,7 @@
 测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
 
 作者: Project contributors
-修改日期: 2026-07-19
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
