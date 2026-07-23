@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from collections.abc import Mapping
 from enum import Enum
 from typing import Any, Literal
 
@@ -85,6 +87,7 @@ class PrivateIntent(BaseModel):
 
 class ActionTrace(BaseModel):
     """Moderator/audit trace for a model action attempt."""
+    model_config = ConfigDict(frozen=True)
     raw_text: str = ""
     parsed_action: dict[str, Any] | None = None
     # 非语义终退保留被拒输出审计；带稳定 reason_codes 的语义终退会脱敏。
@@ -138,6 +141,23 @@ class ActionTrace(BaseModel):
             # 保留旧输入的字段存在性；exclude_unset 不应把回填值当作显式声明。
             object.__setattr__(self, "runtime_timeout_count", derived_count)
         return self
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> "ActionTrace":
+        """通过完整校验复制，防止更新绕过 attempts 派生的不变量。"""
+        payload = {
+            field_name: getattr(self, field_name)
+            for field_name in self.model_fields_set
+        }
+        if update:
+            payload.update(update)
+        if deep:
+            payload = deepcopy(payload)
+        return type(self).model_validate(payload)
 
     @model_serializer(mode="wrap")
     def _serialize_v2(self, handler: Any) -> dict[str, Any]:

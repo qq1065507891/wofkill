@@ -1186,20 +1186,62 @@ def test_public_view_cannot_see_wolf_stance_or_wolf_identity() -> None:
 
 
 def test_public_view_cannot_see_runtime_timeout_count_in_action_audit() -> None:
+    from werewolf_agent.agents.schemas import ActionType, AgentContext, RetryInfo, TaskType
+    from werewolf_agent.agents.trace_builder import build_action_trace
     from werewolf_agent.api.schemas import ViewMode
     from werewolf_agent.api.views import build_timeline
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord,
+        AttemptOutcome,
+        EvidenceKind,
+        OpaqueRequestId,
+        ReasoningLevel,
+        ReasoningStatus,
+        RootCause,
+        RouteKind,
+    )
     from werewolf_agent.runtime.nodes.action_audit import _action_trace_event
+
+    request_id = OpaqueRequestId.new("game", "11223344")
+    attempts = (
+        AttemptExecutionRecord(
+            opaque_request_id=request_id, ordinal=1, provider="primary",
+            model="model-a", route_kind=RouteKind.PRIMARY,
+            root_cause=RootCause.TIMEOUT,
+            attempt_outcome=AttemptOutcome.FAILURE,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+            reasoning_token_count=0, evidence_kind=EvidenceKind.NONE,
+        ),
+        AttemptExecutionRecord(
+            opaque_request_id=request_id, ordinal=2, provider="primary",
+            model="model-a", route_kind=RouteKind.RETRY,
+            root_cause=RootCause.NONE,
+            attempt_outcome=AttemptOutcome.SUCCESS,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+            reasoning_token_count=0, evidence_kind=EvidenceKind.NONE,
+        ),
+    )
+    trace = build_action_trace(
+        AgentContext(
+            agent_id="p01", task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE], legal_targets=["p01"],
+        ),
+        raw_text="", parsed_action=None, final_action_type=ActionType.NO_ACTION,
+        retry=RetryInfo(), execution_attempts=attempts,
+    )
+    audit_event = _action_trace_event(
+        player_id="p01", phase="vote", action_trace=trace.model_dump(),
+    )
 
     gs = GameState(
         game_id="timeout_audit_privacy",
         players={"p01": PlayerState(id="p01", role="villager")},
-        events=[_action_trace_event(
-            player_id="p01",
-            phase="vote",
-            action_trace={"runtime_timeout_count": 2},
-        )],
+        events=[audit_event],
     )
 
+    assert audit_event.payload["action_trace"]["runtime_timeout_count"] == 1
     assert build_timeline(gs, ViewMode.PUBLIC).events == []
 
 

@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-23
 
 使用示例:
     >>> python -m pytest tests/runtime/test_agent_action_audit.py -q
@@ -11,8 +12,66 @@
 
 from __future__ import annotations
 
-from werewolf_agent.agents.schemas import AgentContext, TaskType
+from werewolf_agent.agents.schemas import ActionType, AgentContext, RetryInfo, TaskType
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.model_gateway.execution_records import (
+    AttemptExecutionRecord,
+    AttemptOutcome,
+    EvidenceKind,
+    OpaqueRequestId,
+    ReasoningLevel,
+    ReasoningStatus,
+    RootCause,
+    RouteKind,
+)
+
+
+def _timeout_trace_payload() -> dict[str, object]:
+    from werewolf_agent.agents.trace_builder import build_action_trace
+
+    request_id = OpaqueRequestId.new("game", "11223344")
+    attempts = (
+        AttemptExecutionRecord(
+            opaque_request_id=request_id,
+            ordinal=1,
+            provider="primary",
+            model="model-a",
+            route_kind=RouteKind.PRIMARY,
+            root_cause=RootCause.TIMEOUT,
+            attempt_outcome=AttemptOutcome.FAILURE,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+            reasoning_token_count=0,
+            evidence_kind=EvidenceKind.NONE,
+        ),
+        AttemptExecutionRecord(
+            opaque_request_id=request_id,
+            ordinal=2,
+            provider="primary",
+            model="model-a",
+            route_kind=RouteKind.RETRY,
+            root_cause=RootCause.NONE,
+            attempt_outcome=AttemptOutcome.SUCCESS,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+            reasoning_token_count=0,
+            evidence_kind=EvidenceKind.NONE,
+        ),
+    )
+    trace = build_action_trace(
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02"],
+        ),
+        raw_text="",
+        parsed_action=None,
+        final_action_type=ActionType.NO_ACTION,
+        retry=RetryInfo(),
+        execution_attempts=attempts,
+    )
+    return trace.model_dump()
 
 
 def test_action_audit_event_always_carries_explicit_task_type() -> None:
@@ -33,11 +92,11 @@ def test_action_audit_keeps_runtime_timeout_count_moderator_only() -> None:
     event = _action_trace_event(
         player_id="p01",
         phase="vote",
-        action_trace={"runtime_timeout_count": 2, "execution_attempts": []},
+        action_trace=_timeout_trace_payload(),
     )
 
     assert event.payload["visibility"] == "moderator_only"
-    assert event.payload["action_trace"]["runtime_timeout_count"] == 2
+    assert event.payload["action_trace"]["runtime_timeout_count"] == 1
 
 
 def test_action_audit_emits_separate_moderator_only_semantic_repair_event() -> None:

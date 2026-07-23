@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from werewolf_agent.agents.trace_schemas import ActionTrace
 from werewolf_agent.model_gateway.execution_records import (
@@ -152,6 +154,48 @@ def test_runtime_timeout_count_defaults_legacy_objects_and_excludes_skipped_prov
     assert summarize_attempt_counts(
         [legacy_timeout, skipped_timeout]
     ).runtime_timeout_count == 1
+
+
+@pytest.mark.parametrize("malformed", [0, 1, None, "true"])
+def test_runtime_timeout_count_rejects_malformed_provider_attempted_values(
+    malformed: object,
+) -> None:
+    mapping = {
+        "route_kind": RouteKind.PRIMARY,
+        "root_cause": RootCause.TIMEOUT,
+        "provider_attempted": malformed,
+    }
+    legacy_object = SimpleNamespace(**mapping)
+
+    for attempt in (mapping, legacy_object):
+        with pytest.raises(TypeError, match="provider_attempted"):
+            summarize_attempt_counts([attempt])
+
+
+def test_action_trace_timeout_count_cannot_be_mutated_or_bypassed_by_copy() -> None:
+    attempts = _records((RouteKind.PRIMARY, RouteKind.RETRY))
+    trace = ActionTrace(
+        execution_attempts=attempts,
+        runtime_timeout_count=1,
+    )
+
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        trace.runtime_timeout_count = 0
+    with pytest.raises(ValidationError, match="runtime_timeout_count"):
+        trace.model_copy(update={"runtime_timeout_count": 0})
+    with pytest.raises(ValidationError, match="runtime_timeout_count"):
+        trace.model_copy(update={"execution_attempts": ()})
+
+
+def test_action_trace_copy_preserves_legacy_timeout_field_presence() -> None:
+    attempts = _records((RouteKind.PRIMARY, RouteKind.RETRY))
+    legacy = ActionTrace.model_validate({"execution_attempts": attempts})
+
+    copied = legacy.model_copy(update={"raw_text": "copied"})
+
+    assert copied.runtime_timeout_count == 1
+    assert "runtime_timeout_count" not in copied.model_fields_set
+    assert "runtime_timeout_count" not in copied.model_dump(exclude_unset=True)
 
 
 def test_timeout_count_normalizes_legacy_traces_without_field_presence_drift() -> None:

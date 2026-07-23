@@ -316,12 +316,17 @@ def _root_cause(item: DecisionAttempt | Mapping[str, Any]) -> RootCause:
 
 
 def _provider_attempted(item: DecisionAttempt | Mapping[str, Any]) -> bool:
+    missing = object()
     value = (
-        item.get("provider_attempted", True)
+        item.get("provider_attempted", missing)
         if isinstance(item, Mapping)
-        else getattr(item, "provider_attempted", True)
+        else getattr(item, "provider_attempted", missing)
     )
-    return value is True
+    if value is missing:
+        return True
+    if type(value) is not bool:
+        raise TypeError("provider_attempted must be a bool")
+    return value
 
 
 def derive_generated_by(
