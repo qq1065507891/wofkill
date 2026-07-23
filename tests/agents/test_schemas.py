@@ -906,3 +906,8 @@ class TestActionTraceRetryField:
         assert field.default == 0
         # 必须是 int 类型
         assert field.annotation is int
+
+
+def test_action_trace_rejects_boolean_runtime_timeout_count() -> None:
+    with pytest.raises(ValidationError, match="runtime_timeout_count"):
+        ActionTrace(runtime_timeout_count=True)

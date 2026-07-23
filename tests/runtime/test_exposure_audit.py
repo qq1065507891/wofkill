@@ -3,7 +3,7 @@
 验证运行时模块曝光审计事件的采集、脱敏与决策身份关联。
 
 作者: Project contributors
-修改日期: 2026-07-16
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -1183,6 +1183,24 @@ def test_public_view_cannot_see_wolf_stance_or_wolf_identity() -> None:
 
     assert _event_visible_to_player(event, gs, "villager1", "villager") is False
     assert _event_visible_to_player(event, gs, "wolf1", "werewolf") is True
+
+
+def test_public_view_cannot_see_runtime_timeout_count_in_action_audit() -> None:
+    from werewolf_agent.api.schemas import ViewMode
+    from werewolf_agent.api.views import build_timeline
+    from werewolf_agent.runtime.nodes.action_audit import _action_trace_event
+
+    gs = GameState(
+        game_id="timeout_audit_privacy",
+        players={"p01": PlayerState(id="p01", role="villager")},
+        events=[_action_trace_event(
+            player_id="p01",
+            phase="vote",
+            action_trace={"runtime_timeout_count": 2},
+        )],
+    )
+
+    assert build_timeline(gs, ViewMode.PUBLIC).events == []
 
 
 def test_day_vote_resolve_vote_pairs_pending_exposures_with_action_audits(

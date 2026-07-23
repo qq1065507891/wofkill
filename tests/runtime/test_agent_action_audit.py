@@ -27,6 +27,19 @@ def test_action_audit_event_always_carries_explicit_task_type() -> None:
     assert event.payload["task_type"] == "vote"
 
 
+def test_action_audit_keeps_runtime_timeout_count_moderator_only() -> None:
+    from werewolf_agent.runtime.nodes.action_audit import _action_trace_event
+
+    event = _action_trace_event(
+        player_id="p01",
+        phase="vote",
+        action_trace={"runtime_timeout_count": 2, "execution_attempts": []},
+    )
+
+    assert event.payload["visibility"] == "moderator_only"
+    assert event.payload["action_trace"]["runtime_timeout_count"] == 2
+
+
 def test_action_audit_emits_separate_moderator_only_semantic_repair_event() -> None:
     from werewolf_agent.runtime.nodes.action_audit import _action_audit_events
 

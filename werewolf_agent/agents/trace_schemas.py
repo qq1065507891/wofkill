@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-19
+修改日期: 2026-07-23
 
 使用示例:
     >>> from werewolf_agent.agents.trace_schemas import ActionTrace
@@ -15,8 +15,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
+from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
 
 
 class FactionGoal(str, Enum):
@@ -105,6 +106,7 @@ class ActionTrace(BaseModel):
     attempt_count: int = 0
     retry_count: int = 0
     provider_fallback_count: int = 0
+    runtime_timeout_count: int = Field(default=0, ge=0, strict=True)
     generated_by: Literal[
         "model", "repair", "provider_fallback", "terminal_fallback"
     ] | None = None
@@ -120,6 +122,22 @@ class ActionTrace(BaseModel):
     execution_attempts: tuple[AttemptExecutionRecord, ...] = ()
     decision_outcome: str | None = None
     semantic_repair_audit: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _derive_runtime_timeout_count(self) -> "ActionTrace":
+        """尝试记录是超时计数的唯一权威来源，兼容旧 payload 的缺失字段。"""
+        derived_count = summarize_attempt_counts(
+            self.execution_attempts
+        ).runtime_timeout_count
+        if "runtime_timeout_count" in self.model_fields_set:
+            if self.runtime_timeout_count != derived_count:
+                raise ValueError(
+                    "runtime_timeout_count disagrees with execution attempts"
+                )
+        else:
+            # 保留旧输入的字段存在性；exclude_unset 不应把回填值当作显式声明。
+            object.__setattr__(self, "runtime_timeout_count", derived_count)
+        return self
 
     @model_serializer(mode="wrap")
     def _serialize_v2(self, handler: Any) -> dict[str, Any]:

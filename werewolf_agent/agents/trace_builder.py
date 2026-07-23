@@ -3,7 +3,7 @@
 功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-19
+修改日期：2026-07-23
 使用示例：内部模块，无对外接口
 """
 
@@ -15,6 +15,7 @@ from werewolf_agent.agents.schemas import ActionTrace, AgentContext, PlayerActio
 from werewolf_agent.runtime.world_model_audit import build_world_model_audit_from_context
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
 from werewolf_agent.runtime.decision_outcomes import (
+    summarize_attempt_counts,
     translate_decision_outcome,
 )
 
@@ -70,6 +71,9 @@ def build_action_trace(
         )
         if execution_attempts else None
     )
+    attempt_counts = (
+        summarize_attempt_counts(execution_attempts) if execution_attempts else None
+    )
     terminal_failure_code = (
         translated.terminal_failure_code
         if translated and translated.generated_by.value == "terminal_fallback"
@@ -107,10 +111,13 @@ def build_action_trace(
         tool_call_name="submit_player_action" if tool_call_required else "",
         parse_success=parse_success,
         parse_error=trace_parse_error,
-        attempt_count=translated.attempt_count if translated else 0,
-        retry_count=translated.retry_count if translated else retry_count,
+        attempt_count=attempt_counts.attempt_count if attempt_counts else 0,
+        retry_count=attempt_counts.retry_count if attempt_counts else retry_count,
         provider_fallback_count=(
-            translated.provider_fallback_count if translated else 0
+            attempt_counts.provider_fallback_count if attempt_counts else 0
+        ),
+        runtime_timeout_count=(
+            attempt_counts.runtime_timeout_count if attempt_counts else 0
         ),
         generated_by=translated.generated_by.value if translated else None,
         terminal_failure_code=terminal_failure_code,

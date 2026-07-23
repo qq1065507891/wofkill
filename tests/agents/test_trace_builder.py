@@ -3,7 +3,7 @@
 验证 ActionTrace 构造、V2 计数与终态失败码投影。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -17,6 +17,16 @@ from werewolf_agent.agents.schemas import (
     TaskType,
 )
 from werewolf_agent.agents.trace_builder import build_action_trace
+from werewolf_agent.model_gateway.execution_records import (
+    AttemptExecutionRecord,
+    AttemptOutcome,
+    EvidenceKind,
+    OpaqueRequestId,
+    ReasoningLevel,
+    ReasoningStatus,
+    RootCause,
+    RouteKind,
+)
 
 
 def _context(**overrides) -> AgentContext:
@@ -31,6 +41,44 @@ def _context(**overrides) -> AgentContext:
 
 
 class TestBuildActionTrace:
+    def test_execution_attempts_derive_runtime_timeout_count(self):
+        request_id = OpaqueRequestId.new("game", "11223344")
+        attempts = (
+            AttemptExecutionRecord(
+                opaque_request_id=request_id,
+                ordinal=1,
+                provider="primary",
+                model="model-a",
+                route_kind=RouteKind.PRIMARY,
+                root_cause=RootCause.TIMEOUT,
+                attempt_outcome=AttemptOutcome.FAILURE,
+                requested_reasoning_level=ReasoningLevel.HIGH,
+                normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+                reasoning_token_count=0,
+                evidence_kind=EvidenceKind.NONE,
+            ),
+            AttemptExecutionRecord(
+                opaque_request_id=request_id,
+                ordinal=2,
+                provider="primary",
+                model="model-a",
+                route_kind=RouteKind.RETRY,
+                root_cause=RootCause.NONE,
+                attempt_outcome=AttemptOutcome.SUCCESS,
+                requested_reasoning_level=ReasoningLevel.HIGH,
+                normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+                reasoning_token_count=0,
+                evidence_kind=EvidenceKind.NONE,
+            ),
+        )
+
+        trace = build_action_trace(
+            _context(), raw_text="", parsed_action=None,
+            final_action_type=ActionType.NO_ACTION, retry=RetryInfo(),
+            execution_attempts=attempts,
+        )
+
+        assert trace.runtime_timeout_count == 1
     def test_basic_trace(self):
         retry = RetryInfo(attempt=1, max_retries=3, error_code=None)
         trace = build_action_trace(

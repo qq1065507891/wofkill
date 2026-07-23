@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-19
+修改日期: 2026-07-23
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ class DecisionAttempt(Protocol):
     normalized_reasoning_status: ReasoningStatus
     reasoning_token_count: int
     evidence_kind: EvidenceKind
+    provider_attempted: bool
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class _SerializedDecisionAttempt:
     normalized_reasoning_status: ReasoningStatus
     reasoning_token_count: int
     evidence_kind: EvidenceKind
+    provider_attempted: bool = True
 
 
 class DecisionOutcome(str, Enum):
@@ -105,6 +107,14 @@ class AttemptCounts:
     attempt_count: int
     retry_count: int
     provider_fallback_count: int
+    runtime_timeout_count: int = 0
+
+    def __post_init__(self) -> None:
+        """拒绝布尔值和负数，避免超时统计被松散整数语义污染。"""
+        if type(self.runtime_timeout_count) is not int:
+            raise TypeError("runtime_timeout_count must be an integer")
+        if self.runtime_timeout_count < 0:
+            raise ValueError("runtime_timeout_count must be nonnegative")
 
 
 @dataclass(frozen=True)
@@ -115,6 +125,7 @@ class TranslatedDecisionOutcome:
     retry_count: int
     attempt_count: int
     provider_fallback_count: int
+    runtime_timeout_count: int
     generated_by: DecisionGeneratedBy
     terminal_failure_code: str | None
     attempts: tuple[DecisionAttempt, ...]
@@ -179,6 +190,7 @@ def translate_decision_outcome(
         retry_count=counts.retry_count,
         attempt_count=counts.attempt_count,
         provider_fallback_count=counts.provider_fallback_count,
+        runtime_timeout_count=counts.runtime_timeout_count,
         generated_by=derive_generated_by(attempts),
         terminal_failure_code=derive_terminal_failure_code(
             attempts,
@@ -191,13 +203,19 @@ def translate_decision_outcome(
 def summarize_attempt_counts(
     attempts: Sequence[DecisionAttempt | Mapping[str, Any]],
 ) -> AttemptCounts:
-    """按集中定义的 route_kind 语义计算尝试、重试和供应商回退次数。"""
+    """按集中定义的尝试事实计算路由计数和真实 provider 超时次数。"""
     route_kinds = tuple(_route_kind(item) for item in attempts)
     return AttemptCounts(
         attempt_count=len(route_kinds),
         retry_count=sum(route is RouteKind.RETRY for route in route_kinds),
         provider_fallback_count=sum(
             route is RouteKind.PROVIDER_FALLBACK for route in route_kinds
+        ),
+        runtime_timeout_count=sum(
+            _root_cause(item) is RootCause.TIMEOUT
+            and _route_kind(item) is not RouteKind.SAFE_FALLBACK
+            and _provider_attempted(item)
+            for item in attempts
         ),
     )
 
@@ -227,7 +245,9 @@ def normalize_decision_execution_trace(
 ) -> dict[str, Any]:
     """返回 V2 内存投影；旧 trace 只读归一化且不修改输入。"""
     raw_attempts = trace.get("execution_attempts")
-    if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
+    if raw_attempts is None or raw_attempts == () or raw_attempts == []:
+        return _normalize_runtime_timeout_count(trace, 0)
+    if not isinstance(raw_attempts, (list, tuple)):
         raise ValueError("decision trace requires execution attempts")
     failure_reason = trace.get("structured_failure_reason")
     if failure_reason is None:
@@ -245,7 +265,10 @@ def normalize_decision_execution_trace(
     else:
         raise TypeError("execution attempts must share one schema")
 
-    normalized = dict(trace)
+    normalized = _normalize_runtime_timeout_count(
+        trace,
+        translated.runtime_timeout_count,
+    )
     normalized.update(
         attempt_count=translated.attempt_count,
         retry_count=translated.retry_count,
@@ -265,9 +288,36 @@ def normalize_decision_execution_trace(
     return normalized
 
 
+def _normalize_runtime_timeout_count(
+    trace: Mapping[str, Any],
+    derived_count: int,
+) -> dict[str, Any]:
+    """回填旧 trace 的超时数；只有显式声明时才校验与尝试事实一致。"""
+    normalized = dict(trace)
+    explicit = "runtime_timeout_count" in trace
+    if explicit:
+        supplied = trace["runtime_timeout_count"]
+        if type(supplied) is not int or supplied < 0:
+            raise ValueError("runtime_timeout_count must be a nonnegative integer")
+        if supplied != derived_count:
+            raise ValueError("runtime_timeout_count disagrees with execution attempts")
+    normalized["runtime_timeout_count"] = derived_count
+    return normalized
+
+
 def _route_kind(item: DecisionAttempt | Mapping[str, Any]) -> RouteKind:
     route_kind = item.get("route_kind") if isinstance(item, Mapping) else item.route_kind
     return route_kind if isinstance(route_kind, RouteKind) else RouteKind(route_kind)
+
+
+def _root_cause(item: DecisionAttempt | Mapping[str, Any]) -> RootCause:
+    root_cause = item.get("root_cause") if isinstance(item, Mapping) else item.root_cause
+    return root_cause if isinstance(root_cause, RootCause) else RootCause(root_cause)
+
+
+def _provider_attempted(item: DecisionAttempt | Mapping[str, Any]) -> bool:
+    value = item.get("provider_attempted", True) if isinstance(item, Mapping) else item.provider_attempted
+    return value is True
 
 
 def derive_generated_by(
@@ -324,6 +374,7 @@ def _serialized_attempt(payload: Mapping[str, Any]) -> _SerializedDecisionAttemp
         ),
         reasoning_token_count=int(payload.get("reasoning_token_count") or 0),
         evidence_kind=EvidenceKind(payload["evidence_kind"]),
+        provider_attempted=_parse_serialized_provider_attempted(payload),
     )
 
 
@@ -344,6 +395,14 @@ def _parse_serialized_ordinal(value: Any) -> int:
     if ordinal <= 0:
         raise ValueError("serialized attempt ordinal must be a canonical positive integer")
     return ordinal
+
+
+def _parse_serialized_provider_attempted(payload: Mapping[str, Any]) -> bool:
+    """序列化记录缺少该字段时兼容 Task3 之前的真实 provider 调用。"""
+    value = payload.get("provider_attempted", True)
+    if not isinstance(value, bool):
+        raise TypeError("serialized provider_attempted must be a bool")
+    return value
 
 
 __all__ = [

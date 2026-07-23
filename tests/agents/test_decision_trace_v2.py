@@ -8,6 +8,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from werewolf_agent.agents.trace_schemas import ActionTrace
 from werewolf_agent.model_gateway.execution_records import (
     AttemptExecutionRecord,
@@ -20,6 +24,7 @@ from werewolf_agent.model_gateway.execution_records import (
     RouteKind,
 )
 from werewolf_agent.runtime.decision_outcomes import (
+    AttemptCounts,
     derive_terminal_failure_code,
     normalize_decision_execution_trace,
     summarize_attempt_counts,
@@ -83,6 +88,73 @@ def test_v2_attempt_counters_follow_route_kinds() -> None:
             counts.retry_count,
             counts.provider_fallback_count,
         ) == expected
+
+
+def test_attempt_counts_timeout_default_rejects_boolean_and_negative_values() -> None:
+    assert AttemptCounts(1, 0, 0).runtime_timeout_count == 0
+
+    with pytest.raises(TypeError, match="runtime_timeout_count"):
+        AttemptCounts(1, 0, 0, True)
+    with pytest.raises(ValueError, match="runtime_timeout_count"):
+        AttemptCounts(1, 0, 0, -1)
+
+
+def test_runtime_timeout_count_uses_provider_attempts_only_for_records_and_mappings() -> None:
+    attempts = (
+        _attempt(1, RouteKind.PRIMARY, final=False),
+        _attempt(2, RouteKind.RETRY, final=False),
+        replace(
+            _attempt(3, RouteKind.PROVIDER_FALLBACK, final=False),
+            provider_attempted=False,
+        ),
+        replace(
+            _attempt(4, RouteKind.SAFE_FALLBACK, final=True),
+            root_cause=RootCause.TIMEOUT,
+        ),
+    )
+    serialized = [
+        {
+            "opaque_request_id": attempt.opaque_request_id.value,
+            "ordinal": attempt.ordinal,
+            "provider": attempt.provider,
+            "model": attempt.model,
+            "route_kind": attempt.route_kind.value,
+            "root_cause": attempt.root_cause.value,
+            "attempt_outcome": attempt.attempt_outcome.value,
+            "requested_reasoning_level": attempt.requested_reasoning_level.value,
+            "normalized_reasoning_status": attempt.normalized_reasoning_status.value,
+            "reasoning_token_count": attempt.reasoning_token_count,
+            "evidence_kind": attempt.evidence_kind.value,
+            "provider_attempted": attempt.provider_attempted,
+        }
+        for attempt in attempts
+    ]
+    # Task3 之前的序列化记录没有该字段，仍代表真实 provider 调用。
+    del serialized[0]["provider_attempted"]
+    del serialized[1]["provider_attempted"]
+
+    assert summarize_attempt_counts(attempts).runtime_timeout_count == 2
+    assert summarize_attempt_counts(serialized).runtime_timeout_count == 2
+
+
+def test_timeout_count_normalizes_legacy_traces_without_field_presence_drift() -> None:
+    attempts = _records((RouteKind.PRIMARY, RouteKind.RETRY))
+    legacy = {"execution_attempts": attempts}
+
+    normalized = normalize_decision_execution_trace(legacy)
+    trace = ActionTrace.model_validate(legacy)
+
+    assert normalized["runtime_timeout_count"] == 1
+    assert trace.runtime_timeout_count == 1
+    assert "runtime_timeout_count" not in trace.model_dump(exclude_unset=True)
+    assert "runtime_timeout_count" not in legacy
+    assert normalize_decision_execution_trace({})["runtime_timeout_count"] == 0
+
+    with pytest.raises(ValueError, match="runtime_timeout_count"):
+        normalize_decision_execution_trace({
+            "execution_attempts": attempts,
+            "runtime_timeout_count": 0,
+        })
 
 
 def test_v1_trace_is_normalized_from_attempt_routes_without_mutation() -> None:
