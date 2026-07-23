@@ -14,6 +14,7 @@ from werewolf_agent.model_gateway.execution_records import RouteKind
 from werewolf_agent.model_gateway.retry_policy import (
     RetryBudget,
     RetryKind,
+    _is_retryable_exception,
     _retry_delay_for_exception,
     retry_delay,
     retry_kind_for_exception,
@@ -82,7 +83,13 @@ class _Response:
 class _ProviderError(Exception):
     def __init__(self, status_code: int, headers: dict[str, str] | None = None) -> None:
         self.response = _Response(status_code, headers)
-        super().__init__(f"provider returned {status_code}")
+        super().__init__("provider transport failed")
+
+
+class _StatusOnlyError(Exception):
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__("provider transport failed")
 
 
 def test_exception_classification_keeps_rate_limits_distinct_from_generic_retries() -> None:
@@ -93,6 +100,21 @@ def test_exception_classification_keeps_rate_limits_distinct_from_generic_retrie
 
 def test_legacy_delay_wrapper_extracts_provider_retry_after_header() -> None:
     assert _retry_delay_for_exception(_ProviderError(429, {"Retry-After": "45"}), 0) == 45
+
+
+def test_status_only_provider_errors_are_classified_before_message_heuristics() -> None:
+    direct_rate_limit = _StatusOnlyError(429)
+    response_rate_limit = _ProviderError(429, {"Retry-After": "45"})
+    server_error = _StatusOnlyError(500)
+    client_error = _StatusOnlyError(400)
+
+    assert retry_kind_for_exception(direct_rate_limit) is RetryKind.RATE_LIMIT
+    assert retry_kind_for_exception(response_rate_limit) is RetryKind.RATE_LIMIT
+    assert _retry_delay_for_exception(response_rate_limit, 0) == 45
+    assert _is_retryable_exception(server_error)
+    assert retry_kind_for_exception(server_error) is RetryKind.GENERIC
+    assert not _is_retryable_exception(client_error)
+    assert retry_kind_for_exception(client_error) is None
 
 
 def test_primary_generic_budget_has_four_retries() -> None:

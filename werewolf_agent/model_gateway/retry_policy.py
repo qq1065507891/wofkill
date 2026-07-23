@@ -116,6 +116,9 @@ def _failure_reason(
 
 def _is_retryable_exception(exc: Exception) -> bool:
     """判断异常是否是值得重试的瞬时错误。"""
+    status_code = _http_status_from_exception(exc)
+    if status_code == 429 or 500 <= status_code <= 599:
+        return True
     exc_str = type(exc).__name__.lower()
     if "connect" in exc_str or "timeout" in exc_str:
         return True
@@ -139,10 +142,13 @@ def _is_retryable_exception(exc: Exception) -> bool:
 
 def retry_kind_for_exception(exc: Exception) -> RetryKind | None:
     """将可重试异常稳定地分类为普通失败或限流失败。"""
+    status_code = _http_status_from_exception(exc)
+    if status_code == 429:
+        return RetryKind.RATE_LIMIT
+    if 500 <= status_code <= 599:
+        return RetryKind.GENERIC
     if not _is_retryable_exception(exc):
         return None
-    if _http_status_from_exception(exc) == 429:
-        return RetryKind.RATE_LIMIT
     message = str(exc).lower()
     if "429" in message or "too many requests" in message:
         return RetryKind.RATE_LIMIT
