@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-19
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ _SEMANTIC_AUDIT_FIELDS = (
     "verified_claim_count",
     "retained_verified_claim_count",
     "rejection_reason_codes",
+    "repair_failure_history",
     "generic_template_used",
     "fallback_kind",
 )

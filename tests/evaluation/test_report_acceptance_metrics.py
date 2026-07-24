@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-23
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
@@ -1203,6 +1203,10 @@ def test_balance_audit_propagates_v2_public_evidence_safety_metrics() -> None:
                 "retained_verified_claim_count": 0,
                 "generic_template_used": False,
                 "fallback_kind": "no_fallback",
+                "repair_failure_history": [
+                    "speech_quality",
+                    "semantic_claim_retention",
+                ],
             },
             action_index=1,
             game_id="v2-semantic-report",
@@ -1211,6 +1215,8 @@ def test_balance_audit_propagates_v2_public_evidence_safety_metrics() -> None:
 
     assert report["semantic_repair_public_evidence_safety_metrics_supported"] is True
     assert report["semantic_repair_public_evidence_safety_rate"] == 1.0
+    assert report["semantic_repair_metrics_supported"] is True
+    assert report["semantic_repair_success_rate"] == 1.0
 
 
 def test_report_exports_threshold_support_metrics() -> None:

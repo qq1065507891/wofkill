@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-19
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
@@ -283,6 +283,7 @@ def test_paired_semantic_audit_reconciliation_compares_every_decisive_field() ->
         {"generic_template_used": True},
         {"fallback_kind": "task_specific"},
         {"rejection_reason_codes": ["unsupported_public_claim"]},
+        {"repair_failure_history": ["speech_quality"]},
     ):
         game = _game(
             speaker_preserved=True,
@@ -338,6 +339,102 @@ def test_paired_semantic_audit_reconciliation_is_type_sensitive() -> None:
         assert metrics["semantic_repair_metrics_supported"] is False
         assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is False
         assert metrics["semantic_repair_public_evidence_safety_rate"] is None
+
+
+def test_paired_semantic_audit_repair_history_is_type_sensitive() -> None:
+    """修复历史的存在性、值和容器类型差异都必须关闭语义指标。"""
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    games = []
+    nested_missing = _game(
+        speaker_preserved=True,
+        negation_preserved=True,
+        semantic_gate_version=2,
+        unsupported_public_claim_count=0,
+        repair_failure_history=["speech_quality"],
+    )
+    nested_missing["events"][1]["payload"]["action_trace"][
+        "semantic_repair_audit"
+    ].pop("repair_failure_history")
+    games.append(nested_missing)
+
+    standalone_missing = _game(
+        speaker_preserved=True,
+        negation_preserved=True,
+        semantic_gate_version=2,
+        unsupported_public_claim_count=0,
+        repair_failure_history=["speech_quality"],
+    )
+    standalone_missing["events"][0]["payload"].pop("repair_failure_history")
+    games.append(standalone_missing)
+
+    for nested_history in (
+        ["semantic_claim_retention"],
+        "speech_quality",
+    ):
+        game = _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            unsupported_public_claim_count=0,
+            repair_failure_history=["speech_quality"],
+        )
+        game["events"][1]["payload"]["action_trace"][
+            "semantic_repair_audit"
+        ]["repair_failure_history"] = nested_history
+        games.append(game)
+
+    for game in games:
+        metrics = compute_acceptance_audit_metrics([game])
+
+        assert metrics["semantic_repair_metrics_supported"] is False
+        assert metrics["semantic_repair_success_rate"] is None
+        assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is False
+        assert metrics["semantic_repair_public_evidence_safety_rate"] is None
+
+    from werewolf_agent.evaluation.acceptance_terminal_semantic_metrics import (
+        _semantic_audit_rows_agree,
+    )
+
+    assert _semantic_audit_rows_agree(
+        {"repair_failure_history": ["speech_quality"]},
+        {"repair_failure_history": ("speech_quality",)},
+    ) is False
+
+
+def test_matching_or_missing_repair_history_preserves_semantic_metrics() -> None:
+    """匹配历史参与对账；旧数据双方缺失仍保持兼容。"""
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    matching = _game(
+        speaker_preserved=True,
+        negation_preserved=True,
+        semantic_gate_version=2,
+        unsupported_public_claim_count=0,
+        repair_failure_history=[
+            "speech_quality",
+            "semantic_claim_retention",
+        ],
+    )
+    legacy_missing = _game(
+        speaker_preserved=True,
+        negation_preserved=True,
+        semantic_gate_version=2,
+        unsupported_public_claim_count=0,
+        game_id="legacy-missing-history",
+    )
+
+    for game in (matching, legacy_missing):
+        metrics = compute_acceptance_audit_metrics([game])
+
+        assert metrics["semantic_repair_metrics_supported"] is True
+        assert metrics["semantic_repair_success_rate"] == 1.0
+        assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is True
+        assert metrics["semantic_repair_public_evidence_safety_rate"] == 1.0
 
 
 def test_paired_semantic_audit_reconciliation_preserves_fields_and_nested_types() -> None:

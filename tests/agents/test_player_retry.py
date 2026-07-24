@@ -394,6 +394,45 @@ def test_semantic_repair_uses_complete_authoritative_public_claim_ledger() -> No
     assert audit["retained_verified_claim_count"] == 1
 
 
+def test_semantic_repair_audit_records_stable_failure_history() -> None:
+    """审计只保留按时序出现的稳定修复失败类别。"""
+    from werewolf_agent.agents.schemas import SpeechPlayerAction
+    from werewolf_agent.agents.semantic_repair_audit import build_semantic_repair_audit
+
+    context = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p02"],
+    )
+    source = SpeechPlayerAction(
+        target_id="p02",
+        speech="我怀疑p02。",
+        reason="公开信息判断",
+        confidence=0.6,
+    )
+    final = source.model_copy(update={"speech": "我是好人，我仍怀疑p02。"})
+
+    audit = build_semantic_repair_audit(
+        context,
+        source,
+        final,
+        success=True,
+        repair_failure_history=(
+            "speech_quality",
+            "PRIVATE_SENTINEL",
+            "semantic_claim_retention",
+            "speech_quality",
+        ),
+    )
+
+    assert audit["repair_failure_history"] == [
+        "speech_quality",
+        "semantic_claim_retention",
+        "speech_quality",
+    ]
+
+
 def test_semantic_repair_allows_dropping_a_verified_source_claim() -> None:
     """V2 允许修复结果删除源发言中的已验证论点。"""
     from werewolf_agent.agents.schemas import SpeechPlayerAction

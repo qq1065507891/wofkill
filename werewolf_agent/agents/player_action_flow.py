@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-23
+修改日期: 2026-07-24
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -34,6 +34,7 @@ from werewolf_agent.agents.player_quality_retries import (
     build_speech_quality_retry,
     build_vote_quality_retry,
 )
+from werewolf_agent.agents.player_repair_state import RepairConstraintState
 from werewolf_agent.agents.player_generation_request import (
     build_player_generation_request,
     call_player_generation_request,
@@ -91,6 +92,19 @@ def run_player_action_flow(
     入; 否则仍默认 fresh.
     """
     context = agent._attach_persona_snapshot(context)
+    repair_state = RepairConstraintState()
+
+    def _with_repair_constraints(
+        latest_retry: RetryInfo,
+        *,
+        rejected_speech: str = "",
+    ) -> RetryInfo:
+        """把最新失败元数据与本次行动累计修复约束合并。"""
+        return repair_state.augment_retry_info(
+            latest_retry,
+            rejected_speech=rejected_speech,
+        )
+
     retry = RetryInfo(max_retries=agent.max_retries)
     raw_text = ""
     parsed_action: PlayerAction | None = None
@@ -104,7 +118,6 @@ def run_player_action_flow(
     structured_output_mode = ""
     if generation_attempt_context is None:
         generation_attempt_context = GenerationAttemptContext(run_scope=context.agent_id)
-    semantic_repair_source: PlayerAction | None = None
     semantic_repair_audit: dict[str, Any] | None = None
 
     attempt = 0
@@ -139,9 +152,9 @@ def run_player_action_flow(
         fallback_action, fallback_kind = build_task_terminal_fallback(
             context, agent._fallback_action(context)
         )
-        if semantic_repair_source is not None:
+        if repair_state.source_action is not None:
             fallback_action = preserve_verified_claim_in_fallback(
-                context, semantic_repair_source, fallback_action
+                context, repair_state.source_action, fallback_action
             )
         return finalize_fallback_player_action(
             agent=agent,
@@ -165,14 +178,15 @@ def run_player_action_flow(
             semantic_repair_audit=(
                 build_semantic_repair_audit(
                     context,
-                    semantic_repair_source,
+                    repair_state.source_action,
                     fallback_action,
                     success=False,
+                    repair_failure_history=repair_state.failure_history,
                     generic_template_used=generic_fallback_speech_used(
                         context, fallback_action.speech
                     ),
                 )
-                if semantic_repair_source is not None else None
+                if repair_state.source_action is not None else None
             ),
             fallback_kind=fallback_kind,
         )
@@ -187,14 +201,12 @@ def run_player_action_flow(
             time.sleep(delay)
 
         attempt += 1
-        retry = RetryInfo(
-            attempt=attempt,
-            max_retries=agent.max_retries,
-            error_code=retry.error_code,
-            error_message=retry.error_message,
-            reason_codes=retry.reason_codes,
-            correction_hint=retry.correction_hint,
-        )
+        # 循环入口只推进计数；上一分支已完成累计约束合并，不能在缺少
+        # rejected_speech 时再次重建提示，否则会丢失有界的被拒发言摘录。
+        retry = retry.model_copy(update={
+            "attempt": attempt,
+            "max_retries": agent.max_retries,
+        })
         # 每次请求只允许当前尝试的原文和解析结果进入终态轨迹。
         raw_text = ""
         parsed_action = None
@@ -220,17 +232,13 @@ def run_player_action_flow(
             # Provider does not support tool_choice
             structured_failure_reason = "structured_output_unsupported"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
-            retry = RetryInfo(
+            retry = _with_repair_constraints(RetryInfo(
                 attempt=attempt,
                 max_retries=agent.max_retries,
                 error_code=structured_failure_reason,
                 error_message="当前模型不支持结构化工具调用。",
-                reason_codes=(
-                    list(retry.reason_codes)
-                    if semantic_repair_source is not None else []
-                ),
                 correction_hint="请切换到支持结构化工具调用的模型后重试。",
-            )
+            ))
             fallback = _finalize_terminal_fallback(
                 retry_info=retry,
                 attempt_raw_text=raw_text,
@@ -273,14 +281,14 @@ def run_player_action_flow(
                 structured_failure_reason = route_failure or "model_generation_failed"
                 structured_failure_stage = StructuredFailureStage.PROVIDER.value
                 usage = getattr(result, "usage", None)
-                retry = RetryInfo(
+                retry = _with_repair_constraints(RetryInfo(
                     attempt=attempt,
                     max_retries=agent.max_retries,
                     error_code=structured_failure_reason,
                     error_message=structured_failure_reason,
                     failure_category=getattr(usage, "failure_category", None),
                     correction_hint="Provider generation failed; using fallback action.",
-                )
+                ))
                 fallback = _finalize_terminal_fallback(
                     retry_info=retry,
                     attempt_raw_text=raw_text,
@@ -324,7 +332,7 @@ def run_player_action_flow(
                     )
                 )
                 public_failure_reason = structured_failure_reason
-                retry = RetryInfo(
+                retry = _with_repair_constraints(RetryInfo(
                     attempt=attempt,
                     max_retries=agent.max_retries,
                     error_code=retry_error_code,
@@ -334,7 +342,7 @@ def run_player_action_flow(
                         f"Provider generation failed (category={failure_category}); "
                         "using fallback action."
                     ),
-                )
+                ))
                 fallback = _finalize_terminal_fallback(
                     retry_info=retry,
                     attempt_raw_text=raw_text,
@@ -367,13 +375,13 @@ def run_player_action_flow(
             # validator would reject the action, and we'd loop
             # forever. Fall back to a target-suggestion hint for
             # those cases.
-            retry = build_empty_response_retry(
+            retry = _with_repair_constraints(build_empty_response_retry(
                 context=context,
                 attempt=attempt,
                 max_retries=agent.max_retries,
                 failure_category=failure_category,
                 output_mode=output_mode,
-            )
+            ))
             structured_failure_reason = "empty_response"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
             prev_active_mode = active_structured_mode
@@ -418,11 +426,11 @@ def run_player_action_flow(
             )
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
             parse_error_str = "missing required tool call: submit_player_action"
-            retry = build_missing_tool_call_retry(
+            retry = _with_repair_constraints(build_missing_tool_call_retry(
                 attempt=attempt,
                 max_retries=agent.max_retries,
                 structured_failure_reason=structured_failure_reason,
-            )
+            ))
             prev_active_mode = active_structured_mode
             active_structured_mode = structured_policy.next_mode(
                 prev_active_mode,
@@ -513,7 +521,7 @@ def run_player_action_flow(
                     "只输出一个完整JSON对象，确保以}结尾；"
                     "不要输出private_intent长列表或多余解释。"
                 )
-            retry = RetryInfo(
+            retry = _with_repair_constraints(RetryInfo(
                 attempt=attempt,
                 max_retries=agent.max_retries,
                 error_code=structured_failure_reason,
@@ -522,7 +530,7 @@ def run_player_action_flow(
                     "只输出JSON，不要解释、不要Markdown代码块。必须包含action_type、target_id、speech、"
                     "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
                 ),
-            )
+            ))
             prev_active_mode = active_structured_mode
             active_structured_mode = structured_policy.next_mode(
                 prev_active_mode,
@@ -570,7 +578,7 @@ def run_player_action_flow(
             # the content.  Gate the hint: only expose the
             # action-type hint when validation_error originates
             # from the validator itself, not from downstream gates.
-            retry = RetryInfo(
+            retry = _with_repair_constraints(RetryInfo(
                 attempt=attempt,
                 max_retries=agent.max_retries,
                 error_code="illegal_action",
@@ -580,7 +588,7 @@ def run_player_action_flow(
                     "请查看上方「最终输出协议」段的 action_type 枚举"
                     "和 target_id 约束（合法目标或 null）。"
                 ),
-            )
+            ))
             should_short_circuit, last_error_signature = agent._check_repeat_error_signature(
                 retry, raw_text, attempt, last_error_signature,
                 structured_output_mode=structured_output_mode,
@@ -590,22 +598,26 @@ def run_player_action_flow(
                 break
             generation_attempt_context.reject_latest_output()
             continue
-        if semantic_repair_source is not None:
+        if repair_state.source_action is not None:
             semantic_validation = validate_semantic_repair(
-                context, semantic_repair_source, action
+                context,
+                repair_state.source_action,
+                action,
+                repair_failure_history=repair_state.failure_history,
             )
             if not semantic_validation.accepted:
                 structured_failure_reason = "semantic_claim_retention"
                 structured_failure_stage = StructuredFailureStage.SEMANTIC.value
                 reason_codes = list(semantic_validation.reason_codes)
-                retry = RetryInfo(
+                repair_state.record_semantic_rejection(reason_codes)
+                retry = _with_repair_constraints(RetryInfo(
                     attempt=attempt,
                     max_retries=agent.max_retries,
                     error_code="semantic_claim_retention",
                     error_message=semantic_repair_rejection_message(reason_codes),
                     reason_codes=reason_codes,
                     correction_hint=semantic_repair_correction_hint(reason_codes),
-                )
+                ))
                 logger.warning(
                     "semantic repair rejected agent=%s task=%s attempt=%d reason_codes=%s",
                     context.agent_id,
@@ -630,15 +642,17 @@ def run_player_action_flow(
             semantic_repair_audit = semantic_validation.audit
         speech_quality_err = agent._speech_quality_error(context, action)
         if speech_quality_err:
-            if semantic_repair_source is None:
-                semantic_repair_source = action
+            repair_state.record_speech_quality(action, speech_quality_err)
             structured_failure_reason = "speech_quality"
             structured_failure_stage = StructuredFailureStage.SEMANTIC.value
-            retry = build_speech_quality_retry(
-                speech_quality_err,
-                attempt=attempt,
-                max_retries=agent.max_retries,
-                # 回传被拒发言原文，让重试提示支持定点修改而非抽象重写。
+            retry = _with_repair_constraints(
+                build_speech_quality_retry(
+                    speech_quality_err,
+                    attempt=attempt,
+                    max_retries=agent.max_retries,
+                    # 回传被拒发言原文，让重试提示支持定点修改而非抽象重写。
+                    rejected_speech=action.speech,
+                ),
                 rejected_speech=action.speech,
             )
             # speech_quality 不做 repeat-signature 短路：correction_hint 现在
@@ -652,11 +666,11 @@ def run_player_action_flow(
         if vote_quality_err:
             structured_failure_reason = "vote_quality"
             structured_failure_stage = StructuredFailureStage.SEMANTIC.value
-            retry = build_vote_quality_retry(
+            retry = _with_repair_constraints(build_vote_quality_retry(
                 vote_quality_err,
                 attempt=attempt,
                 max_retries=agent.max_retries,
-            )
+            ))
             should_short_circuit, last_error_signature = agent._check_repeat_error_signature(
                 retry, raw_text, attempt, last_error_signature,
                 structured_output_mode=structured_output_mode,

@@ -149,6 +149,7 @@ def build_semantic_repair_audit(
     *,
     success: bool,
     generic_template_used: bool = False,
+    repair_failure_history: Iterable[str] = (),
 ) -> dict[str, Any]:
     """比较首次可修复失败与最终输出，生成不含原始发言的审计字段。"""
     public_speeches = _public_speeches(context)
@@ -207,6 +208,11 @@ def build_semantic_repair_audit(
         "rejection_reason_codes": list(reason_codes),
         "generic_template_used": generic_template_used,
         "fallback_kind": fallback_kind,
+        "repair_failure_history": [
+            code
+            for code in repair_failure_history
+            if code in {"speech_quality", "semantic_claim_retention"}
+        ],
     }
 
 
@@ -214,9 +220,17 @@ def validate_semantic_repair(
     context: AgentContext,
     source: PlayerAction,
     final: PlayerAction,
+    *,
+    repair_failure_history: Iterable[str] = (),
 ) -> SemanticRepairValidationResult:
     """按 V2 规则校验修复结果，并返回所有适用的稳定原因码。"""
-    audit = build_semantic_repair_audit(context, source, final, success=True)
+    audit = build_semantic_repair_audit(
+        context,
+        source,
+        final,
+        success=True,
+        repair_failure_history=repair_failure_history,
+    )
     reason_codes = tuple(audit["rejection_reason_codes"])
     return SemanticRepairValidationResult(
         accepted=not reason_codes,
