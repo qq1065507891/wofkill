@@ -1,15 +1,36 @@
 # -*- coding: utf-8 -*-
 """
-提供验收指标投影器共用的窄类型与玩家角色读取辅助函数。
+提供验收指标投影器共用的窄类型、语义审计结构与玩家角色读取辅助函数。
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-16
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping
+
+
+_REPAIR_FAILURE_CODES = frozenset({
+    "speech_quality",
+    "semantic_claim_retention",
+})
+
+
+def _has_valid_repair_failure_history(
+    row: Mapping[str, Any],
+    *,
+    container_type: type,
+) -> bool:
+    """兼容字段缺失，并严格校验容器、元素类型和稳定码集合。"""
+    if "repair_failure_history" not in row:
+        return True
+    history = row["repair_failure_history"]
+    return type(history) is container_type and all(
+        type(code) is str and code in _REPAIR_FAILURE_CODES
+        for code in history
+    )
 
 
 def _non_negative_int(value: Any) -> int:

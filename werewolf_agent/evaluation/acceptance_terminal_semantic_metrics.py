@@ -13,6 +13,7 @@ from collections import Counter
 from typing import Any, Iterable, Mapping, Sequence
 
 from werewolf_agent.evaluation.acceptance_shared import (
+    _has_valid_repair_failure_history,
     _is_non_negative_int,
     _non_negative_int,
 )
@@ -178,6 +179,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
             and isinstance(row.get("negation_preserved"), bool)
             and _is_non_negative_int(row.get("introduced_claim_count"))
             and _has_supported_semantic_gate_version(row)
+            and _has_valid_repair_failure_history(row, container_type=tuple)
             and (
                 not _is_semantic_gate_v2(row)
                 or _is_non_negative_int(row.get("unsupported_public_claim_count"))
@@ -219,6 +221,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
             _is_non_negative_int(row.get("verified_claim_count"))
             and _is_non_negative_int(row.get("retained_verified_claim_count"))
             and row["retained_verified_claim_count"] <= row["verified_claim_count"]
+            and _has_valid_repair_failure_history(row, container_type=tuple)
             for row in semantic_rows
         )
     )
@@ -246,6 +249,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         and all(
             _is_semantic_gate_v2(row)
             and _is_non_negative_int(row.get("unsupported_public_claim_count"))
+            and _has_valid_repair_failure_history(row, container_type=tuple)
             for row in semantic_rows
         )
     )

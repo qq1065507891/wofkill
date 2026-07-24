@@ -437,6 +437,72 @@ def test_matching_or_missing_repair_history_preserves_semantic_metrics() -> None
         assert metrics["semantic_repair_public_evidence_safety_rate"] == 1.0
 
 
+def test_matching_malformed_repair_history_fails_closed() -> None:
+    """两侧相同的非法修复历史也不能被验收为受支持数据。"""
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    malformed_histories = (
+        ("speech_quality",),
+        "speech_quality",
+        {"0": "speech_quality"},
+        [False],
+        [0],
+        ["unsupported_public_claim"],
+    )
+    for action_index, history in enumerate(malformed_histories, start=1):
+        game = _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            game_id=f"malformed-history-{action_index}",
+            semantic_gate_version=2,
+            unsupported_public_claim_count=0,
+            repair_failure_history=history,
+        )
+
+        metrics = compute_acceptance_audit_metrics([game])
+
+        assert metrics["semantic_repair_metrics_supported"] is False
+        assert metrics["semantic_repair_success_rate"] is None
+        assert (
+            metrics["semantic_repair_public_evidence_safety_metrics_supported"]
+            is False
+        )
+        assert metrics["semantic_repair_public_evidence_safety_rate"] is None
+        assert (
+            metrics["semantic_repair_verified_claim_retention_metrics_supported"]
+            is False
+        )
+        assert metrics["semantic_repair_verified_claim_retention_rate"] is None
+
+
+def test_duplicate_allowed_repair_history_preserves_semantic_metrics() -> None:
+    """合法码可重复且保持原顺序，不应误关验收指标。"""
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    metrics = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            unsupported_public_claim_count=0,
+            repair_failure_history=[
+                "semantic_claim_retention",
+                "speech_quality",
+                "semantic_claim_retention",
+            ],
+        ),
+    ])
+
+    assert metrics["semantic_repair_metrics_supported"] is True
+    assert metrics["semantic_repair_success_rate"] == 1.0
+    assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is True
+    assert metrics["semantic_repair_verified_claim_retention_metrics_supported"] is True
+
+
 def test_paired_semantic_audit_reconciliation_preserves_fields_and_nested_types() -> None:
     from werewolf_agent.evaluation.acceptance_audit import (
         compute_acceptance_audit_metrics,

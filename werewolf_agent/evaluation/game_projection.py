@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
-修改日期: 2026-07-16
+修改日期: 2026-07-24
 
 使用示例:
     >>> projection = project_acceptance_game({"game_id": "g1", "events": []})
@@ -22,6 +22,9 @@ from types import MappingProxyType
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from werewolf_agent.core.resolution_batches import serialize_resolution_batch
+from werewolf_agent.evaluation.acceptance_shared import (
+    _has_valid_repair_failure_history,
+)
 from werewolf_agent.runtime.event_metadata import serialize_game_event
 
 
@@ -343,6 +346,7 @@ def _normalize_event(value: Any, budget: _JsonBudget) -> dict[str, Any]:
     payload = value.get("payload", {})
     if not isinstance(event_type, str) or not event_type or not isinstance(payload, Mapping):
         raise _ProjectionValueError("invalid_event_entry")
+    _validate_repair_failure_history(event_type, payload)
     try:
         normalized = _normalize_json(value, budget)
     except _ProjectionValueError as exc:
@@ -351,6 +355,33 @@ def _normalize_event(value: Any, budget: _JsonBudget) -> dict[str, Any]:
         raise _ProjectionValueError("invalid_event_payload") from exc
     assert isinstance(normalized, dict)
     return normalized
+
+
+def _validate_repair_failure_history(
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> None:
+    """在冻结为 tuple 前严格校验可选的 JSON 修复历史列表。"""
+    audits: list[Mapping[str, Any]] = []
+    if event_type == "semantic_repair_audit":
+        audits.append(payload)
+    elif event_type == "action_trace_audit":
+        trace = payload.get("action_trace")
+        if isinstance(trace, Mapping):
+            semantic = trace.get("semantic_repair_audit")
+            if isinstance(semantic, Mapping):
+                audits.append(semantic)
+
+    for audit in audits:
+        if "repair_failure_history" not in audit:
+            continue
+        # 已归一化快照中的 JSON list 会冻结为 tuple；外部原始输入必须是 list。
+        expected_type = tuple if type(audit) is MappingProxyType else list
+        if not _has_valid_repair_failure_history(
+            audit,
+            container_type=expected_type,
+        ):
+            raise _ProjectionValueError("invalid_semantic_repair_history")
 
 
 def _normalize_players(
