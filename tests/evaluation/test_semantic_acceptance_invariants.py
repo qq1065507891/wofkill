@@ -9,6 +9,36 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import pytest
+
+
+@dataclass(frozen=True)
+class _SemanticAuditDataclass:
+    """模拟会被验收投影展开的语义审计 dataclass。"""
+
+    repairable: object
+    success: object
+    target_preserved: object
+    speaker_attribution_preserved: object
+    negation_preserved: object
+    introduced_claim_count: object
+    verified_claim_count: object
+    retained_verified_claim_count: object
+    generic_template_used: object
+    fallback_kind: object
+    semantic_gate_version: object
+    unsupported_public_claim_count: object
+    repair_failure_history: object
+
+
+@dataclass(frozen=True)
+class _ActionTraceDataclass:
+    """模拟会被验收投影展开的 action trace dataclass。"""
+
+    semantic_repair_audit: object
+
 
 def _game(
     *,
@@ -501,6 +531,88 @@ def test_duplicate_allowed_repair_history_preserves_semantic_metrics() -> None:
     assert metrics["semantic_repair_success_rate"] == 1.0
     assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is True
     assert metrics["semantic_repair_verified_claim_retention_metrics_supported"] is True
+
+
+@pytest.mark.parametrize("dataclass_path", ("semantic_audit", "action_trace"))
+def test_dataclass_tuple_history_cannot_match_a_legal_json_list(
+    dataclass_path: str,
+) -> None:
+    """dataclass 中的 tuple 不得在归一化后伪装成合法 JSON list。"""
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    game = _game(
+        speaker_preserved=True,
+        negation_preserved=True,
+        semantic_gate_version=2,
+        unsupported_public_claim_count=0,
+        repair_failure_history=["speech_quality"],
+    )
+    trace_payload = game["events"][1]["payload"]
+    semantic = trace_payload["action_trace"]["semantic_repair_audit"]
+    invalid_semantic = _SemanticAuditDataclass(
+        **{**semantic, "repair_failure_history": ("speech_quality",)},
+    )
+    if dataclass_path == "semantic_audit":
+        trace_payload["action_trace"]["semantic_repair_audit"] = invalid_semantic
+    else:
+        trace_payload["action_trace"] = _ActionTraceDataclass(
+            semantic_repair_audit=invalid_semantic,
+        )
+
+    metrics = compute_acceptance_audit_metrics([game])
+
+    assert metrics["semantic_repair_metrics_supported"] is False
+    assert metrics["semantic_repair_success_rate"] is None
+    assert metrics["acceptance_projection_supported"] is False
+    assert (
+        metrics["acceptance_projection_unsupported_reason"]
+        == "invalid_semantic_repair_history"
+    )
+
+
+@pytest.mark.parametrize("dataclass_path", ("semantic_audit", "action_trace"))
+@pytest.mark.parametrize(
+    "invalid_history",
+    (
+        ("speech_quality",),
+        [False],
+        [0],
+        ["unsupported_public_claim"],
+    ),
+)
+def test_dataclass_repair_history_schema_fails_at_projection_boundary(
+    dataclass_path: str,
+    invalid_history: object,
+) -> None:
+    """所有会被 JSON 归一化展开的 dataclass 路径共享严格历史结构门。"""
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    game = _game(
+        speaker_preserved=True,
+        negation_preserved=True,
+        semantic_gate_version=2,
+        unsupported_public_claim_count=0,
+        repair_failure_history=["speech_quality"],
+    )
+    game["events"] = [game["events"][1]]
+    trace_payload = game["events"][0]["payload"]
+    semantic = trace_payload["action_trace"]["semantic_repair_audit"]
+    invalid_semantic = _SemanticAuditDataclass(
+        **{**semantic, "repair_failure_history": invalid_history},
+    )
+    if dataclass_path == "semantic_audit":
+        trace_payload["action_trace"]["semantic_repair_audit"] = invalid_semantic
+    else:
+        trace_payload["action_trace"] = _ActionTraceDataclass(
+            semantic_repair_audit=invalid_semantic,
+        )
+
+    projection = project_acceptance_game(game)
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == "invalid_semantic_repair_history"
 
 
 def test_paired_semantic_audit_reconciliation_preserves_fields_and_nested_types() -> None:

@@ -362,26 +362,39 @@ def _validate_repair_failure_history(
     payload: Mapping[str, Any],
 ) -> None:
     """在冻结为 tuple 前严格校验可选的 JSON 修复历史列表。"""
-    audits: list[Mapping[str, Any]] = []
+    audits: list[tuple[Mapping[str, Any], bool]] = []
     if event_type == "semantic_repair_audit":
-        audits.append(payload)
+        audits.append((payload, type(payload) is MappingProxyType))
     elif event_type == "action_trace_audit":
-        trace = payload.get("action_trace")
-        if isinstance(trace, Mapping):
-            semantic = trace.get("semantic_repair_audit")
-            if isinstance(semantic, Mapping):
-                audits.append(semantic)
+        trace_view = _json_object_view(payload.get("action_trace"))
+        if trace_view is not None:
+            trace, _ = trace_view
+            semantic_view = _json_object_view(trace.get("semantic_repair_audit"))
+            if semantic_view is not None:
+                audits.append(semantic_view)
 
-    for audit in audits:
+    for audit, is_frozen in audits:
         if "repair_failure_history" not in audit:
             continue
         # 已归一化快照中的 JSON list 会冻结为 tuple；外部原始输入必须是 list。
-        expected_type = tuple if type(audit) is MappingProxyType else list
+        expected_type = tuple if is_frozen else list
         if not _has_valid_repair_failure_history(
             audit,
             container_type=expected_type,
         ):
             raise _ProjectionValueError("invalid_semantic_repair_history")
+
+
+def _json_object_view(value: Any) -> tuple[Mapping[str, Any], bool] | None:
+    """仅按 JSON 归一化器支持的 Mapping/dataclass 规则读取对象字段。"""
+    if isinstance(value, Mapping):
+        return value, type(value) is MappingProxyType
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: getattr(value, item.name)
+            for item in fields(value)
+        }, False
+    return None
 
 
 def _normalize_players(
