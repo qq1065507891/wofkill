@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-18
+修改日期: 2026-07-24
 
 使用示例:
     >>> proof = FinalPromptAssembly(b"rules", "system", None, "anthropic", "m")
@@ -25,7 +25,11 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class FinalPromptAssembly:
-    """仅在 HTTP 调用前短暂传递最终 system 字节，不负责持久化原文。"""
+    """仅在 HTTP 调用前传递提示词证明，不负责持久化原文。
+
+    ``system_bytes`` 是从最终 provider system 字段重建的逻辑文本；
+    ``provider_payload_bytes`` 是实际请求体的规范序列化字节。
+    """
 
     system_bytes: bytes
     final_system_location: str

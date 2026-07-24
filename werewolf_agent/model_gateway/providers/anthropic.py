@@ -4,7 +4,7 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-21
+修改日期：2026-07-24
 
 2026-07-15 新增：``config.base_url`` 覆盖 provider 实例默认 URL；``config.extra_body``
 合并进 payload（不覆盖已有字段）。用于同一 Anthropic 兼容客户端服务多个 endpoint。
@@ -212,8 +212,6 @@ class AnthropicProvider(_BaseHttpProvider):
 #          "cache_control": {"type": "ephemeral"}},
 #     ]
 #
-# 字节兼容 finalize_prompt_observer 的 contract marker 校验: marker 字符串
-# 仍然以 Python repr 形式出现在 system_bytes 里, find() 仍命中.
 def _wrap_system_prompt_for_cache(system_prompt: str) -> list[dict[str, Any]]:
     """Wrap a system_prompt string into Anthropic text-blocks with cache_control."""
     return [{
@@ -224,23 +222,22 @@ def _wrap_system_prompt_for_cache(system_prompt: str) -> list[dict[str, Any]]:
 
 
 def _system_bytes_for_observer(system_value: str | list[dict[str, Any]] | None) -> bytes:
-    """序列化 system 字段供 FinalPromptAssembly.system_bytes.
-
-    兼容 str (旧用法) 和 list-of-text-blocks (R2 新形态).
-    列表形式用 canonical JSON 保证后续调用者能字节化, 同时 contract marker
-    仍然出现在 JSON 内的中文 UTF-8 序列里, find() 命中.
-    """
+    """从 provider 的 system 字段重建供合同校验的逻辑文本字节。"""
     if system_value is None:
         return b""
     if isinstance(system_value, str):
         return system_value.encode("utf-8")
-    # list 形式, 用 json.dumps 而非 str() (Python repr 会带单引号, 与 JSON 不同).
-    return json.dumps(
-        system_value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    if not isinstance(system_value, list):
+        return b""
+    text_parts: list[str] = []
+    for block in system_value:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            return b""
+        text = block.get("text")
+        if not isinstance(text, str):
+            return b""
+        text_parts.append(text)
+    return "".join(text_parts).encode("utf-8")
 
 
 # -- Anthropic response parsers --

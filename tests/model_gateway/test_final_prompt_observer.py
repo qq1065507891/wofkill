@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
@@ -40,6 +41,40 @@ class _Client:
         self.post_calls += 1
         self.payload = json
         return _Response(self.response_payload)
+
+
+def _assert_type_sensitive_equal(actual: object, expected: object) -> None:
+    """递归比较值与容器类型，避免 bool 与 int 等宽松相等。"""
+    assert type(actual) is type(expected)
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        assert actual.keys() == expected.keys()
+        for key, expected_value in expected.items():
+            _assert_type_sensitive_equal(actual[key], expected_value)
+        return
+    if isinstance(expected, list):
+        assert isinstance(actual, list)
+        assert len(actual) == len(expected)
+        for actual_item, expected_item in zip(actual, expected, strict=True):
+            _assert_type_sensitive_equal(actual_item, expected_item)
+        return
+    assert actual == expected
+
+
+def _anthropic_compatible_provider(provider_name: str, client: _Client) -> Any:
+    """用同一入口构造两种 Anthropic 兼容真实 provider。"""
+    from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+    from werewolf_agent.model_gateway.providers.minimax import MiniMaxProvider
+
+    provider_type = {
+        "anthropic": AnthropicProvider,
+        "minimax": MiniMaxProvider,
+    }[provider_name]
+    return provider_type(
+        api_key="k",
+        base_url="https://example.test",
+        http_client=client,
+    )
 
 
 def test_openai_observer_receives_actual_final_messages_system_bytes() -> None:
@@ -85,29 +120,208 @@ def test_openai_observer_receives_canonical_full_provider_payload() -> None:
 
 
 def test_anthropic_observer_reports_top_level_system_with_no_message_index() -> None:
-    from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptAssembly,
+        canonical_provider_payload,
+    )
     from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
     from werewolf_agent.model_gateway.router import ModelConfig
 
     client = _Client()
     assemblies: list[FinalPromptAssembly] = []
+    system_prompt = '你是"守夜人"。\n保留路径 C:\\wolves\\alpha\n第二行含有"引号"与\\反斜杠。'
     AnthropicProvider(api_key="k", base_url="https://example.test", http_client=client).generate(
         "user", ModelConfig(provider="anthropic", model="m"),
-        system_prompt="rules\npersona-final", final_prompt_observer=assemblies.append,
+        system_prompt=system_prompt, final_prompt_observer=assemblies.append,
     )
 
     assert client.payload is not None
-    # 2026-07-21 R2: anthropic system 字段在 system_prompt 非空时升级为 list 形式
-    # (cache_control), observer 把 list JSON 化成 system_bytes. str 形态走旧契约.
-    payload_system = client.payload["system"]
-    if isinstance(payload_system, list):
-        import json
-        expected = json.dumps(payload_system, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    else:
-        expected = payload_system.encode("utf-8")
-    assert assemblies[0].system_bytes == expected
+    expected_system = [{
+        "type": "text",
+        "text": system_prompt,
+        "cache_control": {"type": "ephemeral"},
+    }]
+    _assert_type_sensitive_equal(client.payload["system"], expected_system)
+    assert assemblies[0].system_bytes == system_prompt.encode("utf-8")
+    assert assemblies[0].provider_payload_bytes == canonical_provider_payload(
+        client.payload,
+    )
     assert assemblies[0].final_system_location == "system"
     assert assemblies[0].final_system_message_index is None
+
+
+def test_anthropic_system_block_text_is_concatenated_without_separator() -> None:
+    from werewolf_agent.model_gateway.providers.anthropic import (
+        _system_bytes_for_observer,
+    )
+
+    blocks = [
+        {
+            "type": "text",
+            "text": '你是"守夜人"。\n路径 C:\\wolves\\alpha\n',
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": '继续保留\\与"引号"。'},
+    ]
+
+    assert _system_bytes_for_observer(blocks) == (
+        '你是"守夜人"。\n路径 C:\\wolves\\alpha\n继续保留\\与"引号"。'
+    ).encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("system_value", "expected"),
+    (
+        (None, b""),
+        ("规则\n角色", "规则\n角色".encode("utf-8")),
+    ),
+)
+def test_anthropic_system_scalar_observer_bytes(
+    system_value: str | None,
+    expected: bytes,
+) -> None:
+    from werewolf_agent.model_gateway.providers.anthropic import (
+        _system_bytes_for_observer,
+    )
+
+    assert _system_bytes_for_observer(system_value) == expected
+
+
+@pytest.mark.parametrize(
+    "system_value",
+    (
+        ["not-a-block"],
+        ({"type": "text", "text": "tuple block"},),
+        {"type": "text", "text": "mapping container"},
+        42,
+        [{"text": "missing type"}],
+        [{"type": "image", "text": "not text"}],
+        [{"type": "text"}],
+        [{"type": "text", "text": 1}],
+        [
+            {"type": "text", "text": "valid prefix"},
+            {"type": "image", "text": "invalid suffix"},
+        ],
+    ),
+)
+def test_anthropic_system_blocks_fail_closed_as_a_whole(
+    system_value: object,
+) -> None:
+    from werewolf_agent.model_gateway.providers.anthropic import (
+        _system_bytes_for_observer,
+    )
+
+    assert _system_bytes_for_observer(system_value) == b""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("provider_name", ("anthropic", "minimax"))
+def test_anthropic_compatible_contract_accepts_exact_multiline_persona(
+    provider_name: str,
+) -> None:
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptAssembly,
+        FinalPromptContract,
+        canonical_provider_payload,
+        validate_final_prompt_contract,
+    )
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    persona = '【角色】\n你是"守夜人"。\n路径 C:\\wolves\\alpha\n保留\\与"引号"。'
+    tools = [{
+        "name": "submit_player_action",
+        "input_schema": {"type": "object"},
+    }]
+    tool_choice = {"type": "tool", "name": "submit_player_action"}
+    client = _Client()
+    provider = _anthropic_compatible_provider(provider_name, client)
+    assemblies: list[FinalPromptAssembly] = []
+    contract = FinalPromptContract(
+        contract_id="anthropic-compatible-persona",
+        version="v1",
+        required_sections=(("persona", persona.encode("utf-8")),),
+    )
+
+    def observe(assembly: FinalPromptAssembly) -> None:
+        validate_final_prompt_contract(assembly, contract)
+        assemblies.append(assembly)
+
+    provider.generate(
+        "user",
+        ModelConfig(
+            provider=provider_name,
+            model="m",
+            max_tokens=321,
+            temperature=0.25,
+            top_p=0.75,
+        ),
+        system_prompt=persona,
+        tools=tools,
+        tool_choice=tool_choice,
+        final_prompt_observer=observe,
+    )
+
+    expected_payload: dict[str, Any] = {
+        "model": "m",
+        "temperature": 0.25,
+        "top_p": 0.75,
+        "messages": [{"role": "user", "content": "user"}],
+        "max_tokens": 321,
+        "system": [{
+            "type": "text",
+            "text": persona,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        "tools": [{
+            "name": "submit_player_action",
+            "input_schema": {"type": "object"},
+        }],
+    }
+    if provider_name == "anthropic":
+        expected_payload["tool_choice"] = {
+            "type": "tool",
+            "name": "submit_player_action",
+        }
+
+    assert client.payload is not None
+    _assert_type_sensitive_equal(client.payload, expected_payload)
+    assert len(assemblies) == 1
+    assert assemblies[0].provider_payload_bytes == canonical_provider_payload(
+        expected_payload,
+    )
+    assert client.post_calls == 1
+
+
+@pytest.mark.parametrize("provider_name", ("anthropic", "minimax"))
+def test_anthropic_compatible_contract_rejects_truly_missing_persona(
+    provider_name: str,
+) -> None:
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptContract,
+        FinalPromptContractError,
+        validate_final_prompt_contract,
+    )
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _Client()
+    provider = _anthropic_compatible_provider(provider_name, client)
+    contract = FinalPromptContract(
+        contract_id="anthropic-compatible-persona",
+        version="v1",
+        required_sections=(("persona", "【角色】守夜人".encode("utf-8")),),
+    )
+
+    with pytest.raises(FinalPromptContractError, match="persona"):
+        provider.generate(
+            "user",
+            ModelConfig(provider=provider_name, model="m"),
+            system_prompt="只有通用规则，未包含角色。",
+            final_prompt_observer=lambda assembly: validate_final_prompt_contract(
+                assembly,
+                contract,
+            ),
+        )
+
+    assert client.post_calls == 0
 
 
 def test_observer_exception_does_not_block_provider_http_request() -> None:
@@ -317,14 +531,6 @@ def test_router_observes_each_real_provider_assembly_in_fallback_chain() -> None
     assert primary_client.payload is not None
     assert fallback_client.payload is not None
     assert assemblies[0].system_bytes == primary_client.payload["messages"][0]["content"].encode("utf-8")
-    # 2026-07-21 R2: 见上一个测试的同款兼容：anthropic 在 system_prompt 非空时
-    # 走 list 形态; fallback 链路下来时同样要按 list/str 自适应.
-    fallback_system = fallback_client.payload["system"]
-    if isinstance(fallback_system, list):
-        import json
-        expected = json.dumps(fallback_system, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    else:
-        expected = fallback_system.encode("utf-8")
-    assert assemblies[1].system_bytes == expected
+    assert assemblies[1].system_bytes == b"rules\npersona-final"
     assert assemblies[1].final_system_location == "system"
     assert assemblies[1].final_system_message_index is None
