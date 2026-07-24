@@ -3,7 +3,7 @@
 验证真实游戏脚本的报告辅助函数与结构化质量指标。
 
 作者: Project contributors
-修改日期: 2026-07-23
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
@@ -833,7 +833,114 @@ def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():
     assert set(summary["attempts"][0]) == {
         "opaque_request_id", "ordinal", "provider", "model", "requested_level",
         "status", "reasoning_tokens", "evidence", "route", "root_cause", "outcome",
+        "provider_attempted",
     }
+    assert summary["attempts"][0]["provider_attempted"] is True
+
+
+def test_reasoning_summary_keeps_terminal_boundary_in_requested_denominator() -> None:
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord, AttemptOutcome, EvidenceKind, ReasoningLevel,
+        ReasoningStatus, RootCause, RouteKind,
+    )
+    from werewolf_agent.model_gateway.generation_attempt_context import (
+        GenerationAttemptContext,
+    )
+    from werewolf_agent.model_gateway.usage_records import UsageRecord
+    from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
+    from scripts.run_real_game_reports import _reasoning_evidence_summary
+
+    context = GenerationAttemptContext("game")
+    source = AttemptExecutionRecord(
+        opaque_request_id=context.opaque_request_id,
+        ordinal=1,
+        provider="openai",
+        model="reasoner",
+        route_kind=RouteKind.PRIMARY,
+        root_cause=RootCause.INVALID_OUTPUT,
+        attempt_outcome=AttemptOutcome.FAILURE,
+        requested_reasoning_level=ReasoningLevel.HIGH,
+        normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+        reasoning_token_count=0,
+        evidence_kind=EvidenceKind.NONE,
+    )
+    context.accept((source,))
+    context.append_terminal_fallback("schema_validation")
+    usage = UsageRecord(
+        agent_id="p01",
+        task_type="vote",
+        provider="openai",
+        model="reasoner",
+        attempts=(source,),
+    )
+
+    summary = _reasoning_evidence_summary(
+        [usage],
+        action_attempts=context.attempts,
+    )
+
+    assert summary["requested_denominator"] == 2
+    assert len(summary["attempts"]) == 2
+    assert summarize_attempt_counts(context.attempts).attempt_count == 2
+    assert [attempt["route"] for attempt in summary["attempts"]] == [
+        "primary",
+        "safe_fallback",
+    ]
+    assert [attempt["provider_attempted"] for attempt in summary["attempts"]] == [
+        True,
+        False,
+    ]
+
+
+@pytest.mark.parametrize("container", [dict, SimpleNamespace])
+def test_reasoning_summary_defaults_legacy_provider_attempted_to_true(
+    container,
+) -> None:
+    from scripts.run_real_game_reports import _reasoning_evidence_summary
+
+    payload = {
+        "opaque_request_id": "run_game_abcdef12",
+        "ordinal": 1,
+        "provider": "openai",
+        "model": "reasoner",
+        "requested_reasoning_level": "high",
+        "normalized_reasoning_status": "requested_unconfirmed",
+        "reasoning_token_count": 0,
+        "evidence_kind": "none",
+        "route_kind": "primary",
+        "root_cause": "timeout",
+        "attempt_outcome": "attempt_failure",
+    }
+    legacy = payload if container is dict else container(**payload)
+
+    summary = _reasoning_evidence_summary([], action_attempts=[legacy])
+
+    assert summary["attempts"][0]["provider_attempted"] is True
+
+
+@pytest.mark.parametrize("malformed", [0, 1, "false", None])
+def test_reasoning_summary_rejects_malformed_provider_attempted(
+    malformed: object,
+) -> None:
+    from scripts.run_real_game_reports import _reasoning_evidence_summary
+
+    attempt = {
+        "opaque_request_id": "run_game_abcdef12",
+        "ordinal": 1,
+        "provider": "openai",
+        "model": "reasoner",
+        "requested_reasoning_level": "high",
+        "normalized_reasoning_status": "requested_unconfirmed",
+        "reasoning_token_count": 0,
+        "evidence_kind": "none",
+        "route_kind": "primary",
+        "root_cause": "timeout",
+        "attempt_outcome": "attempt_failure",
+        "provider_attempted": malformed,
+    }
+
+    with pytest.raises(TypeError, match="^provider_attempted must be a bool$"):
+        _reasoning_evidence_summary([], action_attempts=[attempt])
 
 
 def test_reasoning_summary_canonicalizes_snapshots_and_prefers_action_projection():
@@ -1001,13 +1108,17 @@ def test_report_helpers_are_split_from_run_real_game_facade() -> None:
 def test_usage_report_prints_structured_runtime_timeout_count(capsys) -> None:
     from scripts.run_real_game_reports import print_usage_stats
     from werewolf_agent.model_gateway.execution_records import (
-        AttemptExecutionRecord, AttemptOutcome, EvidenceKind, OpaqueRequestId,
+        AttemptExecutionRecord, AttemptOutcome, EvidenceKind,
         ReasoningLevel, ReasoningStatus, RootCause, RouteKind,
+    )
+    from werewolf_agent.model_gateway.generation_attempt_context import (
+        GenerationAttemptContext,
     )
     from werewolf_agent.model_gateway.usage_records import UsageRecord
 
+    context = GenerationAttemptContext("game")
     timeout = AttemptExecutionRecord(
-        opaque_request_id=OpaqueRequestId.new("game", "abcdef12"), ordinal=1,
+        opaque_request_id=context.opaque_request_id, ordinal=1,
         provider="openai", model="reasoner", route_kind=RouteKind.PRIMARY,
         root_cause=RootCause.TIMEOUT, attempt_outcome=AttemptOutcome.FAILURE,
         requested_reasoning_level=ReasoningLevel.HIGH,
@@ -1018,6 +1129,8 @@ def test_usage_report_prints_structured_runtime_timeout_count(capsys) -> None:
         timeout, ordinal=2, route_kind=RouteKind.RETRY,
         root_cause=RootCause.NONE, attempt_outcome=AttemptOutcome.SUCCESS,
     )
+    context.accept((timeout, success))
+    context.append_terminal_fallback("schema_validation")
     usage = UsageRecord(
         agent_id="p01", task_type="vote", provider="openai", model="reasoner",
         attempts=(timeout, success),
@@ -1025,7 +1138,7 @@ def test_usage_report_prints_structured_runtime_timeout_count(capsys) -> None:
     runner = SimpleNamespace(
         state=GameState(game_id="g-timeout", events=[GameEvent(
             type="action_trace_audit", payload={"action_trace": {
-                "execution_attempts": (timeout, success),
+                "execution_attempts": context.attempts,
                 "runtime_timeout_count": 999,
             }},
         )]),
@@ -1036,7 +1149,18 @@ def test_usage_report_prints_structured_runtime_timeout_count(capsys) -> None:
 
     print_usage_stats(runner)
 
-    assert "Runtime timeouts: 1" in capsys.readouterr().out.splitlines()
+    lines = capsys.readouterr().out.splitlines()
+    assert "Runtime timeouts: 1" in lines
+    assert any(
+        "#1 " in line and "provider_attempted=true" in line
+        for line in lines
+    )
+    assert any(
+        "#3 " in line
+        and "provider_attempted=false" in line
+        and "route=safe_fallback" in line
+        for line in lines
+    )
 
 
 def test_quality_audit_handles_vote_trace_without_parsed_action(capsys) -> None:

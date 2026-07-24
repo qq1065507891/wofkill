@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-21
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
@@ -82,6 +82,7 @@ class GenerationAttemptContext:
             latest,
             ordinal=len(self.attempts) + 1,
             route_kind=RouteKind.SAFE_FALLBACK,
+            provider_attempted=False,
             root_cause=RootCause.INVALID_OUTPUT,
             attempt_outcome=AttemptOutcome.FAILURE,
             normalized_reasoning_status=(

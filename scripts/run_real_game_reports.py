@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-23
+修改日期: 2026-07-24
 
 使用示例:
     >>> from scripts.run_real_game_reports import print_quality_audit
@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
@@ -166,6 +167,7 @@ def print_usage_stats(runner: Any) -> None:
             "    attempt "
             f"{attempt['opaque_request_id']}#{attempt['ordinal']} "
             f"{attempt['provider']}/{attempt['model']} "
+            f"provider_attempted={'true' if attempt['provider_attempted'] else 'false'} "
             f"level={attempt['requested_level']} status={attempt['status']} "
             f"tokens={attempt['reasoning_tokens']} evidence={attempt['evidence']} "
             f"route={attempt['route']} root={attempt['root_cause']} "
@@ -202,10 +204,28 @@ def _reasoning_evidence_summary(
     """按请求与序号去重累计快照，并让最终行动投影覆盖 provider 快照。"""
 
     def field(attempt: Any, name: str) -> Any:
-        value = attempt.get(name) if isinstance(attempt, dict) else getattr(attempt, name)
+        value = (
+            attempt.get(name)
+            if isinstance(attempt, Mapping)
+            else getattr(attempt, name)
+        )
         if name == "opaque_request_id" and isinstance(value, dict):
             value = value.get("value", "")
         return getattr(value, "value", value)
+
+    def provider_attempted(attempt: Any) -> bool:
+        """兼容旧记录缺省值，同时拒绝宽松真假值。"""
+        missing = object()
+        value = (
+            attempt.get("provider_attempted", missing)
+            if isinstance(attempt, Mapping)
+            else getattr(attempt, "provider_attempted", missing)
+        )
+        if value is missing:
+            return True
+        if type(value) is not bool:
+            raise TypeError("provider_attempted must be a bool")
+        return value
 
     canonical: dict[tuple[str, int], Any] = {}
     request_order: dict[str, int] = {}
@@ -262,6 +282,7 @@ def _reasoning_evidence_summary(
                 "route": field(attempt, "route_kind"),
                 "root_cause": field(attempt, "root_cause"),
                 "outcome": field(attempt, "attempt_outcome"),
+                "provider_attempted": provider_attempted(attempt),
             }
             for attempt in attempts
         ],
