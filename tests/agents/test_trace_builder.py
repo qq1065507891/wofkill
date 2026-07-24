@@ -3,7 +3,7 @@
 验证 ActionTrace 构造、V2 计数与终态失败码投影。
 
 作者: Project contributors
-修改日期: 2026-07-23
+修改日期: 2026-07-24
 """
 
 from __future__ import annotations
@@ -91,7 +91,8 @@ class TestBuildActionTrace:
         )
         assert trace.raw_text == '{"action_type": "vote"}'
         assert trace.final_action_type == "vote"
-        assert trace.retry == retry.model_dump()
+        expected_retry = retry.model_dump(exclude={"correction_hint"})
+        assert trace.retry == expected_retry
         assert trace.retry_count == 0
         assert trace.fallback_target_used is False
         assert trace.parse_success is True
@@ -99,6 +100,40 @@ class TestBuildActionTrace:
         # legal_actions / legal_targets are sourced from the context
         assert trace.legal_actions == ["vote"]
         assert trace.legal_targets == ["p07", "p08"]
+
+    def test_retry_correction_hint_is_redacted_but_audit_fields_remain(self):
+        """构造 trace 时只移除模型修正提示，保留其他稳定审计字段。"""
+        sentinel = "CORRECTION_HINT_SENTINEL"
+        retry = RetryInfo(
+            attempt=2,
+            max_retries=3,
+            error_code="speech_quality",
+            error_message="缺少明确论点",
+            reason_codes=["unsupported_public_claim"],
+            correction_hint=sentinel,
+            early_exit_reason="repeat_error_signature",
+            failure_category="unknown",
+        )
+
+        trace = build_action_trace(
+            _context(),
+            raw_text="{}",
+            parsed_action=None,
+            final_action_type=ActionType.VOTE,
+            retry=retry,
+        )
+
+        assert retry.correction_hint == sentinel
+        assert trace.retry == {
+            "attempt": 2,
+            "max_retries": 3,
+            "error_code": "speech_quality",
+            "error_message": "缺少明确论点",
+            "reason_codes": ["unsupported_public_claim"],
+            "early_exit_reason": "repeat_error_signature",
+            "failure_category": "unknown",
+        }
+        assert sentinel not in trace.model_dump_json()
 
     def test_fallback_trace_marks_target(self):
         trace = build_action_trace(

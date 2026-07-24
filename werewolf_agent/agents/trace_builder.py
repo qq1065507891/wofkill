@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
+功能描述：从 player.py 拆出，将每次 LLM 调用经隐私净化的审计轨迹封装为 ActionTrace 对象。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-23
+修改日期：2026-07-24
 使用示例：内部模块，无对外接口
 """
 
@@ -43,11 +43,10 @@ def build_action_trace(
     semantic_repair_audit: dict[str, Any] | None = None,
     fallback_kind: str | None = None,
 ) -> ActionTrace:
-    """Build an ActionTrace from the current attempt's state.
+    """从当前尝试状态构造经隐私净化的 ActionTrace。
 
-    The ``final_action_type`` is normalized to its ``.value`` string when
-    an ``ActionType`` enum is supplied so downstream audit code can
-    treat the field uniformly.
+    ``final_action_type`` 统一转为字符串；仅供运行时重试使用的
+    ``correction_hint`` 不会进入持久化 retry payload。
     """
     final_type_value = (
         final_action_type.value
@@ -79,14 +78,19 @@ def build_action_trace(
         if translated and translated.generated_by.value == "terminal_fallback"
         else None
     )
-    retry_payload = retry.model_dump() if retry else None
+    # correction_hint 可包含被拒发言，只能留在当次行动内存中供重试。
+    retry_payload = retry.model_dump(exclude={"correction_hint"}) if retry else None
     trace_raw_text = raw_text
     trace_parsed_payload = parsed_payload
     trace_parse_error = parse_error
     trace_failure_reason = structured_failure_reason
     if terminal_failure_code is not None:
         # 终退审计只导出稳定码，不保留 provider/schema 的原始错误正文。
-        retry_payload = retry.model_dump(exclude={"error_message"}) if retry else None
+        retry_payload = (
+            retry.model_dump(exclude={"error_message", "correction_hint"})
+            if retry
+            else None
+        )
         if retry_payload is not None:
             retry_payload["error_code"] = terminal_failure_code
         if retry and retry.reason_codes:

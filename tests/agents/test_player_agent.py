@@ -4192,6 +4192,84 @@ def _semantic_speech_payload(
     }, ensure_ascii=False)
 
 
+def test_speech_quality_retry_keeps_runtime_hint_but_redacts_success_trace(
+    monkeypatch,
+) -> None:
+    """被拒发言可进入下一轮 prompt，但不得持久化到成功 trace。"""
+    from unittest.mock import patch
+
+    rejected_speech = "REJECTED_SPEECH_SENTINEL"
+    provider = _SequenceJsonProvider([
+        _semantic_speech_payload(f"我怀疑p05，{rejected_speech}。"),
+        _semantic_speech_payload("我是好人，我怀疑p05，依据其发言矛盾。"),
+    ])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None]):
+        action, retry = agent.act(context)
+
+    assert rejected_speech in provider.prompts[1]
+    assert retry.correction_hint is not None
+    assert rejected_speech in retry.correction_hint
+    assert action.trace is not None
+    assert action.trace.retry is not None
+    assert "correction_hint" not in action.trace.retry
+    assert rejected_speech not in action.trace.model_dump_json()
+
+
+def test_speech_quality_terminal_fallback_redacts_correction_prompt(
+    monkeypatch,
+) -> None:
+    """纯发言质量终退不得将模型修正 prompt 写入 trace。"""
+    from unittest.mock import patch
+
+    correction_sentinel = "CORRECTION_PROMPT_SENTINEL"
+    provider = _SequenceJsonProvider([
+        _semantic_speech_payload("我怀疑p05。"),
+        _semantic_speech_payload("我仍怀疑p05。"),
+    ])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    quality_error = f"缺少明确论点 {correction_sentinel}"
+    with patch.object(
+        agent,
+        "_speech_quality_error",
+        side_effect=[quality_error, quality_error],
+    ):
+        action, retry = agent.act(context)
+
+    assert isinstance(action, FallbackAction)
+    assert retry.correction_hint is not None
+    assert correction_sentinel in retry.correction_hint
+    assert action.trace is not None
+    assert action.trace.retry is not None
+    assert "error_message" not in action.trace.retry
+    assert "correction_hint" not in action.trace.retry
+    assert correction_sentinel not in action.trace.model_dump_json()
+
+
 def test_cumulative_repair_constraints_survive_quality_then_semantic_failure(
     monkeypatch,
 ) -> None:
@@ -4627,6 +4705,7 @@ def test_semantic_repair_terminal_log_trace_privacy(monkeypatch, caplog) -> None
 
     rejected_speech = "REJECTED_SPEECH_SENTINEL"
     private_sentinel = "PRIVATE_SENTINEL"
+    correction_sentinel = "CORRECTION_PROMPT_SENTINEL"
     provider = _SequenceJsonProvider([
         _semantic_speech_payload("我怀疑p05。"),
         _semantic_speech_payload(
@@ -4646,7 +4725,11 @@ def test_semantic_repair_terminal_log_trace_privacy(monkeypatch, caplog) -> None
     monkeypatch.setattr(
         "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
     )
-    with patch.object(agent, "_speech_quality_error", side_effect=["需修复"]):
+    with patch.object(
+        agent,
+        "_speech_quality_error",
+        side_effect=[f"需修复 {correction_sentinel}"],
+    ):
         action, retry = agent.act(context)
 
     logs = caplog.text
@@ -4655,6 +4738,7 @@ def test_semantic_repair_terminal_log_trace_privacy(monkeypatch, caplog) -> None
     assert "last_reason_codes=unsupported_public_claim" in logs
     assert rejected_speech not in logs
     assert private_sentinel not in logs
+    assert correction_sentinel not in logs
     assert action.trace is not None
     assert action.trace.raw_text == ""
     assert action.trace.parsed_action is None
@@ -4666,7 +4750,10 @@ def test_semantic_repair_terminal_log_trace_privacy(monkeypatch, caplog) -> None
     assert action.trace.structured_failure_reason == "semantic_claim_retention"
     assert action.trace.retry["error_code"] == "semantic_claim_retention"
     assert "error_message" not in action.trace.retry
+    assert "correction_hint" not in action.trace.retry
     assert retry.reason_codes == action.trace.retry["reason_codes"]
+    assert retry.correction_hint is not None
+    assert correction_sentinel in retry.correction_hint
     assert action.trace.semantic_repair_audit is not None
     assert action.trace.semantic_repair_audit["repair_failure_history"] == [
         "speech_quality",
@@ -4681,6 +4768,7 @@ def test_semantic_repair_terminal_log_trace_privacy(monkeypatch, caplog) -> None
     assert private_sentinel not in serialized_audit
     assert rejected_speech not in serialized_trace
     assert private_sentinel not in serialized_trace
+    assert correction_sentinel not in serialized_trace
 
 
 def test_semantic_repair_then_empty_response_redacts_rejected_attempt(
