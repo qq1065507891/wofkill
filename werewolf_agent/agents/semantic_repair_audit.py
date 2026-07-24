@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-20
+修改日期: 2026-07-24
 
 使用示例:
     >>> validate_semantic_repair(context, source, final).accepted
@@ -388,6 +388,13 @@ def _ordered_reason_codes(reason_codes: Iterable[str]) -> tuple[str, ...]:
     return tuple(code for code in _REJECTION_REASON_ORDER if code in requested)
 
 
+def ordered_semantic_repair_reason_codes(
+    reason_codes: Iterable[str],
+) -> tuple[str, ...]:
+    """对外提供语义修复原因码的固定去重顺序。"""
+    return _ordered_reason_codes(reason_codes)
+
+
 def _polarity_aware_verified_claims(
     final_claims: set[PublicClaimAuditKey],
     legacy_verified_claims: set[PublicClaimAuditKey],
@@ -678,6 +685,7 @@ __all__ = [
     "_FALLBACK_KINDS",
     "SemanticRepairValidationResult",
     "build_semantic_repair_audit",
+    "ordered_semantic_repair_reason_codes",
     "preserve_verified_claim_in_fallback",
     "semantic_repair_correction_hint",
     "semantic_repair_rejection_message",

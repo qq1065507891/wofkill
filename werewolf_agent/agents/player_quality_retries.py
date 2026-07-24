@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-20
+修改日期: 2026-07-24
 
 使用示例:
     >>> from werewolf_agent.agents.player_quality_retries import build_speech_quality_retry
@@ -21,7 +21,7 @@ from werewolf_agent.agents.schemas import RetryInfo
 _REJECTED_SPEECH_ECHO_MAX_CHARS = 120
 
 
-def _speech_quality_correction_hint(
+def speech_quality_correction_hint(
     speech_quality_err: str,
     rejected_speech: str = "",
 ) -> str:
@@ -73,7 +73,7 @@ def build_speech_quality_retry(
         max_retries=max_retries,
         error_code="speech_quality",
         error_message=speech_quality_err,
-        correction_hint=_speech_quality_correction_hint(
+        correction_hint=speech_quality_correction_hint(
             speech_quality_err, rejected_speech
         ),
     )
@@ -105,4 +105,5 @@ def build_vote_quality_retry(
 __all__ = [
     "build_speech_quality_retry",
     "build_vote_quality_retry",
+    "speech_quality_correction_hint",
 ]

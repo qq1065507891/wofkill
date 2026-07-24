@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-验证 player retry helper 拆分后的兼容导入。
+验证 player retry helper 与单次行动修复约束状态。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-19
+修改日期: 2026-07-24
 
 使用示例:
     >>> python -m pytest tests/agents/test_player_retry.py -q
@@ -15,6 +15,246 @@ from __future__ import annotations
 import pytest
 
 from werewolf_agent.agents.schemas import ActionType, AgentContext, RetryInfo, TaskType
+
+
+def _repair_source(speech: str):
+    from werewolf_agent.agents.schemas import SpeechPlayerAction
+
+    return SpeechPlayerAction(
+        target_id="p02",
+        speech=speech,
+        reason="公开信息判断",
+        confidence=0.6,
+    )
+
+
+def test_repair_constraint_state_starts_empty_and_has_no_serializer() -> None:
+    from werewolf_agent.agents.player_repair_state import RepairConstraintState
+
+    state = RepairConstraintState()
+
+    assert state.source_action is None
+    assert state.quality_errors == ()
+    assert state.semantic_reason_codes == ()
+    assert state.failure_history == ()
+    assert state.fact_policy == "normal"
+    assert state.semantic_repair_started is False
+    assert not hasattr(state, "model_dump")
+    assert not hasattr(state, "to_dict")
+
+
+def test_repair_constraint_state_keeps_first_source_and_every_failure() -> None:
+    from werewolf_agent.agents.player_repair_state import RepairConstraintState
+
+    first = _repair_source("第一条不会进入状态摘要的原始发言")
+    later = _repair_source("第二条原始发言")
+    state = RepairConstraintState()
+
+    state.record_speech_quality(first, "缺少身份立场")
+    state.record_semantic_rejection(("speaker_attribution_changed",))
+    state.record_speech_quality(later, "缺少身份立场")
+    state.record_speech_quality(later, "缺少攻击或防御论点")
+
+    assert state.source_action is first
+    assert state.quality_errors == ("缺少身份立场", "缺少攻击或防御论点")
+    assert state.semantic_reason_codes == ("speaker_attribution_changed",)
+    assert state.failure_history == (
+        "speech_quality",
+        "semantic_claim_retention",
+        "speech_quality",
+        "speech_quality",
+    )
+    assert state.semantic_repair_started is True
+    assert first.speech not in repr(state)
+    assert first.speech not in repr(state.failure_history)
+    assert first.speech not in repr(state.quality_errors)
+    assert first.speech not in repr(state.semantic_reason_codes)
+
+
+def test_repair_constraint_state_semantic_order_and_fact_policy_are_monotonic() -> None:
+    from werewolf_agent.agents.player_repair_state import RepairConstraintState
+
+    state = RepairConstraintState()
+    assert state.semantic_repair_started is False
+
+    state.record_semantic_rejection((
+        "negation_changed",
+        "unsupported_public_claim",
+        "negation_changed",
+    ))
+    assert state.semantic_repair_started is True
+    assert state.semantic_reason_codes == (
+        "unsupported_public_claim",
+        "negation_changed",
+    )
+    assert state.fact_policy == "verified_claims_only"
+
+    state.record_semantic_rejection(("speaker_attribution_changed",))
+    assert state.semantic_reason_codes == (
+        "unsupported_public_claim",
+        "speaker_attribution_changed",
+        "negation_changed",
+    )
+    assert state.failure_history == (
+        "semantic_claim_retention",
+        "semantic_claim_retention",
+    )
+    assert state.fact_policy == "verified_claims_only"
+
+
+def test_repair_constraint_state_augmentation_without_source_is_noop() -> None:
+    from werewolf_agent.agents.player_repair_state import RepairConstraintState
+
+    latest = RetryInfo(
+        attempt=2,
+        max_retries=4,
+        error_code="parse_error",
+        correction_hint="修正 JSON",
+    )
+
+    assert RepairConstraintState().augment_retry_info(latest) is latest
+
+
+def test_repair_constraint_state_augments_generic_retry_and_preserves_fields() -> None:
+    from werewolf_agent.agents.player_repair_state import RepairConstraintState
+
+    state = RepairConstraintState()
+    state.record_speech_quality(_repair_source("原始发言不得出现在状态摘要"), "缺少身份立场")
+    state.record_semantic_rejection((
+        "speaker_attribution_changed",
+        "unsupported_public_claim",
+    ))
+    latest = RetryInfo(
+        attempt=3,
+        max_retries=5,
+        error_code="provider_error",
+        error_message="provider failed",
+        reason_codes=["negation_changed", "provider_specific"],
+        correction_hint="保留供应商失败的专用提示",
+        early_exit_reason="provider_budget_exhausted",
+        failure_category="network_error",
+    )
+
+    augmented = state.augment_retry_info(latest)
+
+    assert augmented is not latest
+    assert augmented.attempt == 3
+    assert augmented.max_retries == 5
+    assert augmented.error_code == "provider_error"
+    assert augmented.error_message == "provider failed"
+    assert augmented.early_exit_reason == "provider_budget_exhausted"
+    assert augmented.failure_category == "network_error"
+    assert augmented.reason_codes == [
+        "unsupported_public_claim",
+        "speaker_attribution_changed",
+        "negation_changed",
+        "provider_specific",
+    ]
+    assert "保留供应商失败的专用提示" in augmented.correction_hint
+    assert "先补一句身份立场" in augmented.correction_hint
+    assert "删除或改写缺少公开证据支持的事实声明" in augmented.correction_hint
+    assert "恢复公开记录中的说话人归属" in augmented.correction_hint
+    assert "不得新增任何缺少公开记录支持的事实" in augmented.correction_hint
+    assert "我倾向" in augmented.correction_hint
+    assert "我怀疑" in augmented.correction_hint
+    assert "目前不能确定" in augmented.correction_hint
+
+
+def test_repair_constraint_state_rebuilds_latest_category_without_duplicate_hint() -> None:
+    from werewolf_agent.agents.player_quality_retries import (
+        build_speech_quality_retry,
+    )
+    from werewolf_agent.agents.player_repair_state import RepairConstraintState
+    from werewolf_agent.agents.semantic_repair_audit import (
+        semantic_repair_correction_hint,
+    )
+
+    state = RepairConstraintState()
+    source = _repair_source("起始发言")
+    identity_error = "发言不完整。需要表明你的身份立场（如'我是好人阵营'）。"
+    grounding_error = (
+        "发言不完整。引用公开记录时必须有对应原文；"
+        "无法确认时改成“我推测/我质疑”。"
+    )
+    state.record_speech_quality(source, identity_error)
+    state.record_speech_quality(source, grounding_error)
+    rejected = "甲" * 130
+    quality_retry = build_speech_quality_retry(
+        grounding_error,
+        attempt=2,
+        max_retries=3,
+        rejected_speech=rejected,
+    )
+
+    augmented_quality = state.augment_retry_info(
+        quality_retry,
+        rejected_speech=rejected,
+    )
+
+    assert augmented_quality.correction_hint.count("把无法确认的公开记录改写") == 1
+    assert augmented_quality.correction_hint.count("上一条被拒发言") == 1
+    assert "甲" * 120 in augmented_quality.correction_hint
+    assert "甲" * 121 not in augmented_quality.correction_hint
+    assert rejected not in repr(state)
+    assert rejected not in repr(state.failure_history)
+
+    state.record_semantic_rejection(("negation_changed",))
+    semantic_retry = RetryInfo(
+        attempt=3,
+        max_retries=3,
+        error_code="semantic_claim_retention",
+        reason_codes=["negation_changed"],
+        correction_hint=semantic_repair_correction_hint(("negation_changed",)),
+    )
+    augmented_semantic = state.augment_retry_info(semantic_retry)
+    assert augmented_semantic.correction_hint.count(
+        "恢复公开记录中的否定关系"
+    ) == 1
+
+
+def test_repair_constraint_state_deduplicates_rendered_quality_hints() -> None:
+    from werewolf_agent.agents.player_quality_retries import (
+        build_speech_quality_retry,
+    )
+    from werewolf_agent.agents.player_repair_state import RepairConstraintState
+
+    state = RepairConstraintState()
+    source = _repair_source("原始发言")
+    first_error = "发言不完整。需要表明你的身份立场。"
+    latest_error = "缺少身份立场，请补充我是好人阵营。"
+    rejected = "我是平民，但还没有给出明确判断。"
+    state.record_speech_quality(source, first_error)
+    state.record_speech_quality(source, latest_error)
+    latest_retry = build_speech_quality_retry(
+        latest_error,
+        attempt=2,
+        max_retries=3,
+        rejected_speech=rejected,
+    )
+
+    augmented = state.augment_retry_info(
+        latest_retry,
+        rejected_speech=rejected,
+    )
+
+    assert state.quality_errors == (first_error, latest_error)
+    assert state.failure_history == ("speech_quality", "speech_quality")
+    assert augmented.correction_hint.count("先补一句身份立场") == 1
+    assert augmented.correction_hint.count("上一条被拒发言") == 1
+    assert rejected in augmented.correction_hint
+
+
+def test_public_speech_quality_hint_preserves_120_character_echo_cap() -> None:
+    from werewolf_agent.agents.player_quality_retries import (
+        speech_quality_correction_hint,
+    )
+
+    rejected = "乙" * 121
+    hint = speech_quality_correction_hint("缺少明确论点", rejected)
+
+    assert "乙" * 120 in hint
+    assert "乙" * 121 not in hint
+    assert "乙" * 120 + "…" in hint
 
 
 def test_player_retry_helper_detects_repeated_signature() -> None:
