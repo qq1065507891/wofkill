@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 
 import pytest
 
@@ -613,6 +614,100 @@ def test_dataclass_repair_history_schema_fails_at_projection_boundary(
 
     assert projection.supported is False
     assert projection.unsupported_reason == "invalid_semantic_repair_history"
+
+
+@pytest.mark.parametrize("mutable_ancestor", ("event", "payload", "action_trace"))
+def test_nested_proxy_history_requires_every_ancestor_to_be_frozen(
+    mutable_ancestor: str,
+) -> None:
+    """局部 MappingProxyType 不能冒充完整的内部冻结投影。"""
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    semantic = MappingProxyType({
+        "repairable": True,
+        "repair_failure_history": ("speech_quality",),
+    })
+    trace: object = MappingProxyType({"semantic_repair_audit": semantic})
+    if mutable_ancestor == "action_trace":
+        trace = {"semantic_repair_audit": semantic}
+    payload: object = MappingProxyType({"action_trace": trace})
+    if mutable_ancestor == "payload":
+        payload = {"action_trace": trace}
+    event: object = MappingProxyType({
+        "type": "action_trace_audit",
+        "payload": payload,
+    })
+    if mutable_ancestor == "event":
+        event = {"type": "action_trace_audit", "payload": payload}
+
+    projection = project_acceptance_game({
+        "game_id": f"partial-proxy-{mutable_ancestor}",
+        "players": {"p01": {"role": "villager"}},
+        "events": [event],
+    })
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == "invalid_semantic_repair_history"
+
+
+@pytest.mark.parametrize("mutable_ancestor", ("event", "payload"))
+def test_standalone_proxy_history_requires_event_and_payload_to_be_frozen(
+    mutable_ancestor: str,
+) -> None:
+    """standalone 审计同样必须从 event 到 payload 全链冻结。"""
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    payload: object = MappingProxyType({
+        "repairable": True,
+        "repair_failure_history": ("speech_quality",),
+    })
+    if mutable_ancestor == "payload":
+        payload = {
+            "repairable": True,
+            "repair_failure_history": ("speech_quality",),
+        }
+    event: object = MappingProxyType({
+        "type": "semantic_repair_audit",
+        "payload": payload,
+    })
+    if mutable_ancestor == "event":
+        event = {"type": "semantic_repair_audit", "payload": payload}
+
+    projection = project_acceptance_game({
+        "game_id": f"standalone-partial-proxy-{mutable_ancestor}",
+        "players": {"p01": {"role": "villager"}},
+        "events": [event],
+    })
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == "invalid_semantic_repair_history"
+
+
+def test_fully_frozen_normalized_repair_history_can_be_normalized_again() -> None:
+    """真正由归一化器生成的完整冻结快照应保持可重复消费。"""
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+    from werewolf_agent.evaluation.game_projection import normalize_acceptance_games
+
+    normalized = normalize_acceptance_games([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            unsupported_public_claim_count=0,
+            repair_failure_history=[
+                "speech_quality",
+                "semantic_claim_retention",
+            ],
+        ),
+    ])
+
+    metrics = compute_acceptance_audit_metrics(normalized)
+
+    assert metrics["acceptance_projection_supported"] is True
+    assert metrics["semantic_repair_metrics_supported"] is True
+    assert metrics["semantic_repair_success_rate"] == 1.0
 
 
 def test_paired_semantic_audit_reconciliation_preserves_fields_and_nested_types() -> None:

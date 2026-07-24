@@ -346,7 +346,14 @@ def _normalize_event(value: Any, budget: _JsonBudget) -> dict[str, Any]:
     payload = value.get("payload", {})
     if not isinstance(event_type, str) or not event_type or not isinstance(payload, Mapping):
         raise _ProjectionValueError("invalid_event_entry")
-    _validate_repair_failure_history(event_type, payload)
+    _validate_repair_failure_history(
+        event_type,
+        payload,
+        ancestors_frozen=(
+            type(value) is MappingProxyType
+            and type(payload) is MappingProxyType
+        ),
+    )
     try:
         normalized = _normalize_json(value, budget)
     except _ProjectionValueError as exc:
@@ -360,24 +367,30 @@ def _normalize_event(value: Any, budget: _JsonBudget) -> dict[str, Any]:
 def _validate_repair_failure_history(
     event_type: str,
     payload: Mapping[str, Any],
+    *,
+    ancestors_frozen: bool,
 ) -> None:
     """在冻结为 tuple 前严格校验可选的 JSON 修复历史列表。"""
     audits: list[tuple[Mapping[str, Any], bool]] = []
     if event_type == "semantic_repair_audit":
-        audits.append((payload, type(payload) is MappingProxyType))
+        audits.append((payload, ancestors_frozen))
     elif event_type == "action_trace_audit":
         trace_view = _json_object_view(payload.get("action_trace"))
         if trace_view is not None:
-            trace, _ = trace_view
+            trace, trace_frozen = trace_view
             semantic_view = _json_object_view(trace.get("semantic_repair_audit"))
             if semantic_view is not None:
-                audits.append(semantic_view)
+                semantic, semantic_frozen = semantic_view
+                audits.append((
+                    semantic,
+                    ancestors_frozen and trace_frozen and semantic_frozen,
+                ))
 
-    for audit, is_frozen in audits:
+    for audit, path_is_frozen in audits:
         if "repair_failure_history" not in audit:
             continue
         # 已归一化快照中的 JSON list 会冻结为 tuple；外部原始输入必须是 list。
-        expected_type = tuple if is_frozen else list
+        expected_type = tuple if path_is_frozen else list
         if not _has_valid_repair_failure_history(
             audit,
             container_type=expected_type,
