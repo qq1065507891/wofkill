@@ -1014,7 +1014,7 @@ def test_schema_validation_retry_includes_field_level_hint() -> None:
     第二次 attempt 是否拿到完全合法 action 取决于路由器 / repeat signature 短路逻辑,
     留给现有 ProtocolSequenceProvider 等测试覆盖. 这里只验证 R4 不破坏 R1 提示链路.
     """
-    from werewolf_agent.agents.player import PlayerAgent, FallbackAction
+    from werewolf_agent.agents.player import PlayerAgent
     from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
 
     provider = _SchemaInvalidThenValidProvider()
