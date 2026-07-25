@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
+运行真实游戏，并生成带显式支持状态的在线质量指标。
 
 作者: Project contributors
 修改日期: 2026-07-23
@@ -137,6 +137,10 @@ def compute_game_quality_score(
         steps=getattr(source, "step_count", None),
     )
     projected = projection.to_mapping()
+    fallback_metrics_supported = projection.events_supported
+    fallback_unsupported_reason = (
+        None if fallback_metrics_supported else projection.events_unsupported_reason
+    )
     events = [
         GameEvent(type=str(event.get("type") or ""), payload=dict(event.get("payload") or {}))
         for event in projected["events"]
@@ -252,25 +256,41 @@ def compute_game_quality_score(
         "persona_prompt_confirmation": summarize_persona_prompt_confirmation(
             events
         ),
-        "fallback_rate": round(fallback_rate, 3),
-        "fallback_count": fallback_count,
-        "action_fallback_count": action_fallback_count,
-        "wolf_team_plan_fallback_count": wolf_plan_fallback_count,
-        "fallback_by_reason": dict(sorted(fallback_by_reason.items())),
-        "fallback_by_stage": dict(sorted(fallback_by_stage.items())),
-        "action_fallback_by_error_code": dict(
-            sorted(action_fallback_by_error_code.items())
+        "fallback_metrics_supported": fallback_metrics_supported,
+        "fallback_metrics_unsupported_reason": fallback_unsupported_reason,
+        "fallback_rate": round(fallback_rate, 3) if fallback_metrics_supported else None,
+        "fallback_count": fallback_count if fallback_metrics_supported else None,
+        "action_fallback_count": (
+            action_fallback_count if fallback_metrics_supported else None
         ),
-        "retry_error_counts": dict(sorted(retry_error_counts.items())),
-        "wolf_team_plan_fallback_by_reason": dict(
-            sorted(wolf_team_plan_fallback_by_reason.items())
+        "wolf_team_plan_fallback_count": (
+            wolf_plan_fallback_count if fallback_metrics_supported else None
         ),
-        "structured_fail_count": structured_fail,
-        "total_action_traces": total,
-        "total_wolf_team_plans": wolf_plan_attempts,
+        "fallback_by_reason": (
+            dict(sorted(fallback_by_reason.items())) if fallback_metrics_supported else None
+        ),
+        "fallback_by_stage": (
+            dict(sorted(fallback_by_stage.items())) if fallback_metrics_supported else None
+        ),
+        "action_fallback_by_error_code": (
+            dict(sorted(action_fallback_by_error_code.items()))
+            if fallback_metrics_supported else None
+        ),
+        "retry_error_counts": (
+            dict(sorted(retry_error_counts.items())) if fallback_metrics_supported else None
+        ),
+        "wolf_team_plan_fallback_by_reason": (
+            dict(sorted(wolf_team_plan_fallback_by_reason.items()))
+            if fallback_metrics_supported else None
+        ),
+        "structured_fail_count": structured_fail if fallback_metrics_supported else None,
+        "total_action_traces": total if fallback_metrics_supported else None,
+        "total_wolf_team_plans": wolf_plan_attempts if fallback_metrics_supported else None,
         **wolf_plan_outcomes,
         **acceptance_metrics,
-        "total_quality_events": total_quality_events,
+        "total_quality_events": (
+            total_quality_events if fallback_metrics_supported else None
+        ),
         "speech_count": len(speeches),
         "speech_opportunity_count": len(speech_opportunities),
         "non_empty_speech_count": non_empty_speeches,
@@ -989,7 +1009,13 @@ def save_game_log(
         raise ValueError(f"invalid game_id: {projection.game_id!r}")
     quality = normalize_quality_score(quality_score)
     quality.pop("speech_fill_rate", None)
-    is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_quality_events"] > 5
+    is_low_quality = (
+        quality.get("fallback_metrics_supported") is not False
+        and isinstance(quality.get("fallback_rate"), (int, float))
+        and isinstance(quality.get("total_quality_events"), int)
+        and quality["fallback_rate"] > 0.7
+        and quality["total_quality_events"] > 5
+    )
     artifact_root = (Path(output_dir) if output_dir is not None else ROOT).resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
 
@@ -1025,6 +1051,8 @@ def save_game_log(
         "events": projected["events"],
         "_acceptance_projection_supported": projection.supported,
         "_acceptance_projection_unsupported_reason": projection.unsupported_reason,
+        "_acceptance_events_supported": projection.events_supported,
+        "_acceptance_events_unsupported_reason": projection.events_unsupported_reason,
         "elapsed_seconds": round(elapsed, 1),
         "steps": projection.steps,
         "quality_score": quality,
@@ -1160,10 +1188,16 @@ def log_terminal_outcome(
     """记录可机读终态，中止局返回非零退出码。"""
     gs = runner.state
     if gs.status == "finished":
+        fallback_rate = quality.get("fallback_rate")
+        fallback_display = (
+            f"{fallback_rate:.3f}"
+            if isinstance(fallback_rate, (int, float))
+            else "unsupported"
+        )
         logger.info(
-            "GAME_COMPLETE winner=%s day=%d night=%d steps=%d elapsed=%.1f fallback_rate=%.3f",
+            "GAME_COMPLETE winner=%s day=%d night=%d steps=%d elapsed=%.1f fallback_rate=%s",
             gs.winning_faction, gs.day_number, gs.night_number,
-            runner.step_count, elapsed, quality["fallback_rate"],
+            runner.step_count, elapsed, fallback_display,
         )
         return 0
     logger.error(

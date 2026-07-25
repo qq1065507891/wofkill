@@ -1646,6 +1646,59 @@ def test_quality_score_counts_wolf_team_plan_fallbacks() -> None:
     assert quality["fallback_rate"] == 1.0
 
 
+def test_truncated_projection_never_reports_zero_fallback_metrics() -> None:
+    """事件导出被截断时，零值不能伪装成已观测到没有 fallback。"""
+    from scripts import run_real_game
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    projection = AcceptanceGameProjection(
+        game_id="g-truncated",
+        events=(),
+        players={},
+        winning_faction="good",
+        status="finished",
+        supported=False,
+        unsupported_reason="json_item_limit_exceeded",
+    )
+
+    quality = run_real_game.compute_game_quality_score(projection)
+
+    assert quality["fallback_metrics_supported"] is False
+    assert quality["fallback_metrics_unsupported_reason"] == "json_item_limit_exceeded"
+    assert quality["fallback_rate"] is None
+    assert quality["fallback_count"] is None
+    assert quality["action_fallback_count"] is None
+    assert quality["wolf_team_plan_fallback_count"] is None
+    assert quality["fallback_by_reason"] is None
+    assert quality["fallback_by_stage"] is None
+
+
+def test_partial_event_export_never_reports_partial_fallback_metrics() -> None:
+    from scripts import run_real_game
+
+    source = {
+        "game_id": "g-partial",
+        "players": {"p01": {"id": "p01", "role": "villager", "alive": True}},
+        "events": [{
+            "type": "action_trace_audit",
+            "payload": {"action_trace": {"fallback_reason": "empty_response"}},
+        }],
+        "winning_faction": "good",
+        "status": "finished",
+        "_acceptance_events_supported": False,
+        "_acceptance_events_unsupported_reason": "partial_event_export",
+    }
+
+    quality = run_real_game.compute_game_quality_score(
+        run_real_game.project_acceptance_game(source)
+    )
+
+    assert quality["fallback_metrics_supported"] is False
+    assert quality["fallback_metrics_unsupported_reason"] == "partial_event_export"
+    assert quality["fallback_count"] is None
+    assert quality["fallback_rate"] is None
+
+
 def test_quality_score_reports_wolf_plan_outcomes_and_null_rates_without_plans() -> None:
     from scripts import run_real_game
 

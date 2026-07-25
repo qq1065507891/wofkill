@@ -68,6 +68,8 @@ class AcceptanceGameProjection:
     steps: int = 0
     supported: bool = True
     unsupported_reason: str | None = None
+    events_supported: bool = True
+    events_unsupported_reason: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -107,13 +109,27 @@ class AcceptanceGameProjection:
             reason = reason or "invalid_steps"
 
         events: tuple[dict[str, Any], ...] = ()
+        events_reason = (
+            self.events_unsupported_reason
+            if isinstance(self.events_unsupported_reason, str)
+            and self.events_unsupported_reason
+            else "unsupported_events" if self.events_supported is False else None
+        )
+        if (
+            events_reason is None
+            and inherited_reason in _JSON_BOUND_REASONS
+            and not self.events
+        ):
+            events_reason = inherited_reason
         if not isinstance(self.events, (list, tuple)):
-            reason = reason or "invalid_events_container"
+            events_reason = events_reason or "invalid_events_container"
+            reason = reason or events_reason
         else:
             try:
                 events = tuple(_normalize_event(event, budget) for event in self.events)
             except _ProjectionValueError as exc:
-                reason = reason or str(exc)
+                events_reason = events_reason or str(exc)
+                reason = reason or events_reason
 
         players: dict[str, dict[str, Any]] = {}
         if not isinstance(self.players, Mapping):
@@ -155,6 +171,8 @@ class AcceptanceGameProjection:
         object.__setattr__(self, "steps", steps)
         object.__setattr__(self, "supported", reason is None)
         object.__setattr__(self, "unsupported_reason", reason)
+        object.__setattr__(self, "events_supported", events_reason is None)
+        object.__setattr__(self, "events_unsupported_reason", events_reason)
         object.__setattr__(self, "metadata", _freeze_normalized(metadata))
 
     def to_mapping(self) -> dict[str, Any]:
@@ -170,6 +188,8 @@ class AcceptanceGameProjection:
             "steps": self.steps,
             "_acceptance_projection_supported": self.supported,
             "_acceptance_projection_unsupported_reason": self.unsupported_reason,
+            "_acceptance_events_supported": self.events_supported,
+            "_acceptance_events_unsupported_reason": self.events_unsupported_reason,
             **_thaw_json(self.metadata),
         }
 
@@ -315,6 +335,14 @@ def _from_mapping(source: Mapping[str, Any], *, steps: int | None) -> Acceptance
         )
     if "events" not in source:
         structural_reason = structural_reason or "missing_events"
+    explicit_events_reason = source.get("_acceptance_events_unsupported_reason")
+    events_supported = source.get("_acceptance_events_supported") is not False
+    events_reason = (
+        explicit_events_reason
+        if isinstance(explicit_events_reason, str) and explicit_events_reason
+        else "missing_events" if "events" not in source
+        else None
+    )
     winner = source.get("winning_faction")
     if winner is None:
         winner = source.get("winner")
@@ -335,6 +363,8 @@ def _from_mapping(source: Mapping[str, Any], *, steps: int | None) -> Acceptance
         steps=steps if steps is not None else source.get("steps") or 0,
         supported=structural_reason is None,
         unsupported_reason=structural_reason,
+        events_supported=events_supported and events_reason is None,
+        events_unsupported_reason=events_reason,
         metadata=metadata,
     )
 
