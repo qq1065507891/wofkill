@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from dataclasses import replace
 
@@ -306,6 +308,11 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
     assert payload["vote_weight_units"] == payload["vote_weights"]
     assert payload["weighted_tally_display"] == {"p03": 1.5, "p02": 1}
     assert payload["vote_weights_display"] == {"p01": 1.5, "p02": 1}
+    assert type(payload["weighted_tally_display"]["p03"]) is float
+    assert type(payload["weighted_tally_display"]["p02"]) is int
+    assert type(payload["vote_weights_display"]["p01"]) is float
+    assert type(payload["vote_weights_display"]["p02"]) is int
+    json.dumps(payload)
 
 def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:
     from werewolf_agent.runtime.graph import resolve_vote

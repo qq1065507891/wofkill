@@ -72,6 +72,18 @@ def format_vote_count(value: Decimal) -> str:
     return format(normalized, "f")
 
 
+def vote_display_to_json_number(value: Decimal) -> int | float:
+    """把精确的整数或半整数票数转换为 JSON 安全数值。"""
+    if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
+        raise ValueError("vote display value must be a non-negative finite Decimal")
+    if value == value.to_integral():
+        return int(value)
+    if value * 2 == (value * 2).to_integral():
+        # 二进制浮点可精确表示 0.5，因而不会损失半票值。
+        return float(value)
+    raise ValueError("vote display value must be an integer or half-integer")
+
+
 def decode_vote_tally_payload(
     payload: Mapping[str, Any],
     *,

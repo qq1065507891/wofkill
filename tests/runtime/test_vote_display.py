@@ -14,6 +14,7 @@ from werewolf_agent.runtime.vote_display import (
     VotePayloadError,
     decode_vote_resolved_payload,
     decode_vote_tally_payload,
+    vote_display_to_json_number,
     format_vote_count,
     vote_units_to_display,
 )
@@ -63,6 +64,33 @@ def test_vote_units_to_display_rejects_invalid_values(
 )
 def test_format_vote_count_is_stable(value: Decimal, expected: str) -> None:
     assert format_vote_count(value) == expected
+
+
+def test_vote_display_to_json_number_preserves_integral_and_half_types() -> None:
+    integral = vote_display_to_json_number(Decimal("1"))
+    half = vote_display_to_json_number(Decimal("1.5"))
+
+    assert integral == 1
+    assert type(integral) is int
+    assert half == 1.5
+    assert type(half) is float
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+        Decimal("-0.5"),
+        Decimal("1.25"),
+    ],
+)
+def test_vote_display_to_json_number_rejects_unsafe_values(
+    value: Decimal,
+) -> None:
+    with pytest.raises(ValueError):
+        vote_display_to_json_number(value)
 
 
 def test_decode_v1_vote_tally_with_known_ruleset_base() -> None:

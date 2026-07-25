@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from dataclasses import replace
 
@@ -548,6 +550,10 @@ class TestJudgeStructuredBroadcasts:
         assert payload["sheriff_weight"] == payload["sheriff_weight_units"] == 3
         assert payload["tally_display"] == {"p03": 1.5, "p02": 1}
         assert payload["sheriff_weight_display"] == 1.5
+        assert type(payload["tally_display"]["p03"]) is float
+        assert type(payload["tally_display"]["p02"]) is int
+        assert type(payload["sheriff_weight_display"]) is float
+        json.dumps(payload)
         assert "警长1.5票" in payload["message"]
         assert "警长3票" not in payload["message"]
 

@@ -42,6 +42,7 @@ from werewolf_agent.evaluation.balance_public_claims import (
 )
 from werewolf_agent.runtime.vote_display import (
     format_vote_count,
+    vote_display_to_json_number,
     vote_units_to_display,
 )
 
@@ -236,13 +237,17 @@ def _broadcast_vote_details(
             "tally_units": tally,
             "sheriff_weight_units": sheriff_vote_weight,
             "tally_display": {
-                target_id: vote_units_to_display(
-                    units,
-                    base_vote_weight=base_vote_weight,
+                target_id: vote_display_to_json_number(
+                    vote_units_to_display(
+                        units,
+                        base_vote_weight=base_vote_weight,
+                    )
                 )
                 for target_id, units in tally.items()
             },
-            "sheriff_weight_display": sheriff_display,
+            "sheriff_weight_display": vote_display_to_json_number(
+                sheriff_display
+            ),
         },
     )
     return gs
@@ -346,16 +351,20 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         "weighted_tally_units": weighted_tally,
         "vote_weight_units": vote_weights,
         "weighted_tally_display": {
-            target_id: vote_units_to_display(
-                units,
-                base_vote_weight=base_vote_weight,
+            target_id: vote_display_to_json_number(
+                vote_units_to_display(
+                    units,
+                    base_vote_weight=base_vote_weight,
+                )
             )
             for target_id, units in weighted_tally.items()
         },
         "vote_weights_display": {
-            voter_id: vote_units_to_display(
-                units,
-                base_vote_weight=base_vote_weight,
+            voter_id: vote_display_to_json_number(
+                vote_units_to_display(
+                    units,
+                    base_vote_weight=base_vote_weight,
+                )
             )
             for voter_id, units in vote_weights.items()
         },
