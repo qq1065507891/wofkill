@@ -147,9 +147,33 @@ evidence_refs: list[str]
 
 ### 6.3 兼容投影
 
-`discussion_positions` 的现有字符串消费者继续可用。新结构化结果提供确定性文本投影；
-读取旧 checkpoint 时仍接受字符串。新写入同时保留结构化对象或通过明确版本字段区分，
-避免消费者猜测类型。
+`discussion_positions` 的规范内存和新 checkpoint 形态固定为：
+
+```text
+discussion_positions_version: 2
+discussion_positions: dict[player_id, DiscussionSummaryPayload]
+```
+
+同时修正 `RuntimeState` 中当前与实际运行值冲突的类型声明。新写入只写 V2 对象，不在同一
+映射内混合字符串和对象。
+
+在上下文边界提供唯一兼容 accessor：
+
+```text
+discussion_summary_for_player(state, player_id) -> DiscussionSummary
+discussion_summary_text(summary) -> str
+```
+
+读取优先级如下：
+
+1. `discussion_positions_version == 2` 时，每个值必须按 V2 Schema 校验；
+2. 没有版本且值为字符串时，视为旧 checkpoint，以字符串填充 `summary`，其余字段为空；
+3. 没有版本但值为映射时，仅接受能够完整通过 V2 Schema 的值，并在内存中升级为 V2；
+4. 版本、值类型或 Schema 相互冲突时 fail closed，丢弃该玩家摘要并使用确定性摘要；
+5. 下游 prompt、投票和发言调用只通过 accessor 读取，不直接猜测值类型。
+
+这样 `discussion_positions` 现有消费者仍可得到文本投影，同时新结构化字段有单一权威
+表示。
 
 ### 6.4 失败行为
 
@@ -200,11 +224,64 @@ preserved_strengths
 - 不持久化模型草稿。
 
 `reflection_complete` 的整体状态必须基于成功、失败和持久化计数，而非仅依据遍历了多少
-玩家。日志改为：
+玩家。保持现有事件类型、状态词汇和 entry 字段：
 
 ```text
-[复盘] 处理12位：成功11，未生成1，持久化完成11
+event.type = reflection_complete
+payload.status = complete | partial | no_valid_entries | persistence_failed | not_run
+entry.transaction_state = not_requested | generated | schema_validated |
+                          facts_verified | lessons_verified | persisted
+entry.failure_stage
+entry.failure_code
 ```
+
+专用 Reflection contract 失败时的精确映射为：
+
+```text
+verification.status = not_generated
+transaction_state = not_requested
+failure_stage = schema | protocol | provider | semantic
+failure_code = 最终稳定安全代码
+verified_claim_ids = []
+verified_lesson_ids = []
+entry_id = null
+```
+
+`reflection_complete` 继续保留：
+
+- `player_count`
+- `valid_entry_count`
+- `failure_count`
+- `persistence_complete`
+- `entries`
+
+并新增非破坏性计数字段：
+
+- `generated_count`：成功生成并至少通过 Schema 的 entry 数；
+- `not_generated_count`：停留在 `not_requested` 且有显式失败边界的 entry 数；
+- `persisted_entry_count`：在该事件生成时已处于 `persisted` 的 entry 数。
+
+字段恒等式必须成立：
+
+```text
+player_count == len(entries)
+failure_count == 显式失败 entry 数
+valid_entry_count == lessons_verified 或 persisted entry 数
+persisted_entry_count == persisted entry 数
+```
+
+反思生成节点尚未执行 runner 持久化时，`persistence_complete=false` 且
+`persisted_entry_count=0` 是正确状态；后续持久化审计继续使用现有事件和
+`reflection_persistence_audit` 契约，不伪造提前完成。
+
+生成节点日志改为：
+
+```text
+[复盘生成] 处理12位：有效11，未生成1
+```
+
+持久化完成数由 runner 在实际持久化结束后单独记录。旧消费者可以继续读取原有字段；
+新消费者使用新增计数交叉验证，不改变旧字段含义。
 
 ## 8. 安全诊断
 
@@ -286,24 +363,71 @@ stdout 可以作为实局诊断证据，但不能静默补入结构化 acceptanc
 
 日志、法官广播、事件、API、UI 和报告不得各自实现一套换算。
 
-### 10.3 事件字段
+### 10.3 事件版本与字段优先级
 
-新事件明确区分单位与实际票数：
+新增强制字段：
+
+```text
+vote_weight_format_version = 2
+base_vote_weight = 2
+```
+
+为了避免旧消费者静默改变含义，现有字段在 V2 中仍保留原来的内部单位语义，并标为兼容
+别名；实际票数写入新的 `*_display` 字段。`*_units` 是内部单位的规范新名称。
+
+读取优先级：
+
+1. `vote_weight_format_version == 2`：展示必须读取 `*_display`，规则重放必须读取
+   `*_units`；旧字段只作为兼容别名并须与 `*_units` 相等；
+2. 没有版本：视为 V1，`tally`、`sheriff_weight`、`weighted_tally` 和
+   `vote_weights` 均按内部单位解释；
+3. V2 缺少规范字段、版本未知或兼容别名与 `*_units` 不等时，拒绝把该 payload 当作
+   可审计票型；
+4. UI、报告和新 API 禁止直接消费 V1/V2 兼容别名，统一通过 decoder 获取实际票数；
+5. 历史 V1 payload 未记录 `base_vote_weight` 时，只有在对应 ruleset 可确定时才能换算；
+   无法确定则显示“票权单位未知”，不得猜测或重复除以 2。
+
+### 10.4 `judge_broadcast` / `vote_tally` 字段
+
+V2 `judge_broadcast`（`judge_method=vote_tally`）载荷为：
 
 ```json
 {
+  "vote_weight_format_version": 2,
   "base_vote_weight": 2,
-  "weighted_tally_units": {"p02": 21},
-  "weighted_tally": {"p02": 10.5},
-  "vote_weight_units": {"p04": 3},
-  "vote_weights": {"p04": 1.5}
+  "tally": {"p02": 21},
+  "sheriff_weight": 3,
+  "tally_units": {"p02": 21},
+  "sheriff_weight_units": 3,
+  "tally_display": {"p02": 10.5},
+  "sheriff_weight_display": 1.5
 }
 ```
 
-新写入遵循以上语义。迁移期读取端兼容旧 payload；旧字段若缺少版本或
-`base_vote_weight`，按旧事件版本解释，不能对同一数据重复除以 2。
+`tally` 和 `sheriff_weight` 保留 V1 内部单位语义。公告文本和每位玩家的投票行只使用
+display 值，因此警长标签显示“警长1.5票”，不能显示“警长3票”。
 
-### 10.4 本局验收样例
+### 10.5 `vote_resolved` 字段
+
+V2 `vote_resolved` 载荷为：
+
+```json
+{
+  "vote_weight_format_version": 2,
+  "base_vote_weight": 2,
+  "weighted_tally": {"p02": 21},
+  "vote_weights": {"p04": 3},
+  "weighted_tally_units": {"p02": 21},
+  "vote_weight_units": {"p04": 3},
+  "weighted_tally_display": {"p02": 10.5},
+  "vote_weights_display": {"p04": 1.5}
+}
+```
+
+日志中的“投票统计”、法官结果文本、API/UI 和报告统一读取 display 投影。规则判定和
+重放继续读取 units。这样新旧消费者不会因同名字段改变语义而静默产生错误。
+
+### 10.6 本局验收样例
 
 `g_3334463270` 的同等票型应显示：
 
@@ -355,7 +479,9 @@ stdout 可以作为实局诊断证据，但不能静默补入结构化 acceptanc
 - 普通票、警长票和半票格式化；
 - D1/D3 实局票型回归；
 - 平票、复投、无效票和死人票；
-- 旧事件兼容读取；
+- V1 `judge_broadcast/vote_tally` 与 `vote_resolved` 兼容读取；
+- V2 两类事件的 units、display 和兼容别名一致性；
+- 未知版本、缺失规范字段和别名冲突时 fail closed；
 - API/UI 不重复换算。
 
 ### 12.2 摘要
@@ -365,6 +491,9 @@ stdout 可以作为实局诊断证据，但不能静默补入结构化 acceptanc
 - 结构化结果提供稳定文本投影；
 - 模型失败使用确定性摘要；
 - 日志任务名为 `discussion_summary`。
+- V1 字符串 checkpoint 能升级为 V2；
+- V2 与版本冲突的 payload fail closed；
+- prompt 消费者只能通过兼容 accessor 读取。
 
 ### 12.3 公开发言
 
@@ -381,6 +510,10 @@ stdout 可以作为实局诊断证据，但不能静默补入结构化 acceptanc
 - 失败草稿不持久化；
 - 成功草稿仍通过事实验证、匿名化和质量门；
 - 单个玩家失败时整体状态和日志计数正确。
+- 既有 `reflection_complete` 消费者仍能读取原字段；
+- partial、no-valid-entry 和 persistence-failed 事件可恢复为现有 transaction；
+- 新旧 payload 的 `valid_entry_count`、`failure_count` 和新增计数满足恒等式；
+- restored transaction 不因专用 Schema 迁移丢失 failure boundary。
 
 ### 12.5 指标
 
