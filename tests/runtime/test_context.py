@@ -2,7 +2,7 @@
 """验证运行时上下文的可见性、认知、记忆与提示组装边界。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-25
 """
 
 from __future__ import annotations
@@ -3494,6 +3494,119 @@ def test_summarize_positions_passes_memory_context_managers() -> None:
 
     assert 'restored_memory=state.get("restored_memory")' in source
     assert 'cognition_state_manager=state.get("cognition_state_manager")' in source
+
+
+def test_context_projects_v2_discussion_summary_through_accessor() -> None:
+    from werewolf_agent.runtime.nodes.runtime_state import _new_engine
+
+    gs = GameState(
+        game_id="discussion-summary-context",
+        phase="day",
+        day_number=2,
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+
+    context = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.VOTE,
+        legal_actions=[ActionType.VOTE],
+        discussion_positions={
+            "p01": {
+                "summary": "我怀疑p03。",
+                "suspected_players": ["p03"],
+                "trusted_players": ["p02"],
+                "vote_target": "p03",
+                "evidence_refs": ["speech-7"],
+            },
+        },
+    )
+
+    assert (
+        "--- 你对今日讨论的总结 (D2) ---\n"
+        "我怀疑p03。\n"
+        "怀疑玩家: p03\n"
+        "信任玩家: p02\n"
+        "投票目标: p03\n"
+        "证据引用: speech-7"
+    ) in context.public_summary
+    assert "{'summary':" not in context.public_summary
+
+
+def test_context_preserves_explicit_v2_fail_closed_semantics() -> None:
+    from werewolf_agent.runtime.nodes.runtime_state import _new_engine
+
+    gs = GameState(
+        game_id="discussion-summary-conflict",
+        phase="day",
+        day_number=2,
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+    summary_state = {
+        "discussion_positions_version": 2,
+        "discussion_positions": {"p01": "legacy string must fail closed"},
+    }
+
+    context = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.VOTE,
+        legal_actions=[ActionType.VOTE],
+        discussion_state=summary_state,
+    )
+
+    assert "legacy string must fail closed" not in context.public_summary
+    assert summary_state["discussion_positions_version"] == 2
+    assert summary_state["discussion_positions"]["p01"] == (
+        "legacy string must fail closed"
+    )
+
+
+def test_context_legacy_summary_upgrade_writes_real_runtime_state() -> None:
+    from werewolf_agent.runtime.nodes.runtime_state import _new_engine
+
+    gs = GameState(
+        game_id="discussion-summary-upgrade",
+        phase="day",
+        day_number=2,
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+    summary_state = {
+        "discussion_positions": {"p01": "legacy summary"},
+    }
+
+    context = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.VOTE,
+        legal_actions=[ActionType.VOTE],
+        discussion_state=summary_state,
+    )
+
+    assert "legacy summary" in context.public_summary
+    assert summary_state["discussion_positions_version"] == 2
+    assert summary_state["discussion_positions"]["p01"] == {
+        "summary": "legacy summary",
+        "suspected_players": [],
+        "trusted_players": [],
+        "vote_target": None,
+        "evidence_refs": [],
+    }
+
+
+def test_runtime_state_declares_v2_discussion_mapping_shape() -> None:
+    from typing import Any, get_type_hints
+
+    from werewolf_agent.runtime.nodes.runtime_state import RuntimeState
+
+    hints = get_type_hints(RuntimeState)
+
+    assert hints["discussion_positions_version"] is int
+    assert hints["discussion_positions"] == dict[str, dict[str, Any]]
+    assert hints["discussion_summary_audit_records"] == list[dict[str, str]]
 
 
 # ---------------------------------------------------------------------------

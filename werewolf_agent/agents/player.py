@@ -3,13 +3,16 @@
 玩家 Agent public facade，保留身份、persona、fallback 和解析辅助入口。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-25
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
+
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from werewolf_agent.model_gateway.generation_attempt_context import (
@@ -19,6 +22,11 @@ if TYPE_CHECKING:
 from werewolf_agent.agents.action_validation import (
     ActionValidator,
     DefaultActionValidator,
+)
+from werewolf_agent.agents.discussion_summary import (
+    DiscussionSummary,
+    DiscussionSummaryGenerationError,
+    discussion_summary_tool,
 )
 from werewolf_agent.agents.schemas import (
     ActionType,
@@ -57,6 +65,7 @@ from werewolf_agent.agents.player_retry import (
 )
 from werewolf_agent.agents.player_retry_hints import build_schema_validation_hint
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+from werewolf_agent.agents.prompt_output import discussion_summary_prompts
 from werewolf_agent.agents.planning import planning_envelope_to_action
 from werewolf_agent.agents.metrics_collector import MetricsCollector
 from werewolf_agent.agents.output_parser import (
@@ -146,6 +155,44 @@ class PlayerAgent:
                 generation_attempt_context=generation_attempt_context,
             )
         return run_player_action_flow(self, context)
+
+    def summarize_discussion(self, context: AgentContext) -> DiscussionSummary:
+        """通过独立窄 Schema 生成内部讨论摘要。"""
+
+        if context.task_type is not TaskType.DISCUSSION_SUMMARY:
+            raise DiscussionSummaryGenerationError("task_contract_mismatch")
+        system_prompt, prompt = discussion_summary_prompts(context)
+        tool = discussion_summary_tool()
+        try:
+            result = self.model_router.generate(
+                agent_id=self.agent_id,
+                task_type=TaskType.DISCUSSION_SUMMARY.value,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                tools=[tool],
+                tool_choice={
+                    "type": "tool",
+                    "name": "submit_discussion_summary",
+                },
+            )
+        except Exception as exc:
+            raise DiscussionSummaryGenerationError(
+                "model_generation_failed"
+            ) from exc
+
+        raw_text = str(getattr(result, "text", "") or "").strip()
+        if not raw_text:
+            raise DiscussionSummaryGenerationError("empty_response")
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise DiscussionSummaryGenerationError("invalid_json") from exc
+        try:
+            return DiscussionSummary.model_validate(payload)
+        except ValidationError as exc:
+            raise DiscussionSummaryGenerationError(
+                "schema_validation_failed"
+            ) from exc
 
     _attach_persona_snapshot = attach_persona_snapshot
     _record_persona_exposure = staticmethod(record_persona_exposure)

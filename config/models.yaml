@@ -200,6 +200,9 @@ llm_profiles:
       speech:
         provider: openai
         model_profile: ark_deepseek_v4_pro
+      discussion_summary:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro
       deception:
         provider: openai
         model_profile: ark_deepseek_v4_pro
@@ -240,6 +243,9 @@ llm_profiles:
         provider: minimax
         model_profile: minimax_m27_reflection
       speech:
+        provider: minimax
+        model_profile: minimax_m27_default
+      discussion_summary:
         provider: minimax
         model_profile: minimax_m27_default
       # Phase 2 P2-2: see comment in minimax_default above

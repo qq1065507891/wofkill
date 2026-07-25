@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-14
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.runtime.context import build_agent_context
@@ -15,7 +15,7 @@
 # 将 GameState 转换为 PlayerAgent 可用的 AgentContext。
 # 作者: Mike
 # 创建日期: 2025-01-15
-# 修改日期: 2026-07-13
+# 修改日期: 2026-07-25
 # 使用示例: 内部模块，无对外接口
 # 从 agent_adapter.py 拆出，用于降低大型适配器的职责复杂度。
 # 本模块负责：
@@ -29,12 +29,17 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import MutableMapping
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
     TaskType,
+)
+from werewolf_agent.agents.discussion_summary import (
+    discussion_summary_for_player,
+    discussion_summary_text,
 )
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
@@ -139,7 +144,8 @@ def build_agent_context(
     rag_service: Any | None = None,
     restored_memory: Any | None = None,
     cognition_state_manager: Any | None = None,
-    discussion_positions: dict[str, str] | None = None,
+    discussion_positions: dict[str, Any] | None = None,
+    discussion_state: MutableMapping[str, Any] | None = None,
     decision_identity: DecisionIdentity | None = None,
     exposure_collector: ModuleExposureAuditCollector | None = None,
     decision_trace_sink: Any | None = None,
@@ -216,8 +222,15 @@ def build_agent_context(
     transcript = build_recent_transcript(gs)
     public_summary = build_public_summary(gs)
 
-    # ── Player's own speech summary (from LLM or deterministic fallback) ──
-    own_summary = (discussion_positions or {}).get(player_id, "")
+    # ── 玩家自己的讨论摘要（模型结果或确定性 fallback） ──
+    summary_state: MutableMapping[str, Any] = (
+        discussion_state
+        if discussion_state is not None
+        else {"discussion_positions": discussion_positions or {}}
+    )
+    own_summary = discussion_summary_text(
+        discussion_summary_for_player(summary_state, player_id)
+    )
     if own_summary:
         public_summary += f"\n\n--- 你对今日讨论的总结 (D{gs.day_number}) ---\n{own_summary}"
 

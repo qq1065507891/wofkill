@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-25
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from werewolf_agent.model_gateway.execution_records import ReasoningLevel
 
 _MEDIUM_TASKS = {
     "speech", "last_words", "vote", "sheriff_speech", "sheriff_registration",
-    "defense_speech", "pk_speech",
+    "defense_speech", "pk_speech", "discussion_summary",
 }
 _HIGH_TASKS = {
     "night_action", "deception", "reflection", "wolf_discussion",

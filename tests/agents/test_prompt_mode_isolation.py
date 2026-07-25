@@ -1,12 +1,16 @@
-"""P0-S1 mode isolation: build_user_prompt must render only the active mode's fields.
+"""验证公开行动模式隔离及内部讨论摘要的独立输出契约。
 
-Per consolidated audit (P0-S1, confirmed in g_3528592081: 95 actions
-contained `intent` field, 63 contained `vote_basis` field — mode
-bleeding in production).
+作者: Project contributors
+修改日期: 2026-07-25
 """
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
+from werewolf_agent.agents.discussion_summary import DiscussionSummary
+from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
 from werewolf_agent.agents.schemas import (
     ActionType,
@@ -320,3 +324,75 @@ def test_target_choice_non_vote_task_omits_vote_audit_contract():
         "private_reason",
     ):
         assert vote_field not in contract
+
+
+def test_discussion_summary_is_not_a_public_speech_intent_task() -> None:
+    from werewolf_agent.agents.prompt_output import _SPEECH_INTENT_TASKS
+
+    assert TaskType.DISCUSSION_SUMMARY not in _SPEECH_INTENT_TASKS
+    assert TaskType.DISCUSSION_SUMMARY not in PlayerAgent._SPEECH_INTENT_TASKS
+
+
+def test_player_uses_only_narrow_discussion_summary_schema() -> None:
+    class _Router:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def generate(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                text=json.dumps({
+                    "summary": "p03的投票理由不稳定。",
+                    "suspected_players": ["p03"],
+                    "trusted_players": [],
+                    "vote_target": "p03",
+                    "evidence_refs": ["speech-3"],
+                }, ensure_ascii=False),
+            )
+
+    router = _Router()
+    agent = PlayerAgent("p01", router)
+    agent._speech_quality_error = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("讨论摘要不得调用公开发言质量门")
+    )
+    context = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.DISCUSSION_SUMMARY,
+        public_summary="旧摘要兼容投影",
+        strategy_directive={
+            "summary_task": "只整理今天的公开讨论。",
+            "transcript_text": "[p03]: 我会投p04。",
+        },
+    )
+
+    summary = agent.summarize_discussion(context)
+
+    assert summary == DiscussionSummary(
+        summary="p03的投票理由不稳定。",
+        suspected_players=["p03"],
+        vote_target="p03",
+        evidence_refs=["speech-3"],
+    )
+    assert router.kwargs["task_type"] == "discussion_summary"
+    assert "旧摘要兼容投影" in str(router.kwargs["prompt"])
+    assert "[p03]: 我会投p04。" in str(router.kwargs["prompt"])
+    tools = router.kwargs["tools"]
+    assert isinstance(tools, list) and len(tools) == 1
+    tool = tools[0]
+    assert tool["name"] == "submit_discussion_summary"
+    assert router.kwargs["tool_choice"] == {
+        "type": "tool",
+        "name": "submit_discussion_summary",
+    }
+    schema = tool["input_schema"]
+    assert set(schema["properties"]) == {
+        "summary",
+        "suspected_players",
+        "trusted_players",
+        "vote_target",
+        "evidence_refs",
+    }
+    assert schema["additionalProperties"] is False
+    assert "action_type" not in schema["properties"]
+    assert "speech" not in schema["properties"]
+    assert "reason" not in schema["properties"]

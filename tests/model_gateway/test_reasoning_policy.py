@@ -11,6 +11,7 @@ import pytest
         ("last_words", "medium"),
         ("vote", "medium"),
         ("sheriff_speech", "medium"),
+        ("discussion_summary", "medium"),
         ("wolf_team_plan", "high"),
         ("wolf_discussion", "high"),
         ("deception", "high"),

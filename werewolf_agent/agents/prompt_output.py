@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-09
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_output import PromptOutputMixin
@@ -23,6 +23,7 @@ from werewolf_agent.agents.prompt_choice import (
 )
 from werewolf_agent.agents.schemas import (
     ActionType,
+    AgentContext,
     OutputMode,
     RetryInfo,
     TaskType,
@@ -59,6 +60,31 @@ _SPEECH_INTENTS = {
     "info_synthesis": "整合多人发言要点，提出综合判断",
     "anti_herd_call": "指出跟票风险，提醒大家独立判断",
 }
+
+
+def discussion_summary_prompts(context: AgentContext) -> tuple[str, str]:
+    """构造不含公开行动字段的内部讨论摘要提示。"""
+
+    directive = str(
+        context.strategy_directive.get(
+            "summary_task",
+            "总结当天公开讨论，不得编造不存在的内容。",
+        )
+    )
+    transcript = str(context.strategy_directive.get("transcript_text", ""))
+    system_prompt = (
+        "你是狼人杀玩家的内部讨论整理器。此任务不是公开发言，"
+        "不得输出 action_type、speech、reason 或 private_intent。"
+        "只提交符合 DiscussionSummary JSON Schema 的对象。"
+    )
+    prompt = (
+        f"任务：{directive}\n"
+        f"已有上下文与兼容文本投影：\n{context.public_summary}\n"
+        f"当天公开发言：\n{transcript}\n"
+        "请提炼 summary、suspected_players、trusted_players、vote_target、"
+        "evidence_refs；没有对应信息时使用空列表或 null。"
+    )
+    return system_prompt, prompt
 
 _VOTE_REASON_PRIVACY_GUARD = (
     "\n【投票隐私 P0-G3223805846-8】你输出的 `reason` 字段是公开发言可见的"

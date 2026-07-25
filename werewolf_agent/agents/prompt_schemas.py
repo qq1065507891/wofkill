@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-14
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_schemas import AgentContext
@@ -22,6 +22,7 @@ from werewolf_agent.agents.action_schemas import ActionType
 
 class TaskType(str, Enum):
     SPEECH = "speech"
+    DISCUSSION_SUMMARY = "discussion_summary"
     VOTE = "vote"
     NIGHT_ACTION = "night_action"
     DECEPTION = "deception"

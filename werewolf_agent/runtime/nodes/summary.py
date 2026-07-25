@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-17
+修改日期: 2026-07-25
 使用示例: 内部模块，无对外接口
 - ``summarize_positions`` — per-player LLM summarisation after free discussion
 - ``summarize_context`` — daily structured context summary for pruning
@@ -20,7 +20,11 @@ from typing import Any
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.core.resolution_batches import valid_carrier_resolution_batch
 from werewolf_agent.engine.rule_engine import RuleEngine
-from werewolf_agent.agents.schemas import ActionType, TaskType
+from werewolf_agent.agents.discussion_summary import (
+    DiscussionSummary,
+    DiscussionSummaryGenerationError,
+)
+from werewolf_agent.agents.schemas import TaskType
 from werewolf_agent.runtime.context import build_agent_context
 from werewolf_agent.runtime.agent_adapter import _agent_reflection
 from werewolf_agent.runtime.reflection_events import safe_reflection_verification
@@ -78,7 +82,12 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
         and e.payload.get("day_number") == day
     ]
     if not speeches:
-        return {"discussion_positions": {}, "_day": day}
+        return {
+            "discussion_positions_version": 2,
+            "discussion_positions": {},
+            "discussion_summary_audit_records": [],
+            "_day": day,
+        }
 
     # Build transcript text for LLM consumption
     transcript_lines = []
@@ -89,27 +98,28 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
             transcript_lines.append(f"[{speaker}]: {text}")
     transcript_text = "\n".join(transcript_lines)
 
-    # Dispatch each alive player to independently summarize the day
+    # 每个存活玩家独立整理当天讨论，失败时直接使用确定性摘要。
     engine: RuleEngine = state["engine"]
-    positions: dict[str, str] = {}
+    positions: dict[str, dict[str, Any]] = {}
+    audit_records: list[dict[str, str]] = []
     summarizers: list[str] = [pid for pid, p in gs.players.items() if p.alive]
     for i, pid in enumerate(summarizers):
         if i > 0:
             _sleep_between_agent_calls(state, default_ms=10000)
-        summary_text = ""
+        summary: DiscussionSummary | None = None
+        failure_code = "agent_unavailable"
         try:
             registry = state.get("agent_registry")
             if registry is not None:
                 agent = registry.get_agent(pid)
                 if agent is not None:
                     context = build_agent_context(
-                        engine, gs, pid, TaskType.SPEECH,
-                        legal_actions=[ActionType.SPEECH],
+                        engine, gs, pid, TaskType.DISCUSSION_SUMMARY,
                         wolf_team_plan=state.get("wolf_team_plan"),
                         rag_service=state.get("rag_service"),
                         restored_memory=state.get("restored_memory"),
                         cognition_state_manager=state.get("cognition_state_manager"),
-                        discussion_positions=state.get("discussion_positions"),
+                        discussion_state=state,
                     )
                     extra_directive = {
                         "summary_task": (
@@ -123,21 +133,52 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
                     sd.update(extra_directive)
                     context = context.model_copy(update={"strategy_directive": sd})
 
-                    action, _retry_info = agent.act(context)
-                    summary_text = getattr(action, "speech", "") or ""
+                    generated = agent.summarize_discussion(context)
+                    summary = DiscussionSummary.model_validate(generated)
+        except DiscussionSummaryGenerationError as exc:
+            failure_code = exc.failure_code
+            logger.debug(
+                "Discussion summary failed for %s with %s; using deterministic fallback",
+                pid,
+                failure_code,
+            )
         except Exception:
-            logger.debug("LLM summarisation failed for %s, using deterministic fallback", pid, exc_info=True)
+            failure_code = "model_failure"
+            logger.debug(
+                "Discussion summary failed for %s; using deterministic fallback",
+                pid,
+                exc_info=True,
+            )
 
-        if not summary_text:
-            summary_text = _build_deterministic_summary(pid, speeches)
-        positions[pid] = summary_text
+        if summary is None:
+            summary = _build_deterministic_summary(pid, speeches)
+            audit_records.append({
+                "player_id": pid,
+                "task": TaskType.DISCUSSION_SUMMARY.value,
+                "outcome": "deterministic_fallback",
+                "failure_code": failure_code,
+            })
+        positions[pid] = summary.model_dump()
 
-    return {"discussion_positions": positions, "_day": day}
+    return {
+        "discussion_positions_version": 2,
+        "discussion_positions": positions,
+        "discussion_summary_audit_records": audit_records,
+        "_day": day,
+    }
 
 
-def _build_deterministic_summary(player_id: str, speeches: list[GameEvent]) -> str:
-    """Deterministic fallback: extract suspects/trusts/claims from speeches."""
-    parts = []
+def _build_deterministic_summary(
+    player_id: str,
+    speeches: list[GameEvent],
+) -> DiscussionSummary:
+    """从公开发言稳定提取摘要字段，作为模型失败后的 V2 退路。"""
+
+    parts: list[str] = []
+    suspected_players: list[str] = []
+    trusted_players: list[str] = []
+    vote_targets: list[tuple[str, str]] = []
+    evidence_refs: list[str] = []
     for ev in speeches:
         speaker = ev.payload.get("speaker", "?")
         text = str(ev.payload.get("text", "") or "")
@@ -157,8 +198,25 @@ def _build_deterministic_summary(player_id: str, speeches: list[GameEvent]) -> s
             detail += f" 信任{','.join(t)}"
         if v:
             detail += f" 想投{v}"
+            vote_targets.append((str(speaker), v))
         parts.append(detail)
-    return "\n".join(parts) if parts else "今日无有效发言"
+        suspected_players.extend(pid for pid in s if pid not in suspected_players)
+        trusted_players.extend(pid for pid in t if pid not in trusted_players)
+        evidence_ref = ev.event_id or ev.payload.get("source_event_id")
+        if evidence_ref and str(evidence_ref) not in evidence_refs:
+            evidence_refs.append(str(evidence_ref))
+
+    own_vote = next(
+        (target for speaker, target in vote_targets if speaker == player_id),
+        None,
+    )
+    return DiscussionSummary(
+        summary="\n".join(parts) if parts else "今日无有效发言",
+        suspected_players=suspected_players,
+        trusted_players=trusted_players,
+        vote_target=own_vote,
+        evidence_refs=evidence_refs,
+    )
 
 
 # ---------------------------------------------------------------------------

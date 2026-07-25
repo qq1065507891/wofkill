@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_day_vote_actions import agent_day_vote
@@ -157,6 +158,7 @@ def agent_day_vote(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        discussion_state=state,
         **_audit_context_kwargs(
             decision_identity, exposure_collector, decision_trace_sink
         ),

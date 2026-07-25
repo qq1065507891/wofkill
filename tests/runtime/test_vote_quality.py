@@ -1,4 +1,10 @@
-"""Tests for evidence-based vote quality validation."""
+# -*- coding: utf-8 -*-
+"""
+验证基于公开证据的投票质量和讨论摘要上下文接线。
+
+作者: Project contributors
+修改日期: 2026-07-25
+"""
 
 import pytest
 from werewolf_agent.runtime.vote_quality import (
@@ -9,6 +15,16 @@ from werewolf_agent.runtime.vote_quality import (
     build_day_discussion_summary,
     build_vote_pressure_context,
 )
+
+
+def test_day_vote_passes_runtime_state_to_discussion_accessor() -> None:
+    import inspect
+
+    from werewolf_agent.runtime.agent_day_vote_actions import agent_day_vote
+
+    source = inspect.getsource(agent_day_vote)
+
+    assert "discussion_state=state" in source
 
 
 class TestVoteBasisValidator:

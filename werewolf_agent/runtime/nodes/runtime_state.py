@@ -69,7 +69,9 @@ class RuntimeState(TypedDict, total=False):
     wolf_team_plan: dict[str, Any]
     wolf_consensus_evidence: str
     repository: Any
-    discussion_positions: list[dict[str, Any]]
+    discussion_positions_version: int
+    discussion_positions: dict[str, dict[str, Any]]
+    discussion_summary_audit_records: list[dict[str, str]]
     judge_agent: Any
     judge_llm_enabled: bool
     judge_hitl: Any
