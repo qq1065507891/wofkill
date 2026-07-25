@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证运行时投票流程、事件契约与规则结算的一致性。
+
+作者: Project contributors
+修改日期: 2026-07-25
+"""
+
 from __future__ import annotations
 
 import json
@@ -280,6 +288,7 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
         "p01": PlayerState(id="p01", role="villager"),
         "p02": PlayerState(id="p02", role="villager"),
         "p03": PlayerState(id="p03", role="werewolf"),
+        "p04": PlayerState(id="p04", role="villager"),
     }
     gs = GameState(
         game_id="sheriff_weighted_vote",
@@ -292,7 +301,7 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
     result = resolve_vote({
         "game_state": gs,
         "engine": _new_engine(),
-        "exile_votes": {"p01": "p03", "p02": "p02"},
+        "exile_votes": {"p01": "p03", "p02": "p04"},
         "revote": False,
     })
 
@@ -302,14 +311,14 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
     assert payload["base_vote_weight"] == 2
     assert payload["sheriff_id"] == "p01"
     assert payload["sheriff_vote_weight"] == 3
-    assert payload["weighted_tally"] == {"p03": 3, "p02": 2}
+    assert payload["weighted_tally"] == {"p03": 3, "p04": 2}
     assert payload["vote_weights"] == {"p01": 3, "p02": 2}
     assert payload["weighted_tally_units"] == payload["weighted_tally"]
     assert payload["vote_weight_units"] == payload["vote_weights"]
-    assert payload["weighted_tally_display"] == {"p03": 1.5, "p02": 1}
+    assert payload["weighted_tally_display"] == {"p03": 1.5, "p04": 1}
     assert payload["vote_weights_display"] == {"p01": 1.5, "p02": 1}
     assert type(payload["weighted_tally_display"]["p03"]) is float
-    assert type(payload["weighted_tally_display"]["p02"]) is int
+    assert type(payload["weighted_tally_display"]["p04"]) is int
     assert type(payload["vote_weights_display"]["p01"]) is float
     assert type(payload["vote_weights_display"]["p02"]) is int
     json.dumps(payload)
@@ -330,6 +339,7 @@ def test_base_three_vote_producers_serialize_four_thirds_display() -> None:
         "p01": PlayerState(id="p01", role="villager"),
         "p02": PlayerState(id="p02", role="villager"),
         "p03": PlayerState(id="p03", role="werewolf"),
+        "p04": PlayerState(id="p04", role="villager"),
     }
     gs = GameState(
         game_id="base_three_vote_display",
@@ -338,7 +348,7 @@ def test_base_three_vote_producers_serialize_four_thirds_display() -> None:
         sheriff_badge_state="active",
         day_number=2,
     )
-    votes = {"p01": "p03", "p02": "p02"}
+    votes = {"p01": "p03", "p02": "p04"}
 
     broadcast_state = {
         "game_state": gs,
@@ -352,7 +362,7 @@ def test_base_three_vote_producers_serialize_four_thirds_display() -> None:
     assert tally_payload["sheriff_weight_units"] == 4
     assert type(tally_payload["sheriff_weight_display"]) is float
     assert tally_payload["sheriff_weight_display"] == pytest.approx(4 / 3)
-    assert type(tally_payload["tally_display"]["p02"]) is int
+    assert type(tally_payload["tally_display"]["p04"]) is int
     persisted_tally = json.loads(json.dumps(tally_payload))
     decoded_tally = decode_vote_tally_payload(persisted_tally)
     assert decoded_tally.sheriff_weight_display == vote_units_to_display(
@@ -383,6 +393,103 @@ def test_base_three_vote_producers_serialize_four_thirds_display() -> None:
         4,
         base_vote_weight=3,
     )
+
+
+@pytest.mark.parametrize(
+    ("votes", "revote", "pk_candidates", "accepted_votes", "tally_units"),
+    [
+        (
+            {"p01": "p01", "p02": "p04"},
+            False,
+            None,
+            {"p02": "p04"},
+            {"p04": 2},
+        ),
+        (
+            {"p01": "missing", "p02": "p03", "p04": "p02"},
+            False,
+            None,
+            {"p04": "p02"},
+            {"p02": 2},
+        ),
+        (
+            {"p01": "p04", "p04": "p02"},
+            True,
+            ["p02", "p03"],
+            {"p04": "p02"},
+            {"p02": 2},
+        ),
+    ],
+)
+def test_vote_events_only_include_rule_accepted_votes(
+    votes: dict[str, str],
+    revote: bool,
+    pk_candidates: list[str] | None,
+    accepted_votes: dict[str, str],
+    tally_units: dict[str, int],
+) -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+    from werewolf_agent.runtime.nodes.day_vote import _broadcast_vote_details
+
+    engine = _new_engine()
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="werewolf", alive=False),
+        "p04": PlayerState(id="p04", role="werewolf", alive=True),
+    }
+    gs = GameState(
+        game_id="accepted_vote_projection",
+        players=players,
+        day_number=2,
+    )
+    expected_result = engine.resolve_vote(
+        gs,
+        votes=votes,
+        revote=revote,
+        pk_candidates=pk_candidates,
+    )
+
+    broadcast_gs = _broadcast_vote_details(
+        {
+            "game_state": gs,
+            "engine": engine,
+            "revote": revote,
+            "pk_candidates": pk_candidates,
+            "judge_llm_enabled": False,
+        },
+        gs,
+        votes,
+    )
+    tally_payload = broadcast_gs.events[-1].payload
+    assert tally_payload["tally"] == tally_units
+    assert tally_payload["tally_units"] == tally_units
+
+    resolved = resolve_vote({
+        "game_state": gs,
+        "engine": engine,
+        "exile_votes": votes,
+        "revote": revote,
+        "pk_candidates": pk_candidates,
+    })
+    resolved_event = next(
+        event
+        for event in resolved["game_state"].events
+        if event.type == "vote_resolved"
+    )
+    resolved_payload = resolved_event.payload
+
+    assert resolved["_vote_result"] == expected_result
+    assert resolved["game_state"].votes == accepted_votes
+    assert resolved_payload["weighted_tally"] == tally_units
+    assert resolved_payload["weighted_tally_units"] == tally_units
+    assert resolved_payload["vote_weight_units"] == {
+        voter_id: 2 for voter_id in accepted_votes
+    }
+    assert {
+        vote["voter"]: vote["target"]
+        for vote in resolved_payload["votes"]
+    } == accepted_votes
 
 
 def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:

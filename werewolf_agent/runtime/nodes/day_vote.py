@@ -199,7 +199,17 @@ def _broadcast_vote_details(
         sheriff_vote_weight,
         base_vote_weight=base_vote_weight,
     )
-    for voter_id, target_id in votes.items():
+    accepted_votes = (
+        engine.accepted_votes(
+            gs,
+            votes=votes,
+            revote=state.get("revote", False),
+            pk_candidates=state.get("pk_candidates"),
+        )
+        if isinstance(engine, RuleEngine)
+        else votes
+    )
+    for voter_id, target_id in accepted_votes.items():
         weight = (
             engine.vote_weight(gs, voter_id)
             if isinstance(engine, RuleEngine)
@@ -258,13 +268,12 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     consecutive = state.get("consecutive_no_exile_days", 0)
     raw_votes = state.get("exile_votes", {})
-    # P1-G3223805846-2: 前置过滤死人/vote_enabled=False 的 vote，与 engine.resolve_vote 行为一致。
-    # 防止 checkpoint 恢复/重放时残留的死人票进入 vote_resolved payload 的
-    # weighted_tally / vote_weights / votes 列表，避免审计事件虚高计数。
-    eligible_voter_ids = {
-        pid for pid, p in gs.players.items() if p.alive and p.vote_enabled
-    }
-    votes = {vid: tgt for vid, tgt in raw_votes.items() if vid in eligible_voter_ids}
+    votes = engine.accepted_votes(
+        gs,
+        votes=raw_votes,
+        revote=state.get("revote", False),
+        pk_candidates=state.get("pk_candidates"),
+    )
     result = engine.resolve_vote(
         gs, votes=votes,
         revote=state.get("revote", False),

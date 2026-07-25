@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证法官广播流程、结构化载荷与运行时接线。
+
+作者: Project contributors
+修改日期: 2026-07-25
+"""
+
 from __future__ import annotations
 
 import json
@@ -520,6 +528,7 @@ class TestJudgeStructuredBroadcasts:
             "p01": PlayerState(id="p01", role="villager", alive=True),
             "p02": PlayerState(id="p02", role="villager", alive=True),
             "p03": PlayerState(id="p03", role="werewolf", alive=True),
+            "p04": PlayerState(id="p04", role="villager", alive=True),
         }
         gs = GameState(
             game_id="vote_tally_v2",
@@ -538,7 +547,7 @@ class TestJudgeStructuredBroadcasts:
         gs_now = _broadcast_vote_details(
             state,
             gs,
-            {"p01": "p03", "p02": "p02"},
+            {"p01": "p03", "p02": "p04"},
         )
         event = gs_now.events[-1]
         payload = event.payload
@@ -546,12 +555,12 @@ class TestJudgeStructuredBroadcasts:
         assert event.type == "judge_broadcast"
         assert payload["vote_weight_format_version"] == 2
         assert payload["base_vote_weight"] == 2
-        assert payload["tally"] == payload["tally_units"] == {"p03": 3, "p02": 2}
+        assert payload["tally"] == payload["tally_units"] == {"p03": 3, "p04": 2}
         assert payload["sheriff_weight"] == payload["sheriff_weight_units"] == 3
-        assert payload["tally_display"] == {"p03": 1.5, "p02": 1}
+        assert payload["tally_display"] == {"p03": 1.5, "p04": 1}
         assert payload["sheriff_weight_display"] == 1.5
         assert type(payload["tally_display"]["p03"]) is float
-        assert type(payload["tally_display"]["p02"]) is int
+        assert type(payload["tally_display"]["p04"]) is int
         assert type(payload["sheriff_weight_display"]) is float
         json.dumps(payload)
         assert "警长1.5票" in payload["message"]

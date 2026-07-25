@@ -3,7 +3,7 @@
 功能描述：RuleEngine 是整个游戏的核心判决器，从 YAML 规则集加载配置，提供 assign_roles、resolve_night、
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-07
+修改日期：2026-07-25
 使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
@@ -262,6 +262,24 @@ class RuleEngine:
             state,
             voter_id,
             base_vote_weight=self.base_vote_weight(),
+        )
+
+    def accepted_votes(
+        self,
+        state: GameState,
+        *,
+        votes: dict[str, str],
+        revote: bool,
+        pk_candidates: list[str] | None = None,
+    ) -> dict[str, str]:
+        """返回按当前放逐规则实际进入计票的投票。"""
+        return rule_vote.accepted_votes(
+            self.ruleset.raw,
+            state,
+            votes=votes,
+            revote=revote,
+            legal_targets=set(self.legal_exile_targets(state)),
+            pk_candidates=pk_candidates,
         )
 
     def resolve_vote(

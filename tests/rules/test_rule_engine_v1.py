@@ -500,6 +500,48 @@ def test_revote_ignores_votes_outside_pk_candidates() -> None:
     assert result.reason == "second_tie_no_exile"
 
 
+@pytest.mark.parametrize(
+    ("votes", "revote", "pk_candidates", "expected"),
+    [
+        (
+            {"v1": "v1", "v2": "w1"},
+            False,
+            None,
+            {"v2": "w1"},
+        ),
+        (
+            {"v1": "missing", "v2": "v3", "seer": "w1"},
+            False,
+            None,
+            {"seer": "w1"},
+        ),
+        (
+            {"v1": "w1", "v2": "w2"},
+            True,
+            ["w2", "v3"],
+            {"v2": "w2"},
+        ),
+    ],
+)
+def test_accepted_votes_exposes_rule_normalization(
+    votes: dict[str, str],
+    revote: bool,
+    pk_candidates: list[str] | None,
+    expected: dict[str, str],
+) -> None:
+    engine = make_engine()
+    state = make_state(dead={"v3"})
+
+    accepted = engine.accepted_votes(
+        state,
+        votes=votes,
+        revote=revote,
+        pk_candidates=pk_candidates,
+    )
+
+    assert accepted == expected
+
+
 def test_dead_or_vote_disabled_players_do_not_count_in_exile_vote() -> None:
     engine = make_engine()
     state = make_state(dead={"v1"}, revealed_idiot=True)
