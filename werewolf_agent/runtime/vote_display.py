@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from math import isfinite
 from typing import Any, Mapping
 
 
@@ -73,15 +74,15 @@ def format_vote_count(value: Decimal) -> str:
 
 
 def vote_display_to_json_number(value: Decimal) -> int | float:
-    """把精确的整数或半整数票数转换为 JSON 安全数值。"""
+    """把精确票数转换为 JSON 安全的整数或有限浮点数。"""
     if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
         raise ValueError("vote display value must be a non-negative finite Decimal")
     if value == value.to_integral():
         return int(value)
-    if value * 2 == (value * 2).to_integral():
-        # 二进制浮点可精确表示 0.5，因而不会损失半票值。
-        return float(value)
-    raise ValueError("vote display value must be an integer or half-integer")
+    json_number = float(value)
+    if not isfinite(json_number):
+        raise ValueError("vote display value is outside the JSON float range")
+    return json_number
 
 
 def decode_vote_tally_payload(
@@ -144,23 +145,28 @@ def decode_vote_tally_payload(
     )
     tally_display = _display_map(data, "tally_display")
     sheriff_display = _display_value(data, "sheriff_weight_display")
+    expected_tally_display = _display_map_from_units(tally_units, base)
+    expected_sheriff_display = vote_units_to_display(
+        sheriff_units,
+        base_vote_weight=base,
+    )
     _require_display_match(
         "tally_display",
         tally_display,
-        _display_map_from_units(tally_units, base),
+        expected_tally_display,
     )
     _require_display_match(
         "sheriff_weight_display",
         sheriff_display,
-        vote_units_to_display(sheriff_units, base_vote_weight=base),
+        expected_sheriff_display,
     )
     return DecodedVoteTally(
         format_version=2,
         base_vote_weight=base,
         tally_units=tally_units,
         sheriff_weight_units=sheriff_units,
-        tally_display=tally_display,
-        sheriff_weight_display=sheriff_display,
+        tally_display=expected_tally_display,
+        sheriff_weight_display=expected_sheriff_display,
         display_supported=True,
     )
 
@@ -227,23 +233,25 @@ def decode_vote_resolved_payload(
     )
     tally_display = _display_map(data, "weighted_tally_display")
     weights_display = _display_map(data, "vote_weights_display")
+    expected_tally_display = _display_map_from_units(tally_units, base)
+    expected_weights_display = _display_map_from_units(weight_units, base)
     _require_display_match(
         "weighted_tally_display",
         tally_display,
-        _display_map_from_units(tally_units, base),
+        expected_tally_display,
     )
     _require_display_match(
         "vote_weights_display",
         weights_display,
-        _display_map_from_units(weight_units, base),
+        expected_weights_display,
     )
     return DecodedVoteResolved(
         format_version=2,
         base_vote_weight=base,
         weighted_tally_units=tally_units,
         vote_weight_units=weight_units,
-        weighted_tally_display=tally_display,
-        vote_weights_display=weights_display,
+        weighted_tally_display=expected_tally_display,
+        vote_weights_display=expected_weights_display,
         display_supported=True,
     )
 
@@ -385,5 +393,17 @@ def _require_display_match(
     actual: Any,
     expected: Any,
 ) -> None:
-    if actual != expected:
+    if actual != _json_display_decimal_projection(expected):
         raise VotePayloadError(f"{display_name} conflicts with canonical vote units")
+
+
+def _json_display_decimal_projection(value: Any) -> Any:
+    """把规范 Decimal 展示值投影为 JSON 数值往返后的 Decimal。"""
+    if isinstance(value, Mapping):
+        return {
+            key: _json_display_decimal_projection(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, Decimal):
+        return Decimal(str(vote_display_to_json_number(value)))
+    return value

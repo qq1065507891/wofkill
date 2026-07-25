@@ -76,6 +76,14 @@ def test_vote_display_to_json_number_preserves_integral_and_half_types() -> None
     assert type(half) is float
 
 
+def test_vote_display_to_json_number_supports_base_three_fraction() -> None:
+    display = vote_units_to_display(4, base_vote_weight=3)
+    json_number = vote_display_to_json_number(display)
+
+    assert type(json_number) is float
+    assert json_number == pytest.approx(4 / 3)
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -83,7 +91,6 @@ def test_vote_display_to_json_number_preserves_integral_and_half_types() -> None
         Decimal("Infinity"),
         Decimal("-Infinity"),
         Decimal("-0.5"),
-        Decimal("1.25"),
     ],
 )
 def test_vote_display_to_json_number_rejects_unsafe_values(

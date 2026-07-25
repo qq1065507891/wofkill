@@ -314,6 +314,77 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
     assert type(payload["vote_weights_display"]["p02"]) is int
     json.dumps(payload)
 
+
+def test_base_three_vote_producers_serialize_four_thirds_display() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+    from werewolf_agent.runtime.nodes.day_vote import _broadcast_vote_details
+    from werewolf_agent.runtime.vote_display import (
+        decode_vote_resolved_payload,
+        decode_vote_tally_payload,
+        vote_units_to_display,
+    )
+
+    engine = _new_engine()
+    engine.ruleset.raw.setdefault("game_rules", {})["base_vote_weight"] = 3
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="villager"),
+        "p03": PlayerState(id="p03", role="werewolf"),
+    }
+    gs = GameState(
+        game_id="base_three_vote_display",
+        players=players,
+        sheriff_id="p01",
+        sheriff_badge_state="active",
+        day_number=2,
+    )
+    votes = {"p01": "p03", "p02": "p02"}
+
+    broadcast_state = {
+        "game_state": gs,
+        "engine": engine,
+        "judge_llm_enabled": False,
+    }
+    broadcast_gs = _broadcast_vote_details(broadcast_state, gs, votes)
+    tally_payload = broadcast_gs.events[-1].payload
+
+    assert tally_payload["base_vote_weight"] == 3
+    assert tally_payload["sheriff_weight_units"] == 4
+    assert type(tally_payload["sheriff_weight_display"]) is float
+    assert tally_payload["sheriff_weight_display"] == pytest.approx(4 / 3)
+    assert type(tally_payload["tally_display"]["p02"]) is int
+    persisted_tally = json.loads(json.dumps(tally_payload))
+    decoded_tally = decode_vote_tally_payload(persisted_tally)
+    assert decoded_tally.sheriff_weight_display == vote_units_to_display(
+        4,
+        base_vote_weight=3,
+    )
+
+    resolved = resolve_vote({
+        "game_state": gs,
+        "engine": engine,
+        "exile_votes": votes,
+        "revote": False,
+    })
+    resolved_payload = next(
+        event.payload
+        for event in resolved["game_state"].events
+        if event.type == "vote_resolved"
+    )
+
+    assert resolved_payload["base_vote_weight"] == 3
+    assert resolved_payload["vote_weight_units"]["p01"] == 4
+    assert type(resolved_payload["vote_weights_display"]["p01"]) is float
+    assert resolved_payload["vote_weights_display"]["p01"] == pytest.approx(4 / 3)
+    assert type(resolved_payload["vote_weights_display"]["p02"]) is int
+    persisted_resolved = json.loads(json.dumps(resolved_payload))
+    decoded_resolved = decode_vote_resolved_payload(persisted_resolved)
+    assert decoded_resolved.vote_weights_display["p01"] == vote_units_to_display(
+        4,
+        base_vote_weight=3,
+    )
+
+
 def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:
     from werewolf_agent.runtime.graph import resolve_vote
 
