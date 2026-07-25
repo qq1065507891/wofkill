@@ -618,7 +618,11 @@ def run_player_action_flow(
                 structured_failure_reason = "semantic_claim_retention"
                 structured_failure_stage = StructuredFailureStage.SEMANTIC.value
                 reason_codes = list(semantic_validation.reason_codes)
-                repair_state.record_semantic_rejection(reason_codes)
+                repair_state.record_semantic_rejection(
+                    reason_codes,
+                    context=context,
+                    rejected_action=action,
+                )
                 retry = _with_repair_constraints(RetryInfo(
                     attempt=attempt,
                     max_retries=agent.max_retries,

@@ -192,9 +192,8 @@ def test_repair_constraint_state_rebuilds_latest_category_without_duplicate_hint
     )
 
     assert augmented_quality.correction_hint.count("把无法确认的公开记录改写") == 1
-    assert augmented_quality.correction_hint.count("上一条被拒发言") == 1
-    assert "甲" * 120 in augmented_quality.correction_hint
-    assert "甲" * 121 not in augmented_quality.correction_hint
+    assert "上一条被拒发言" not in augmented_quality.correction_hint
+    assert "甲" * 120 not in augmented_quality.correction_hint
     assert rejected not in repr(state)
     assert rejected not in repr(state.failure_history)
 
@@ -240,8 +239,8 @@ def test_repair_constraint_state_deduplicates_rendered_quality_hints() -> None:
     assert state.quality_errors == (first_error, latest_error)
     assert state.failure_history == ("speech_quality", "speech_quality")
     assert augmented.correction_hint.count("先补一句身份立场") == 1
-    assert augmented.correction_hint.count("上一条被拒发言") == 1
-    assert rejected in augmented.correction_hint
+    assert "上一条被拒发言" not in augmented.correction_hint
+    assert rejected not in augmented.correction_hint
 
 
 def test_public_speech_quality_hint_preserves_120_character_echo_cap() -> None:

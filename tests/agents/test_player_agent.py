@@ -4195,7 +4195,7 @@ def _semantic_speech_payload(
 def test_speech_quality_retry_keeps_runtime_hint_but_redacts_success_trace(
     monkeypatch,
 ) -> None:
-    """被拒发言可进入下一轮 prompt，但不得持久化到成功 trace。"""
+    """被拒发言不进入下一轮 prompt，也不得持久化到成功 trace。"""
     from unittest.mock import patch
 
     rejected_speech = "REJECTED_SPEECH_SENTINEL"
@@ -4219,9 +4219,9 @@ def test_speech_quality_retry_keeps_runtime_hint_but_redacts_success_trace(
     with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None]):
         action, retry = agent.act(context)
 
-    assert rejected_speech in provider.prompts[1]
+    assert rejected_speech not in provider.prompts[1]
     assert retry.correction_hint is not None
-    assert rejected_speech in retry.correction_hint
+    assert rejected_speech not in retry.correction_hint
     assert action.trace is not None
     assert action.trace.retry is not None
     assert "correction_hint" not in action.trace.retry
@@ -4275,7 +4275,7 @@ def test_speech_quality_terminal_redacts_rejected_speech_everywhere(
     caplog,
     capsys,
 ) -> None:
-    """纯质量修复终退保留内存提示，但所有持久化与诊断边界均脱敏。"""
+    """纯质量修复终退不回显原文，所有边界均保持脱敏。"""
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -4308,9 +4308,9 @@ def test_speech_quality_terminal_redacts_rejected_speech_everywhere(
         action, retry = agent.act(context)
 
     assert isinstance(action, FallbackAction)
-    assert sentinel in provider.prompts[1]
+    assert sentinel not in provider.prompts[1]
     assert retry.correction_hint is not None
-    assert sentinel in retry.correction_hint
+    assert sentinel not in retry.correction_hint
     assert action.trace is not None
     assert sentinel not in action.trace.raw_text
     assert action.trace.parsed_action is None
@@ -4400,12 +4400,15 @@ def test_cumulative_repair_constraints_survive_quality_then_semantic_failure(
     assert provider.calls == 3
     assert quality_check.call_count == 2
     second_prompt = provider.prompts[1]
-    assert second_prompt.count("上一条被拒发言") == 1
-    assert second_prompt.count(echo_sentinel) == 1
+    assert "上一条被拒发言" not in second_prompt
+    assert echo_sentinel not in second_prompt
     final_prompt = provider.prompts[-1]
     assert "先补一句身份立场" in final_prompt
     assert "删除或改写缺少公开证据支持的事实声明" in final_prompt
     assert "不得新增任何缺少公开记录支持的事实" in final_prompt
+    assert "结构化修复约束" in final_prompt
+    assert '"required_target":"p05"' in final_prompt
+    assert echo_sentinel not in final_prompt
     assert retry.reason_codes == ["unsupported_public_claim"]
     assert action.trace is not None
     assert action.trace.semantic_repair_audit is not None
