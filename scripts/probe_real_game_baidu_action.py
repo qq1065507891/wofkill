@@ -3,7 +3,7 @@
 通过真实游戏路由执行一次 PlayerAgent 调用探针。
 
 作者: Project contributors
-修改日期: 2026-07-07
+修改日期: 2026-07-25
 
 使用示例:
     python scripts/probe_real_game_baidu_action.py --task sheriff_registration
@@ -70,7 +70,8 @@ def main() -> int:
     print(f"target_id={action.target_id}")
     print(f"reason={getattr(action, 'reason', '')}")
     print(f"speech={getattr(action, 'speech', '')}")
-    print(f"retry={retry.model_dump()}")
+    # correction_hint 仅供当前行动内重试，可能包含被拒发言，不进入诊断输出。
+    print(f"retry={retry.model_dump(exclude={'correction_hint'})}")
 
     trace = getattr(action, "trace", None)
     if trace:
