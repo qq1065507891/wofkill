@@ -3,7 +3,7 @@
 功能描述：从 YAML 文件加载 RAG 种子数据并校验，替代硬编码种子逻辑。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-26
 使用示例：内部模块，无对外接口
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
 
@@ -29,6 +29,8 @@ from werewolf_agent.rag.ingestion import CaseIngester
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 # ---------------------------------------------------------------------------
 # Enum resolution maps (YAML string value -> Python enum member)
 # ---------------------------------------------------------------------------
@@ -42,7 +44,12 @@ _VISIBILITY_MAP: dict[str, VisibilityBoundary] = {m.value: m for m in Visibility
 _SEED_YAML_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "rag_seeds" / "seed_entries.yaml"
 
 
-def _resolve_enum[T](name: str, value: str | None, mapping: dict[str, T], field_label: str) -> T | None:
+def _resolve_enum(
+    name: str,
+    value: str | None,
+    mapping: dict[str, T],
+    field_label: str,
+) -> T | None:
     """Resolve a string value to an enum member, or return *None* if value is empty."""
     if not value:
         return None
