@@ -1,6 +1,17 @@
-"""Tests for enhanced observer dashboard features."""
-import pytest
+# -*- coding: utf-8 -*-
+"""
+验证增强观战面板及版本化投票展示辅助函数。
+
+作者: Project contributors
+修改日期: 2026-07-25
+"""
+
+import json
 from pathlib import Path
+import re
+import subprocess
+
+import pytest
 
 DASHBOARD_PATH = Path(__file__).parent.parent.parent / "werewolf_agent" / "ui" / "static" / "dashboard.html"
 DASHBOARD_JS_PATH = Path(__file__).parent.parent.parent / "werewolf_agent" / "ui" / "static" / "dashboard.js"
@@ -120,3 +131,66 @@ def test_dashboard_has_human_seat_planning_controls(dashboard_html, dashboard_js
     assert "humanSeatSelector" in dashboard_html
     assert "human_seat" in dashboard_js
     assert "experience_mode" in dashboard_js
+
+
+def test_vote_display_tally_supports_v1_v2_and_unknown_legacy_base(
+    dashboard_js,
+) -> None:
+    match = re.search(
+        r"function voteDisplayTally\(data, rulesetBaseVoteWeight\) \{.*?^\}",
+        dashboard_js,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None
+    cases = [
+        [
+            {
+                "weighted_tally": {"p03": 3},
+                "vote_weights": {"p01": 3},
+            },
+            2,
+        ],
+        [
+            {
+                "vote_weight_format_version": 2,
+                "weighted_tally": {"p03": 9},
+                "weighted_tally_units": {"p03": 3},
+                "weighted_tally_display": {"p03": 1.5},
+            },
+            None,
+        ],
+        [
+            {
+                "weighted_tally": {"p03": 3},
+                "vote_weights": {"p01": 3},
+            },
+            None,
+        ],
+    ]
+    script = (
+        f"{match.group(0)}\n"
+        f"const cases = {json.dumps(cases)};\n"
+        "console.log(JSON.stringify(cases.map(([data, base]) => "
+        "voteDisplayTally(data, base))));"
+    )
+
+    result = subprocess.run(
+        ["node", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        {"p03": 1.5},
+        {"p03": 1.5},
+        None,
+    ]
+
+
+def test_dashboard_labels_unknown_v1_vote_units_as_unsupported(
+    dashboard_js,
+) -> None:
+    assert "不支持的旧版票权" in dashboard_js
+    assert "voteDisplayTally(d, data.ruleset_base_vote_weight)" in dashboard_js

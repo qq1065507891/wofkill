@@ -1,8 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
-"""Werewolf day-speech and vote-strategy directive builders.
+"""构建狼人白天发言、投票和夜间行动策略指令。
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-25
     使用示例: 内部模块，无对外接口
 """
 
@@ -12,6 +12,10 @@ import logging
 from typing import Any
 
 from werewolf_agent.core.models import GameState
+from werewolf_agent.runtime.vote_display import (
+    VotePayloadError,
+    decode_vote_resolved_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -362,13 +366,19 @@ def _wolf_endangered_status(gs: GameState, wolf_id: str) -> dict[str, Any]:
         ev_day = e.payload.get("day_number", 0)
         if ev_day != current_day:
             continue
-        tally = e.payload.get("weighted_tally") or {}
+        exiled = e.payload.get("exiled")
+        try:
+            tally = decode_vote_resolved_payload(
+                e.payload
+            ).weighted_tally_units
+        except VotePayloadError:
+            in_danger = exiled == wolf_id
+            break
         if not tally:
             break
         sorted_tally = sorted(tally.items(), key=lambda x: -x[1])
         if sorted_tally:
             top_tally_target = sorted_tally[0][0]
-        exiled = e.payload.get("exiled")
         # 判定: 归票目标是本狼 OR 已被放逐(测试场景) OR 即将被放逐
         in_danger = (top_tally_target == wolf_id) or (exiled == wolf_id)
         break

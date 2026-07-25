@@ -376,6 +376,15 @@ function formatDetail(e) {
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n) + '...' : s; }
 
+function voteDisplayTally(data, rulesetBaseVoteWeight) {
+  if (data.vote_weight_format_version === 2) return data.weighted_tally_display || data.tally_display || {};
+  if (Number.isInteger(rulesetBaseVoteWeight) && rulesetBaseVoteWeight > 0) {
+    const units = data.weighted_tally || data.tally || {};
+    return Object.fromEntries(Object.entries(units).map(([playerId,value]) => [playerId, value / rulesetBaseVoteWeight]));
+  }
+  return null;
+}
+
 function renderVotes(data) {
   const el = document.getElementById('votePanel');
   const events = (data.events || []).filter(e => e.event_type === 'vote_resolved' || e.event_type === 'speech');
@@ -386,7 +395,14 @@ function renderVotes(data) {
   }
   el.innerHTML = votes.map(e => {
     const d = e.data || {};
-    return `<div class="vote-row"><span>${d.voter_id || '?'}</span><span style="color:#58a6ff">${d.target_id || 'abstain'}</span></div>`;
+    const tally = voteDisplayTally(d, data.ruleset_base_vote_weight);
+    if (tally === null) {
+      return '<div class="vote-row"><span>不支持的旧版票权</span><span style="color:#8b949e">legacy base unknown</span></div>';
+    }
+    return Object.entries(tally)
+      .sort((left, right) => right[1] - left[1])
+      .map(([playerId, value]) => `<div class="vote-row"><span>${playerId}</span><span style="color:#58a6ff">${value}票</span></div>`)
+      .join('');
   }).join('') || '<div class="empty-state">暂无投票记录</div>';
 }
 

@@ -3,7 +3,7 @@
 验证真实游戏脚本的报告辅助函数与结构化质量指标。
 
 作者: Project contributors
-修改日期: 2026-07-24
+修改日期: 2026-07-25
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.run_real_game import _safe_event_payload, print_quality_audit
+from scripts.run_real_game_reports import print_game_summary
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 
@@ -37,6 +38,65 @@ def _save_game_log(run_real_game, runner, elapsed, **kwargs):
         quality_score=quality_score,
         **kwargs,
     )
+
+
+def _vote_summary_runner(payload: dict[str, object]) -> SimpleNamespace:
+    state = GameState(
+        game_id="vote_report",
+        phase="ended",
+        events=[GameEvent(type="vote_resolved", payload=payload)],
+    )
+    return SimpleNamespace(state=state, step_count=1)
+
+
+def _v2_report_vote_payload() -> dict[str, object]:
+    return {
+        "vote_weight_format_version": 2,
+        "base_vote_weight": 2,
+        "exiled": "p03",
+        "reason": "majority",
+        "weighted_tally": {"p03": 3},
+        "vote_weights": {"p01": 3},
+        "weighted_tally_units": {"p03": 3},
+        "vote_weight_units": {"p01": 3},
+        "weighted_tally_display": {"p03": 1.5},
+        "vote_weights_display": {"p01": 1.5},
+    }
+
+
+def test_game_summary_renders_v2_display_tally_without_double_division(capsys) -> None:
+    print_game_summary(_vote_summary_runner(_v2_report_vote_payload()))
+
+    output = capsys.readouterr().out
+
+    assert "tally=p03=1.5票" in output
+    assert "p03=3票" not in output
+
+
+def test_game_summary_labels_unknown_v1_vote_units_as_unsupported(capsys) -> None:
+    print_game_summary(_vote_summary_runner({
+        "exiled": "p03",
+        "reason": "majority",
+        "weighted_tally": {"p03": 3},
+        "vote_weights": {"p01": 3},
+    }))
+
+    output = capsys.readouterr().out
+
+    assert "unsupported legacy vote units" in output
+    assert "p03=3票" not in output
+
+
+def test_game_summary_fails_closed_on_conflicting_v2_vote_payload(capsys) -> None:
+    payload = _v2_report_vote_payload()
+    payload["weighted_tally"] = {"p03": 5}
+
+    print_game_summary(_vote_summary_runner(payload))
+
+    output = capsys.readouterr().out
+
+    assert "unsupported vote payload" in output
+    assert "p03=1.5票" not in output
 
 
 def test_runner_config_routes_cli_output_dir_to_emergency_artifacts(tmp_path) -> None:

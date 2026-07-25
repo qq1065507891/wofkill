@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-24
+修改日期: 2026-07-25
 
 使用示例:
     >>> from scripts.run_real_game_reports import print_quality_audit
@@ -18,6 +18,11 @@ from typing import Any
 
 from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
+from werewolf_agent.runtime.vote_display import (
+    VotePayloadError,
+    decode_vote_resolved_payload,
+    format_vote_count,
+)
 
 
 def reflection_verification_metrics(game_state: Any) -> dict[str, int]:
@@ -82,7 +87,11 @@ def print_game_summary(runner: Any) -> None:
             if "speech" in event.type:
                 tag = f"[{event.payload.get('speaker', '?')}] {event.payload.get('text', '')[:80]}"
             elif event.type == "vote_resolved":
-                tag = f"exiled={event.payload.get('exiled')} reason={event.payload.get('reason')}"
+                tag = (
+                    f"exiled={event.payload.get('exiled')} "
+                    f"reason={event.payload.get('reason')} "
+                    f"tally={_render_vote_tally(event.payload)}"
+                )
             elif "wolf_kill" in event.type:
                 tag = f"target={event.payload.get('target_id', '?')}"
             elif event.type == "seer_check":
@@ -96,6 +105,26 @@ def print_game_summary(runner: Any) -> None:
             tag += f" [{visibility}]"
         print(f"    {event.type:30s} {tag}")
     _sep()
+
+
+def _render_vote_tally(payload: Mapping[str, Any]) -> str:
+    """渲染真实票数；历史 V1 缺少基数时不猜测内部单位。"""
+    try:
+        decoded = decode_vote_resolved_payload(payload)
+    except VotePayloadError:
+        return "[unsupported vote payload]"
+    if not decoded.display_supported:
+        return (
+            "[unsupported legacy vote units: "
+            f"{decoded.unsupported_reason}]"
+        )
+    return "、".join(
+        f"{player_id}={format_vote_count(value)}票"
+        for player_id, value in sorted(
+            (decoded.weighted_tally_display or {}).items(),
+            key=lambda item: -item[1],
+        )
+    ) or "(无有效票)"
 
 
 def print_usage_stats(runner: Any) -> None:

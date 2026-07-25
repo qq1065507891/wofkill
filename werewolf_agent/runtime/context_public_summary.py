@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-15
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.runtime.context_public_summary import build_public_summary
@@ -22,6 +22,11 @@ from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
     current_phase_label,
     phase_label,
+)
+from werewolf_agent.runtime.vote_display import (
+    VotePayloadError,
+    decode_vote_resolved_payload,
+    format_vote_count,
 )
 
 
@@ -119,14 +124,19 @@ def _append_vote_resolution(
     exiled = payload.get("exiled")
     reason = payload.get("reason", "")
     tied = payload.get("tied", [])
-    weighted = payload.get("weighted_tally", {})
+    try:
+        decoded = decode_vote_resolved_payload(payload)
+    except VotePayloadError:
+        weighted = {}
+    else:
+        weighted = decoded.weighted_tally_display or {}
     day = payload.get("day_number", "?")
     votes_detail = payload.get("votes", [])
 
     if exiled:
         if weighted:
             tally_str = "、".join(
-                f"{pid}={int(weight)}票"
+                f"{pid}={format_vote_count(weight)}票"
                 for pid, weight in sorted(weighted.items(), key=lambda item: -item[1])[:5]
             )
             summary_items.append((1, f"[放逐] D{day} {exiled}被放逐 ({tally_str})"))

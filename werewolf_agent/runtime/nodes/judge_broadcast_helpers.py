@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.judge_broadcast_helpers import _judge_broadcast
@@ -18,6 +19,10 @@ from typing import Any
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.nodes.runtime_state import RuntimeState
 from werewolf_agent.runtime.timeline import phase_label
+from werewolf_agent.runtime.vote_display import (
+    decode_vote_tally_payload,
+    vote_display_to_json_number,
+)
 
 
 def _judge_broadcast(
@@ -99,11 +104,21 @@ def _generate_judge_message(
         return _message_or_empty(result)
 
     if judge_method == "vote_tally":
+        decoded = decode_vote_tally_payload(ep)
+        if not decoded.display_supported:
+            return ""
+        tally_display = {
+            player_id: vote_display_to_json_number(value)
+            for player_id, value in (decoded.tally_display or {}).items()
+        }
+        sheriff_display = vote_display_to_json_number(
+            decoded.sheriff_weight_display
+        )
         result = judge_agent.announce_vote_tally(
-            tally=ep.get("tally", {}),
+            tally=tally_display,
             player_names=ep.get("player_names", {}),
             sheriff_id=ep.get("sheriff_id"),
-            sheriff_weight=ep.get("sheriff_weight", 1.5),
+            sheriff_weight=sheriff_display,
             day_number=day_number,
         )
         return _message_or_empty(result)

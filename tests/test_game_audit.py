@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证游戏审计脚本的边界检查、事件渲染和版本化票数展示。
+
+作者: Project contributors
+修改日期: 2026-07-25
+"""
+
 from __future__ import annotations
 
 import json
@@ -360,3 +368,86 @@ def test_audit_game_fail_closed_for_unknown_legacy_visibility(capsys) -> None:
     output = capsys.readouterr().out
 
     assert "公开: 0" in output
+
+
+def _v2_audit_vote_payload() -> dict[str, object]:
+    return {
+        "vote_weight_format_version": 2,
+        "base_vote_weight": 2,
+        "exiled": "p03",
+        "reason": "majority",
+        "weighted_tally": {"p03": 3},
+        "vote_weights": {"p01": 3},
+        "weighted_tally_units": {"p03": 3},
+        "vote_weight_units": {"p01": 3},
+        "weighted_tally_display": {"p03": 1.5},
+        "vote_weights_display": {"p01": 1.5},
+    }
+
+
+def test_audit_game_renders_v2_display_tally_without_double_division(capsys) -> None:
+    audit_game({
+        "events": [{
+            "type": "vote_resolved",
+            "payload": _v2_audit_vote_payload(),
+        }],
+    })
+
+    output = capsys.readouterr().out
+
+    assert "p03=1.5票" in output
+    assert "p03=3票" not in output
+
+
+def test_audit_game_labels_unknown_v1_vote_units_as_unsupported(capsys) -> None:
+    audit_game({
+        "events": [{
+            "type": "vote_resolved",
+            "payload": {
+                "exiled": "p03",
+                "reason": "majority",
+                "weighted_tally": {"p03": 3},
+                "vote_weights": {"p01": 3},
+            },
+        }],
+    })
+
+    output = capsys.readouterr().out
+
+    assert "unsupported legacy vote units" in output
+    assert "p03=3票" not in output
+
+
+def test_audit_game_fails_closed_on_conflicting_v2_vote_payload(capsys) -> None:
+    payload = _v2_audit_vote_payload()
+    payload["weighted_tally"] = {"p03": 5}
+    audit_game({"events": [{"type": "vote_resolved", "payload": payload}]})
+
+    output = capsys.readouterr().out
+
+    assert "unsupported vote payload" in output
+    assert "p03=1.5票" not in output
+
+
+def test_markdown_audit_renders_display_tally_and_legacy_status() -> None:
+    v2_report = render_audit_report({
+        "game_id": "v2",
+        "events": [{
+            "type": "vote_resolved",
+            "payload": _v2_audit_vote_payload(),
+        }],
+    })
+    v1_report = render_audit_report({
+        "game_id": "v1",
+        "events": [{
+            "type": "vote_resolved",
+            "payload": {
+                "weighted_tally": {"p03": 3},
+                "vote_weights": {"p01": 3},
+            },
+        }],
+    })
+
+    assert "Vote tally: p03=1.5票" in v2_report
+    assert "p03=3票" not in v2_report
+    assert "unsupported legacy vote units" in v1_report

@@ -3,7 +3,7 @@
 将保存的游戏 JSON 渲染为便于人工检查的详细审计报告。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-25
 
 使用示例:
     python scripts/print_game_audit.py game.json
@@ -23,6 +23,11 @@ sys.path.insert(0, str(ROOT))
 
 from werewolf_agent.core.event_visibility import EventVisibility, event_visibility  # noqa: E402
 from werewolf_agent.runtime.event_metadata import deserialize_game_event  # noqa: E402
+from werewolf_agent.runtime.vote_display import (  # noqa: E402
+    VotePayloadError,
+    decode_vote_resolved_payload,
+    format_vote_count,
+)
 
 
 JUDGE_EVENT_TYPES = {
@@ -99,7 +104,23 @@ def audit_game(data: dict):
     print_section("公开发言", public_speeches, ["speaker", "text"])
     print_section("狼人密谈", wolf_chat, ["wolf_id", "round", "text"])
     print_section("狼队计划", wolf_plans)
-    print_section("投票记录", votes, ["exiled", "reason"])
+    rendered_votes = []
+    ruleset_base = data.get("base_vote_weight")
+    for vote in votes:
+        rendered = dict(vote)
+        payload = dict(vote.get("payload") or {})
+        if vote.get("type") == "vote_resolved":
+            payload["display_tally"] = _render_vote_tally(
+                payload,
+                ruleset_base_vote_weight=ruleset_base,
+            )
+        rendered["payload"] = payload
+        rendered_votes.append(rendered)
+    print_section(
+        "投票记录",
+        rendered_votes,
+        ["exiled", "reason", "display_tally"],
+    )
     print_section("私有行动", private_actions)
     print_section("行动审计", traces, ["player_id", "phase"])
     print_section("回退/重试", fallbacks)
@@ -251,6 +272,15 @@ def render_audit_report(game: dict[str, Any]) -> str:
             continue
         lines.append(f"### Event {index}: {event_type}")
         lines.append("")
+        if event_type == "vote_resolved":
+            lines.append(
+                "Vote tally: "
+                + _render_vote_tally(
+                    event.get("payload") or {},
+                    ruleset_base_vote_weight=game.get("base_vote_weight"),
+                )
+            )
+            lines.append("")
         lines.append("```json")
         lines.append(_json(event.get("payload") or {}))
         lines.append("```")
@@ -427,6 +457,33 @@ def _render_trace(
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _render_vote_tally(
+    payload: dict[str, Any],
+    *,
+    ruleset_base_vote_weight: int | None,
+) -> str:
+    """把结算载荷渲染为实际票数，未知旧版基数时明确标记不支持。"""
+    try:
+        decoded = decode_vote_resolved_payload(
+            payload,
+            ruleset_base_vote_weight=ruleset_base_vote_weight,
+        )
+    except VotePayloadError:
+        return "[unsupported vote payload]"
+    if not decoded.display_supported:
+        return (
+            "[unsupported legacy vote units: "
+            f"{decoded.unsupported_reason}]"
+        )
+    return "、".join(
+        f"{player_id}={format_vote_count(value)}票"
+        for player_id, value in sorted(
+            (decoded.weighted_tally_display or {}).items(),
+            key=lambda item: -item[1],
+        )
+    ) or "(无有效票)"
 
 
 def main() -> None:

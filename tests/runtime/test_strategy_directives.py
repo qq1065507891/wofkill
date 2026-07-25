@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证各角色策略指令及其公开证据、投票单位消费语义。
+
+作者: Project contributors
+修改日期: 2026-07-25
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -1477,6 +1485,63 @@ class TestWolfStrategyDirectives:
         result = _build_wolf_vote_strategy(gs, "w1", plan)
         assert "wolf_vote_target" in result
         assert "v2" in result["wolf_vote_target"]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {
+                "day_number": 2,
+                "weighted_tally": {"w1": 5, "v1": 4},
+                "vote_weights": {"v1": 2},
+            },
+            {
+                "vote_weight_format_version": 2,
+                "base_vote_weight": 2,
+                "day_number": 2,
+                "weighted_tally": {"w1": 5, "v1": 4},
+                "vote_weights": {"v1": 2},
+                "weighted_tally_units": {"w1": 5, "v1": 4},
+                "vote_weight_units": {"v1": 2},
+                "weighted_tally_display": {"w1": 2.5, "v1": 2},
+                "vote_weights_display": {"v1": 1},
+            },
+        ],
+        ids=["v1-legacy-units", "v2-canonical-units"],
+    )
+    def test_wolf_endangered_ranking_consumes_internal_units(
+        self,
+        payload: dict[str, object],
+    ) -> None:
+        from werewolf_agent.runtime.directives.wolf import _wolf_endangered_status
+
+        gs = self._make_wolf_gs(
+            events=[GameEvent(type="vote_resolved", payload=payload)]
+        )
+
+        assert _wolf_endangered_status(gs, "w1")["top_tally_target"] == "w1"
+
+    def test_wolf_endangered_ranking_ignores_conflicting_v2_aliases(self) -> None:
+        from werewolf_agent.runtime.directives.wolf import _wolf_endangered_status
+
+        payload = {
+            "vote_weight_format_version": 2,
+            "base_vote_weight": 2,
+            "day_number": 2,
+            "weighted_tally": {"w1": 5, "v1": 4},
+            "vote_weights": {"v1": 2},
+            "weighted_tally_units": {"w1": 3, "v1": 4},
+            "vote_weight_units": {"v1": 2},
+            "weighted_tally_display": {"w1": 1.5, "v1": 2},
+            "vote_weights_display": {"v1": 1},
+        }
+        gs = self._make_wolf_gs(
+            events=[GameEvent(type="vote_resolved", payload=payload)]
+        )
+
+        status = _wolf_endangered_status(gs, "w1")
+
+        assert status["top_tally_target"] is None
+        assert status["in_danger"] is False
 
     def test_wolf_speech_knows_fake_seer_teammate(self) -> None:
         from werewolf_agent.runtime.agent_adapter import _build_wolf_day_speech_directive
@@ -3821,5 +3886,4 @@ class TestCapStrategyDirectiveBudget:
         )
         for k in list(HARD_CONSTRAINT_KEYS)[:5]:
             assert k in capped, f"HARD {k!r} 被错删"
-
 

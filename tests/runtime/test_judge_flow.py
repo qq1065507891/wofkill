@@ -566,6 +566,87 @@ class TestJudgeStructuredBroadcasts:
         assert "警长1.5票" in payload["message"]
         assert "警长3票" not in payload["message"]
 
+    def test_judge_enabled_vote_tally_uses_display_values_end_to_end(
+        self,
+        monkeypatch,
+    ) -> None:
+        """真实 JudgeAgent 链路只把规范展示票数交给播报构建器。"""
+        from werewolf_agent.agents.judge import JudgeAgent
+        from werewolf_agent.runtime.nodes._shared import _jb
+
+        judge = JudgeAgent(model_router=None)
+        original = judge.announce_vote_tally
+        captured: dict[str, Any] = {}
+
+        def capture_vote_tally(**kwargs):
+            captured["kwargs"] = kwargs
+            result = original(**kwargs)
+            captured["result"] = result
+            return result
+
+        monkeypatch.setattr(judge, "announce_vote_tally", capture_vote_tally)
+        state = self._make_state_with_judge()
+        state["judge_agent"] = judge
+        _, event = _jb(
+            state,
+            phase="vote_result",
+            message="安全回退",
+            day_number=2,
+            judge_method="vote_tally",
+            extra_payload={
+                "vote_weight_format_version": 2,
+                "base_vote_weight": 2,
+                "tally": {"p03": 5},
+                "tally_units": {"p03": 5},
+                "tally_display": {"p03": 2.5},
+                "sheriff_weight": 3,
+                "sheriff_weight_units": 3,
+                "sheriff_weight_display": 1.5,
+                "player_names": {"p03": "p03"},
+                "sheriff_id": None,
+            },
+        )
+
+        assert captured["kwargs"]["tally"] == {"p03": 2.5}
+        assert captured["result"].public_data["tally_top_votes"] == 2.5
+        assert "p03: 2.5票" in event.payload["message"]
+        assert "p03: 5票" not in event.payload["message"]
+
+    def test_judge_vote_tally_fails_closed_on_conflicting_v2_aliases(
+        self,
+        monkeypatch,
+    ) -> None:
+        from werewolf_agent.agents.judge import JudgeAgent
+        from werewolf_agent.runtime.nodes._shared import _jb
+
+        judge = JudgeAgent(model_router=None)
+
+        def unexpected_vote_tally(**_kwargs):
+            raise AssertionError("冲突载荷不得进入法官播报构建器")
+
+        monkeypatch.setattr(judge, "announce_vote_tally", unexpected_vote_tally)
+        state = self._make_state_with_judge()
+        state["judge_agent"] = judge
+        _, event = _jb(
+            state,
+            phase="vote_result",
+            message="安全回退",
+            day_number=2,
+            judge_method="vote_tally",
+            extra_payload={
+                "vote_weight_format_version": 2,
+                "base_vote_weight": 2,
+                "tally": {"p03": 5},
+                "tally_units": {"p03": 6},
+                "tally_display": {"p03": 3},
+                "sheriff_weight": 3,
+                "sheriff_weight_units": 3,
+                "sheriff_weight_display": 1.5,
+            },
+        )
+
+        assert event.payload["message"] == "安全回退"
+
     # -- Exile announcement --
 
     def test_exile_result_with_player(self):

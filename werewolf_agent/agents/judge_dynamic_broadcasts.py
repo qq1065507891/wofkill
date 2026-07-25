@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-08
+修改日期: 2026-07-25
 
 使用示例:
     >>> build_sheriff_result_broadcast(None, lambda p, t: (p, None), None, "torn").broadcast_type
@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from decimal import Decimal
 
 from werewolf_agent.agents.schemas import JudgeBroadcast
 from werewolf_agent.model_gateway.router import ModelRouter
 from werewolf_agent.runtime.timeline import phase_label
+from werewolf_agent.runtime.vote_display import format_vote_count
 
 logger = logging.getLogger(__name__)
 
@@ -171,19 +173,25 @@ def build_vote_tally_broadcast(
     for pid, weight in sorted(tally.items(), key=lambda item: -item[1]):
         name = player_names.get(pid, pid)
         is_sheriff = pid == sheriff_id
-        mark = f"（警长{sheriff_weight}票）" if is_sheriff else ""
-        lines.append(f"  {name}: {weight}票{mark}")
+        weight_text = format_vote_count(Decimal(str(weight)))
+        sheriff_text = format_vote_count(Decimal(str(sheriff_weight)))
+        mark = f"（警长{sheriff_text}票）" if is_sheriff else ""
+        lines.append(f"  {name}: {weight_text}票{mark}")
     fallback = f"{label} 投票结果：\n" + "\n".join(lines) if lines else f"{label} 投票结束。"
     public_data: dict[str, str | int | float | bool] = {
-        "tally_count": int(sum(tally.values())),
+        "tally_count": sum(tally.values()),
         "tally_top_id": max(tally.items(), key=lambda item: item[1])[0] if tally else "",
         "tally_top_votes": max(tally.values()) if tally else 0,
     }
     if model_router is not None:
         try:
             tally_text = "；".join(
-                f"{player_names.get(pid, pid)} {weight}票"
-                + (f"（警长{sheriff_weight}票）" if pid == sheriff_id else "")
+                f"{player_names.get(pid, pid)} "
+                f"{format_vote_count(Decimal(str(weight)))}票"
+                + (
+                    f"（警长{format_vote_count(Decimal(str(sheriff_weight)))}票）"
+                    if pid == sheriff_id else ""
+                )
                 for pid, weight in sorted(tally.items(), key=lambda item: -item[1])
             )
             prompt = (
