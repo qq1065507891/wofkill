@@ -1,290 +1,276 @@
 # Werewolf Agent
 
-Werewolf Agent 是一个面向 12 人「预女猎白混」狼人杀规则的多智能体实验项目。项目目标是把游戏裁判、玩家智能体、认知状态、RAG 策略参考、长期记忆和评测回放拆成可测试、可复现的模块。
+Werewolf Agent 是一个面向 12 人「预女猎白混」规则的多智能体狼人杀实验项目。项目将确定性裁判、玩家与法官智能体、认知状态、RAG、跨局记忆、评测审计和 Observer Dashboard 组织为可测试、可复现的模块。
 
-当前规则权威来自：
+项目的首要边界是：**规则真值只来自 `RuleEngine` 与当前规则集**。LLM 输出、玩家发言、RAG 案例和长期记忆只能影响策略，不能覆盖角色能力、结算顺序、投票结果或胜负判定。
 
-- `docs/design/werewolf-agent-v1-design.md`
-- `config/rulesets/pre_witch_hunter_idiot_mixed.yaml`
+当前规则依据：
 
-外部资料、RAG 案例和玩家发言只能作为策略参考，不能覆盖 RuleEngine 的确定性裁判结果。
+- [V1 设计文档](docs/design/werewolf-agent-v1-design.md)
+- [预女猎白混规则集](config/rulesets/pre_witch_hunter_idiot_mixed.yaml)
 
-## 功能概览
+## 核心能力
 
-- 确定性 `RuleEngine`：角色分配、夜间结算、白天投票、警长、白痴翻牌、猎人开枪、胜负判断。
-- LangGraph 运行时：编排夜晚、白天、发言、投票、自爆、胜负检查和 checkpoint。
-- `GameRunner` 对局编排器：串联 LangGraph + RuleEngine + 持久化，支持全量运行和逐步推进。
-- 玩家/法官智能体接口：结构化行动输出、非法行动重试、安全 fallback、公开广播。
-- 认知流水线：可见事实、注意力、显著性、信念更新、矛盾检测和策略选择。
-- RAG 边界：策略案例可注入，基础规则真值和裁判结论禁止进入 RAG。支持 SiliconFlow 语义嵌入 + Reranker。
-- 记忆系统：认知矩阵、关系图、玩家画像、复盘报告和跨局经验。自动持久化到 SQLite。
-- API 视图：public、player_view、moderator_full 分层权限与审计。HMAC session 认证。
-- 评测实验：批量对局、指标聚合（含语音影响力、认知压缩率等）、replay 验证和 leaderboard 报告。
-- 观战台：增强版 dashboard，含认知差异图、RAG 命中面板、模型/人格路由面板、成本延迟追踪。
+- **确定性裁判**：角色分配、夜间结算、警长竞选、白天投票、平票复投、白痴翻牌、猎人开枪和胜负判断。
+- **多智能体运行时**：使用 LangGraph 编排夜晚、白天、公开发言、投票、技能、自爆、checkpoint 和终局复盘。
+- **任务专用输出契约**：公开发言、讨论摘要、投票、狼人协作和赛后 Reflection 使用各自的 Schema、验证与 fallback 边界。
+- **公开证据与隐私隔离**：公开声明只能引用可见事件；玩家私有状态、狼人协作内容和被拒绝的模型草稿不会进入公开事件。
+- **认知与策略**：可见事实、注意力、显著性、信念更新、矛盾检测、策略技能和 suggestion-only RAG。
+- **记忆与复盘**：认知矩阵、关系图、玩家画像、结构化 Reflection、匿名化和跨局经验持久化。
+- **API 与观战台**：FastAPI 提供 public、player_view、moderator_full 分层视图，Dashboard 展示时间线、投票、认知、RAG、模型路由和调用成本。
+- **评测与审计**：支持单局质量评分、批量平衡分析、回放、语义安全指标和结构化审计报告。
+
+## 当前关键契约
+
+### 投票单位与显示
+
+规则层使用整数“半票单位”避免浮点裁判：普通玩家为 `2` 单位，警长为 `3` 单位。规则比较、平票和放逐判定始终使用整数单位；日志、事件、API 和 Dashboard 对外显示为实际 `1` 票和 `1.5` 票。
+
+新版投票事件同时保留 `*_units` 与实际票数字段，并带 `base_vote_weight`。消费者通过统一 helper 读取，兼容旧事件且不会重复换算。
+
+### Discussion Summary
+
+内部讨论摘要使用独立的 `TaskType.DISCUSSION_SUMMARY` 和 `DiscussionSummary` Schema：
+
+- 不进入公开 `SPEECH` 质量门；
+- 不产生公开发言事件；
+- 模型失败时使用确定性摘要；
+- 私有摘要只进入当前玩家的策略上下文，并以哈希/计数形式参与暴露审计。
+
+### Public Speech Repair
+
+公开发言重试会累计质量门和公开证据门产生的结构化约束。后续尝试必须同时保留目标、允许的公开证据及禁止声明；被拒绝的原始文本和 correction hint 不会写入持久 trace。重试耗尽后只允许生成基于公开事实的安全 fallback。
+
+### Reflection
+
+赛后复盘直接生成严格的 `ReflectionDraft`，不再借用通用 `PlayerAction` 或 `SPEECH` 管线。草稿通过 Schema 校验、事实验证、匿名化和质量门后才可持久化；失败日志只保留安全错误码、字段路径和错误类型。
+
+### 指标支持状态
+
+依赖完整事件集的 fallback 指标会显式报告支持状态。遇到 `json_item_limit_exceeded`、部分事件导出或缺失事件时：
+
+- 指标值为 `null`，不会伪装成 `0`；
+- `fallback_metrics_supported=false`；
+- `fallback_metrics_unsupported_reason` 记录原因；
+- stdout 诊断与正式结构化指标保持分离。
 
 ## 目录结构
 
 ```text
 werewolf_agent/
-  agents/            # 玩家与法官智能体接口
-  api/               # FastAPI 视图、权限和响应模型
-  cognition/         # 认知流水线
-  core/              # 核心数据模型
-  engine/            # 确定性规则引擎
-  evaluation/        # 批量评测、指标和报告
-  memory/            # 游戏内外记忆
-  model_gateway/     # 模型路由和调用抽象
-  rag/               # 案例摄取、检索和注入
-  runtime/           # LangGraph 游戏流程
-  skills/            # 策略技能注册与执行
-  storage/           # 持久化：Repository 接口、内存和 SQLite 实现
-  ui/                # Observer Dashboard 静态文件
-
-config/              # 规则集、模型和 persona 配置
-docs/                # 设计文档和开发说明
-harness/             # 开发控制台账、计划和检查清单
+  agents/            # 玩家、法官、任务 Schema 与重试契约
+  api/               # FastAPI 工厂、路由、权限和视图
+  cognition/         # 认知状态、信念和矛盾检测
+  core/              # 核心游戏数据模型与事件可见性
+  engine/            # RuleEngine 与确定性规则结算
+  evaluation/        # 质量、平衡、验收和审计指标
+  memory/            # 游戏内记忆、Reflection 与跨局经验
+  model_gateway/     # Provider、路由、重试和结构化输出
+  rag/               # 策略案例检索和 suggestion-only 注入
+  runtime/           # LangGraph 游戏流程与节点
+  skills/            # 策略技能注册和执行
+  storage/           # 内存、SQLite 和 PostgreSQL Repository
+  ui/                # Observer Dashboard 静态资源
+config/              # 规则集、模型路由和 persona 配置
+docs/                # 设计、操作、审计和实施文档
+scripts/             # 真实对局、审计、平衡分析和诊断脚本
 tests/               # pytest 测试套件
 ```
 
-## 环境准备
+## 快速开始
 
-项目使用 Conda 环境，配置文件在根目录：
+### 1. 创建环境
+
+项目使用 Python 3.12。推荐通过 Conda 安装：
 
 ```powershell
 conda env create -f environment.yml
 conda activate wofkill
 ```
 
-如果环境已经存在，可以更新：
+已有环境可以更新：
 
 ```powershell
 conda env update -f environment.yml --prune
 ```
 
-## 运行测试
+### 2. 配置环境变量
+
+```powershell
+Copy-Item .env.example .env
+```
+
+在本地 `.env` 中填写 `config/models.yaml` 当前路由所需的 Provider key。不要提交 `.env` 或任何真实凭据。
+
+常用变量：
+
+| 变量 | 用途 |
+| --- | --- |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic-compatible Provider |
+| `GLM_API_KEY` / `GLM_BASE_URL` | GLM/OpenAI-compatible Provider |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI-compatible 或 Ark 路由 |
+| `WEREWOLF_MODEL_CONFIG` | 模型路由配置，默认 `config/models.yaml` |
+| `WEREWOLF_STORAGE_BACKEND` | `sqlite` 或 `postgres` |
+| `POSTGRES_DSN` | PostgreSQL 连接串 |
+| `WEREWOLF_VECTOR_BACKEND` | RAG 向量后端，如 `pgvector` |
+| `SILICONFLOW_API_KEY` | 可选语义嵌入与 reranker |
+
+Provider、模型和玩家分配以 [config/models.yaml](config/models.yaml) 为准，不应在应用代码或 README 中硬编码。
+
+### 3. 运行测试
 
 ```powershell
 python -m pytest -q
 ```
 
-在当前开发环境中也可以直接使用：
+Windows 默认临时目录出现 `WinError 5` 时，改用仓库内可写目录：
 
 ```powershell
-D:/Miniforge3/envs/wofkill/python.exe -m pytest -q
+python -m pytest -q -o addopts='' --basetemp .tmp/pytest
 ```
 
-## Observer Dashboard
-
-启动 API 后访问浏览器查看 Dashboard：
+常用聚焦测试：
 
 ```powershell
-uvicorn werewolf_agent.api.app:create_app --factory --reload
-# 浏览器打开 http://localhost:8000/
-```
-
-Dashboard 功能：
-
-- 左侧边栏：游戏列表、创建新游戏
-- 中间面板：当前阶段、12 人玩家状态、死亡记录、投票记录、事件时间线
-- 右侧面板（Moderator/Debug 模式）：私有审计（角色信息）、认知差异可视化、模型路由信息、RAG/记忆审计
-- 顶部切换 Public / Player View / Moderator / Debug 视角
-- Pause/Resume 控制按钮
-
-权限：Public 模式不显示任何私密信息；Moderator/Debug 模式需要 `caller_id=mod1` 或 `dbg1` 并设置对应角色。
-
-```powershell
-# Dashboard 测试
+python -m pytest tests/rules/test_rule_engine_v1.py -q
+python -m pytest tests/api/test_api.py -q
 python -m pytest tests/ui/test_dashboard.py -q
+python -m pytest tests/scripts/test_run_real_game.py -q
 ```
 
-## Docker 快速启动
+## 启动 API 与 Dashboard
 
-```bash
-# 构建并启动 API + PostgreSQL/pgvector
-docker compose up
-
-# 访问观战台
-# http://localhost:18000
-
-# 包含 Redis 的完整启动
-docker compose --profile with-redis up
-
-# 如需改宿主机端口
-WEREWOLF_API_PORT=8000 docker compose up
-```
-
-## 生产部署
-
-完整的生产部署文档见 [docs/operations/deployment-guide.md](docs/operations/deployment-guide.md)，涵盖 Docker Compose 编排、环境变量配置、存储后端选择（SQLite/PostgreSQL）、模型路由、健康检查、备份策略和扩展方案。生产环境推荐使用 PostgreSQL + pgvector 后端，并替换默认的 `WEREWOLF_AUTH_SECRET` 和数据库密码。
-
-## V1.1 硬化边界
-
-V1.1 增加了本地运行硬化和生产适配边界，但默认开发路径仍保持轻量：
-
-- Runtime：`LocalRuntimeExecutor` 提供单进程 per-game lock、后台运行状态和 paused-game step 拦截。多进程部署使用 `RedisRuntimeExecutor`（V1.2 新增）。
-- Redis：`RedisRuntimeExecutor` 提供分布式 per-game 锁（TTL + 刷新）和 JSON 状态追踪，Redis 不可用时优雅降级。
-- Runtime 同步调用 Agent；实际网络边界由 provider HTTP timeout 控制，运行时不再维护流程 deadline 或计时器。
-- MCP：`TransportMCPProvider` 可以包装真实 transport，但 MCP 结果仍统一标注为 suggestion-only。
-- RAG：`create_vector_store()` 支持 `auto`、`local`、`embedding`、`siliconflow`、`pgvector`；Qdrant 不启用。
-- Storage：`ProductionStorageConfig` / `create_game_repository()` 支持 SQLite 和 PostgreSQL；Docker 默认使用 `pgvector/pgvector:pg16`。
-
-## 持久化模式
-
-API 默认使用内存存储（进程退出后数据丢失）。可通过 `repository` 参数启用持久化：
-
-```python
-from werewolf_agent.api.app import create_app
-from werewolf_agent.storage.sqlite_store import SqliteGameRepository
-
-# 内存模式（默认）
-app = create_app()
-
-# SQLite 持久化模式
-repo = SqliteGameRepository("data/games.db")
-app = create_app(repository=repo)
-```
-
-`GameRepository` 协议定义了统一接口：`save_game`、`load_game`、`append_events`、`load_events`、`save_deaths`、`save_model_usage`、`save_evaluation`、`save_config_snapshot` 等。`InMemoryGameRepository` 用于测试，`SqliteGameRepository` 用于本地持久化开发。设计文档 §13 允许 V1 先用 SQLite 或本地文件做开发替代，接口边界按准生产设计。
+本地开发默认使用内存存储，进程退出后数据丢失：
 
 ```powershell
-# 持久化测试
-python -m pytest tests/storage/test_storage.py -q
+uvicorn werewolf_agent.api.app:create_app --factory --reload --port 8000
 ```
+
+浏览器访问 <http://localhost:8000/>。
+
+需要本地 SQLite 时：
+
+```powershell
+$env:WEREWOLF_DB_PATH = "data/wofkill.db"
+uvicorn werewolf_agent.api.app:create_app --factory --reload --port 8000
+```
+
+Dashboard 支持 Public、Player View、Moderator 和 Debug 视图。开发环境预置的主持人调用方为 `mod1`，调试调用方为 `dbg1`；生产部署必须设置安全的 `WEREWOLF_AUTH_SECRET` 并按部署策略管理身份。
+
+## Docker Compose
+
+Docker 默认启动 API 与 PostgreSQL/pgvector，并将宿主机 `18000` 映射到容器 `8000`：
+
+```powershell
+docker compose up --build
+```
+
+访问 <http://localhost:18000/>。
+
+启用 Redis 适配器：
+
+```powershell
+docker compose --profile with-redis up --build
+```
+
+修改宿主机端口：
+
+```powershell
+$env:WEREWOLF_API_PORT = "8000"
+docker compose up --build
+```
+
+详细生产配置、健康检查、备份和存储选择见 [部署指南](docs/operations/deployment-guide.md)。`docker-compose.yml` 中的开发密码和默认鉴权 secret 不适用于生产环境。
+
+## 运行真实 12 人对局
+
+真实对局会调用外部模型，可能持续较长时间并消耗 Provider 额度。先确认 `.env` 与 `config/models.yaml` 匹配；当前 CLI 预检还要求至少设置 `ANTHROPIC_API_KEY` 或 `GLM_API_KEY`。
+
+```powershell
+python scripts/run_real_game.py `
+  --seed 42 `
+  --max-steps 500 `
+  --output-dir artifacts/real-game
+```
+
+可用参数：
+
+```powershell
+python scripts/run_real_game.py --help
+```
+
+- `--game-id`：显式指定本次运行 ID；默认由 seed 生成。
+- `--delay -1`：取消额外的调用间延迟；不会绕过 Provider timeout 或重试。
+- `--output-dir`：隔离本局 JSON 产物，推荐真实验收时总是指定。
+
+只有完整结束并生成正式 JSON 的新对局，才能作为生产行为改善的验收证据。进程超时、人工终止或仅有 stdout 片段时，应标记为未完成。
+
+## 对局产物与审计
+
+### 单局 JSON
+
+真实对局写入：
+
+```text
+<output-dir>/game_<game-id>.json
+```
+
+高 fallback 且指标受支持的低质量对局可能写入 `<output-dir>/low_quality_games/`。JSON 包含终局状态、玩家、死亡、事件、耗时、步数、质量指标和 acceptance 支持状态。
+
+### 运行日志
+
+`scripts/run_real_game.py` 默认把详细运行日志写入仓库根目录 `game_stdout.log`。可以通过 `WEREWOLF_GAME_LOG_PATH` 指定其他位置：
+
+```powershell
+$env:WEREWOLF_GAME_LOG_PATH = "artifacts/real-game/game_stdout.log"
+```
+
+stdout 可用于诊断 Provider 重试和运行阶段，但不能替代缺失的结构化事件指标。
+
+### 审计报告
+
+```powershell
+python scripts/print_game_audit.py artifacts/real-game/game_g_42.json
+python scripts/print_game_audit.py artifacts/real-game/game_g_42.json `
+  --output artifacts/real-game/game_g_42-audit.md
+```
+
+批量平衡分析：
+
+```powershell
+python scripts/analyze_recent_balance.py `
+  artifacts/real-game/game_g_42.json `
+  artifacts/real-game/game_g_43.json
+```
+
+报告消费者必须读取 `*_supported` 和 `*_unsupported_reason`，不能把 `null` 转成零。
+
+## 存储与 RAG
+
+`create_app()` 的存储选择顺序：
+
+1. 设置 `WEREWOLF_STORAGE_BACKEND` 时使用生产存储工厂；
+2. 仅设置 `WEREWOLF_DB_PATH` 时使用 SQLite；
+3. 均未设置时使用内存存储。
+
+Docker Compose 默认使用 PostgreSQL。Repository 接口统一覆盖游戏状态、事件、死亡、模型用量、评测和配置快照。
+
+RAG 始终是策略建议，不是规则来源。`WEREWOLF_VECTOR_BACKEND` 未配置或外部向量服务不可用时，运行时会使用可用的本地/规则 fallback；任何 RAG 内容都不能修改裁判真值。
 
 ## 开发约束
 
-- RuleEngine 是裁判真值来源；LLM、RAG、外部案例不能修改规则判断。
-- 玩家视角不能看到 `moderator_full`、其他玩家私有状态、隐藏身份或禁用夜间信息。
-- 狼队可以主动空刀；真实 Agent/transport 失败或共识不满足时按安全策略空刀。
-- 只有 `wolf_kill_selected` 会向女巫暴露当前夜刀口；主动空刀和安全失败空刀不会产生可救刀口。
-- 白天满足前置条件的发言者同步调用 Agent，并在结果记录后推进发言队列。
-- 评测 replay 必须使用记录中的 `ruleset_snapshot` 复原规则。
+- `RuleEngine` 与规则集是唯一裁判真值来源。
+- 所有公开内容必须通过 `EventVisibility` 和公开证据边界。
+- 玩家不能读取其他玩家私有状态、隐藏身份或禁用的夜间信息。
+- 兼容迁移应保留现有 facade、re-export 和旧事件读取能力。
+- Provider 错误、被拒绝草稿和 correction hint 不得进入公开日志或持久审计。
+- 依赖事件全集的指标必须先检查支持状态。
+- 不提交 `.env`、Provider key、数据库凭据、pytest 缓存或生成的游戏日志。
 
-## 评测报告导出
+## 进一步阅读
 
-评测系统支持 JSON 报告导出，可供 Observer Dashboard 或外部工具消费：
-
-```python
-from werewolf_agent.evaluation.metrics import MetricsAggregator
-from werewolf_agent.evaluation.reports import ReportGenerator
-from werewolf_agent.evaluation.schemas import BatchConfig
-
-# 运行批量对局
-config = BatchConfig(batch_id="my_experiment", num_games=10)
-# ... run games and collect results ...
-
-# 计算指标并导出
-agg = MetricsAggregator(config)
-agg.add_results(results)
-snap = agg.compute_snapshot()
-
-gen = ReportGenerator()
-gen.add_snapshot(snap)
-full_report = gen.export_full_report(snap)
-
-# full_report 是 JSON-serializable dict
-import json
-print(json.dumps(full_report, indent=2, ensure_ascii=False))
-```
-
-导出内容包括：
-- `metrics`: 完整指标快照（阵营胜率、玩家/角色指标、质量指标、安全指标、成本指标、成长曲线、溯源信息）
-- `leaderboard`: 排行榜（含 overall_score、win_rate、stance_accuracy 等）
-- `provenance`: 每个指标的溯源信息（计算方法、数据来源、贡献游戏数）
-
-## 常用命令
-
-```powershell
-# 全量测试
-python -m pytest -q
-
-# 规则引擎测试
-python -m pytest tests/rules/test_rule_engine_v1.py -q
-
-# API 权限测试
-python -m pytest tests/api/test_api.py -q
-
-# 运行本地 API 示例
-uvicorn werewolf_agent.api.app:create_app --factory --reload
-```
-
-## 模型 Provider 与 API Key
-
-真实模型调用通过 `ModelRouter` 统一接入。`config/models.yaml` 只保存 provider、model、玩家和法官的路由配置，不保存密钥。
-
-本地复制 `.env.example` 为 `.env`，填写需要使用的 provider：
-
-```env
-ANTHROPIC_API_KEY=你的 MiniMax key
-ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic
-WEREWOLF_USE_LLM_AGENTS=1
-WEREWOLF_STORAGE_BACKEND=postgres
-POSTGRES_DSN=postgresql://wofkill:wofkill-dev@localhost:5432/wofkill
-WEREWOLF_VECTOR_BACKEND=pgvector
-PGVECTOR_DSN=postgresql://wofkill:wofkill-dev@localhost:5432/wofkill
-```
-
-当前 `config/models.yaml` 已将 12 名玩家和 judge 都配置到 Anthropic-compatible provider，模型名为 `MiniMax-M2.7`。
-
-在代码里启用真实 provider：
-
-```python
-from werewolf_agent.model_gateway.router import ModelRouter
-
-router = ModelRouter.from_yaml(
-    "config/models.yaml",
-    register_env_providers=True,
-)
-```
-
-玩家模型在 `config/models.yaml` 的 `players` 中配置：
-
-```yaml
-players:
-  p01:
-    persona_id: logic_leader
-    llm_profile: minimax_default
-  p02:
-    persona_id: aggressive_bluffer
-    llm_profile: minimax_default
-```
-
-法官也使用同一个模型路由，当前已配置为虚拟 agent：
-
-```yaml
-players:
-  judge:
-    persona_id: judge
-    llm_profile: minimax_default
-```
-
-使用法官时传入同一个 router：
-
-```python
-from werewolf_agent.agents.judge import JudgeAgent
-
-judge = JudgeAgent(model_router=router)
-```
-
-当前内置 provider：
-
-- `anthropic`: Anthropic-compatible Messages API，当前指向 MiniMax `ANTHROPIC_BASE_URL`
-- `glm`: OpenAI-compatible Chat Completions，保留为可选扩展
-- `openai`: OpenAI Chat Completions，保留为可选扩展
-
-### 真实 Provider 冒烟测试
-
-默认测试套件不会调用真实模型。需要主动设置环境变量后，才会运行真实 provider smoke test：
-
-```powershell
-$env:WEREWOLF_RUN_REAL_LLM_SMOKE = "1"
-$env:ANTHROPIC_API_KEY = "..."
-$env:ANTHROPIC_BASE_URL = "https://api.minimaxi.com/anthropic"
-D:/Miniforge3/envs/wofkill/python.exe -m pytest tests/integration/test_real_llm_smoke.py -q --basetemp .pytest-tmp
-```
-
-该测试只验证真实 provider 能通过 `ModelRouter` 和 `PlayerAgent` 的 schema/fallback 边界，不作为完整 12 人真实 LLM 对局验收。
-
-## Git
-
-本仓库忽略 Python 缓存、pytest 缓存、虚拟环境、本地 `.env` 和覆盖率输出。不要提交本地密钥、供应商 API key 或机器相关路径。
+- [V1 系统设计](docs/design/werewolf-agent-v1-design.md)
+- [生产部署指南](docs/operations/deployment-guide.md)
+- [规则集配置](config/rulesets/pre_witch_hunter_idiot_mixed.yaml)
+- [模型路由配置](config/models.yaml)
+- [环境变量示例](.env.example)
