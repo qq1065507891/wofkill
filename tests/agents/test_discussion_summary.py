@@ -39,6 +39,37 @@ def test_discussion_summary_forbids_unknown_fields() -> None:
         })
 
 
+@pytest.mark.parametrize(
+    ("field", "coercible_value"),
+    [
+        ("suspected_players", ("p03",)),
+        ("trusted_players", {"p02"}),
+        ("evidence_refs", ("event-7",)),
+    ],
+)
+def test_discussion_summary_rejects_coercible_container_types(
+    field: str,
+    coercible_value: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        DiscussionSummary.model_validate({
+            **_v2_payload(),
+            field: coercible_value,
+        })
+
+
+def test_unversioned_coercible_mapping_does_not_upgrade() -> None:
+    payload = _v2_payload()
+    payload["suspected_players"] = ("p03",)
+    state = {"discussion_positions": {"p01": payload}}
+
+    assert discussion_summary_for_player(state, "p01") is None
+    assert "discussion_positions_version" not in state
+    assert state["discussion_positions"]["p01"]["suspected_players"] == (
+        "p03",
+    )
+
+
 def test_legacy_summary_string_upgrades_to_v2() -> None:
     state = {
         "discussion_positions": {
@@ -92,6 +123,22 @@ def test_v2_version_schema_conflict_fails_closed() -> None:
 
     assert discussion_summary_for_player(state, "p01") is None
     assert state["discussion_positions"]["p01"] == "legacy string"
+
+
+def test_explicit_v2_global_mapping_conflict_fails_closed() -> None:
+    state = {
+        "discussion_positions_version": 2,
+        "discussion_positions": {
+            "p01": _v2_payload(),
+            "p02": "legacy string conflicts with explicit V2",
+        },
+    }
+
+    assert discussion_summary_for_player(state, "p01") is None
+    assert state["discussion_positions"]["p01"] == _v2_payload()
+    assert state["discussion_positions"]["p02"] == (
+        "legacy string conflicts with explicit V2"
+    )
 
 
 def test_unknown_explicit_version_fails_closed() -> None:

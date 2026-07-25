@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from werewolf_agent.agents.discussion_summary import (
     DiscussionSummary,
     DiscussionSummaryGenerationError,
@@ -159,11 +161,16 @@ def test_summarize_positions_uses_internal_summary_contract(monkeypatch) -> None
     assert [event.type for event in gs.events] == ["speech"]
 
 
-def test_summarize_positions_records_safe_deterministic_fallback(monkeypatch) -> None:
+def test_summarize_positions_records_safe_deterministic_fallback(
+    monkeypatch,
+    caplog,
+) -> None:
+    sensitive_marker = "PRIVATE_PROVIDER_PAYLOAD_MARKER"
+
     class _FailingAgent:
         @staticmethod
         def summarize_discussion(_context: AgentContext) -> DiscussionSummary:
-            raise RuntimeError("private provider response must not enter audit")
+            raise RuntimeError(sensitive_marker)
 
     class _Registry:
         @staticmethod
@@ -193,12 +200,16 @@ def test_summarize_positions_records_safe_deterministic_fallback(monkeypatch) ->
         ],
     )
 
-    result = summarize_positions({
-        "game_state": gs,
-        "engine": object(),
-        "agent_registry": _Registry(),
-        "agent_call_delay_ms": -1,
-    })
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="werewolf_agent.runtime.nodes.summary",
+    ):
+        result = summarize_positions({
+            "game_state": gs,
+            "engine": object(),
+            "agent_registry": _Registry(),
+            "agent_call_delay_ms": -1,
+        })
 
     payload = result["discussion_positions"]["p01"]
     summary = DiscussionSummary.model_validate(payload)
@@ -210,9 +221,12 @@ def test_summarize_positions_records_safe_deterministic_fallback(monkeypatch) ->
         "outcome": "deterministic_fallback",
         "failure_code": "model_failure",
     }]
-    assert "private provider response" not in str(
+    assert sensitive_marker not in str(
         result["discussion_summary_audit_records"]
     )
+    assert sensitive_marker not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "model_failure" in caplog.text
 
 
 def test_summarize_positions_normalizes_unsafe_failure_code(monkeypatch) -> None:

@@ -145,9 +145,9 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
         except Exception:
             failure_code = "model_failure"
             logger.debug(
-                "Discussion summary failed for %s; using deterministic fallback",
+                "Discussion summary failed for %s with %s; using deterministic fallback",
                 pid,
-                exc_info=True,
+                failure_code,
             )
 
         if summary is None:

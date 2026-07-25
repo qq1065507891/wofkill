@@ -33,7 +33,7 @@ _SAFE_FAILURE_CODES = frozenset({
 class DiscussionSummary(BaseModel):
     """单个玩家对当天公开讨论的内部结构化整理。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     summary: str
     suspected_players: list[str] = Field(default_factory=list)
@@ -79,7 +79,10 @@ def discussion_summary_for_player(
         version = state.get("discussion_positions_version")
         if type(version) is not int or version != 2:
             return None
-        return _validate_summary(positions[player_id])
+        validated = _validate_v2_positions(positions)
+        if validated is None:
+            return None
+        return validated[player_id]
 
     upgraded = _upgrade_unversioned_positions(positions)
     if upgraded is not None:
@@ -122,16 +125,30 @@ def _upgrade_unversioned_positions(
             player_id: DiscussionSummary(summary=value).model_dump()
             for player_id, value in positions.items()
         }
-    if not all(isinstance(value, Mapping) for value in positions.values()):
+    validated = _validate_v2_positions(positions)
+    if validated is None:
         return None
 
-    upgraded: dict[str, dict[str, Any]] = {}
+    return {
+        player_id: summary.model_dump()
+        for player_id, summary in validated.items()
+    }
+
+
+def _validate_v2_positions(
+    positions: Mapping[str, Any],
+) -> dict[str, DiscussionSummary] | None:
+    """严格校验整个显式 V2 映射，任一冲突即全局 fail closed。"""
+
+    if not all(isinstance(value, Mapping) for value in positions.values()):
+        return None
+    validated: dict[str, DiscussionSummary] = {}
     for player_id, value in positions.items():
         summary = _validate_summary(value)
         if summary is None:
             return None
-        upgraded[player_id] = summary.model_dump()
-    return upgraded
+        validated[player_id] = summary
+    return validated
 
 
 def _validate_summary(value: Any) -> DiscussionSummary | None:
