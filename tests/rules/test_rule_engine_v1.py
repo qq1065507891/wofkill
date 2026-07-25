@@ -3,7 +3,7 @@
 验证 RuleEngine V1 兼容行为与 V2 结构化结算输出。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-25
 """
 
 from __future__ import annotations
