@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from werewolf_agent.agents.schemas import ActionType, FallbackAction, TaskType
+from werewolf_agent.agents.schemas import FallbackAction, TaskType
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.context import _merge_strategy_directive, build_agent_context
 from werewolf_agent.runtime.reflection_prompt import build_reflection_prompt
@@ -88,7 +88,7 @@ def _agent_reflection(
 
         context = build_context(
             engine, gs, player_id, TaskType.REFLECTION,
-            legal_actions=[ActionType.SPEECH],
+            legal_actions=[],
             restored_memory=state.get("restored_memory"),
             cognition_state_manager=state.get("cognition_state_manager"),
         )
@@ -109,30 +109,14 @@ def _agent_reflection(
         context = _strip_in_game_directives(context)
         context = merge_directive(context, reflection_directive)
 
-        action, _retry_info = agent.act(context)
-        terminal_verification = _terminal_reflection_verification(action)
-        if terminal_verification is not None:
-            return {"reflection_verification": terminal_verification}
-        raw_draft = getattr(action, "speech", "") or ""
         from werewolf_agent.memory.reflection_sanitization import (
             anonymize_player_ids_recursive,
         )
         from werewolf_agent.memory.reflection_synthesis import (
-            parse_reflection_draft,
             verify_reflection_draft,
         )
 
-        draft = parse_reflection_draft(raw_draft)
-        if draft is None:
-            return {"reflection_verification": {
-                "status": "invalid_structured_draft",
-                "verified_fact_count": 0,
-                "verified_claim_ids": [],
-                "rejected_claim_ids": [],
-                "verified_lessons": [],
-                "rejected_fact_count": 0,
-                "rejected_lesson_count": 0,
-            }}
+        draft = agent.generate_reflection(context, reflection_task)
         verification = verify_reflection_draft(draft, gs)
         return {"reflection_verification": {
             "status": "verified",
@@ -157,10 +141,29 @@ def _agent_reflection(
             "rejected_fact_count": verification.rejected_fact_count,
             "rejected_lesson_count": verification.rejected_lesson_count,
         }}
-    except Exception:
-        logger.warning("Reflection failed for %s", player_id, exc_info=True)
+    except Exception as exc:
+        failure_code = str(getattr(exc, "failure_code", "agent_error"))
+        if failure_code == "invalid_structured_draft":
+            return {"reflection_verification": {
+                "status": "invalid_structured_draft",
+                "failure_code": failure_code,
+                "failure_stage": "schema_validated",
+                "verified_fact_count": 0,
+                "verified_claim_ids": [],
+                "rejected_claim_ids": [],
+                "verified_lessons": [],
+                "rejected_fact_count": 0,
+                "rejected_lesson_count": 0,
+            }}
+        logger.warning(
+            "Reflection generation failed for %s code=%s",
+            player_id,
+            failure_code,
+        )
         return {"reflection_verification": {
             "status": "agent_error",
+            "failure_code": failure_code,
+            "failure_stage": "generated",
             "verified_fact_count": 0,
             "verified_claim_ids": [],
             "rejected_claim_ids": [],

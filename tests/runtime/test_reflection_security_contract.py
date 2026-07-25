@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from werewolf_agent.agents.schemas import ActionType, AgentContext, PlayerAction
+from werewolf_agent.agents.schemas import AgentContext
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.memory.reflection_synthesis import (
     ReflectionClaim,
@@ -91,7 +91,10 @@ def test_agent_reflection_verifies_real_ids_before_anonymization(monkeypatch) ->
 
     class Agent:
         def act(self, context):
-            return PlayerAction(action_type=ActionType.SPEECH, speech=draft), None
+            raise AssertionError("reflection must not use the PlayerAction pipeline")
+
+        def generate_reflection(self, context, prompt):
+            return ReflectionDraft.model_validate_json(draft)
 
     class Registry:
         def get_agent(self, player_id):
@@ -111,6 +114,31 @@ def test_agent_reflection_verifies_real_ids_before_anonymization(monkeypatch) ->
         "历史玩家B 质疑 历史玩家A 时应先比较替代解释",
     ]
     assert draft not in json.dumps(result, ensure_ascii=False)
+
+
+def test_agent_reflection_reports_invalid_draft_without_provider_text(monkeypatch) -> None:
+    from werewolf_agent.agents.player import ReflectionDraftGenerationError
+
+    def fake_context(engine, gs, player_id, task_type, **kwargs):
+        return AgentContext(agent_id=player_id, task_type=task_type)
+
+    class Agent:
+        def generate_reflection(self, context, prompt):
+            raise ReflectionDraftGenerationError("invalid_structured_draft")
+
+    class Registry:
+        def get_agent(self, player_id):
+            return Agent()
+
+    monkeypatch.setattr(agent_adapter, "build_agent_context", fake_context)
+    result = agent_adapter._agent_reflection(
+        {"game_state": _state()}, engine=None, registry=Registry(), player_id="p01",
+    )
+
+    verification = result["reflection_verification"]
+    assert verification["status"] == "invalid_structured_draft"
+    assert verification["failure_code"] == "invalid_structured_draft"
+    assert "provider" not in json.dumps(verification, ensure_ascii=False)
 
 
 def test_reflection_complete_contains_only_moderator_safe_verification(monkeypatch) -> None:

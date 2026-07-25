@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-玩家 Agent public facade，保留身份、persona、fallback 和解析辅助入口。
+玩家 Agent public facade，提供行动、讨论摘要与赛后反思的窄生成入口。
 作者：Mike
 创建日期：2025-01-15
 修改日期：2026-07-25
@@ -28,6 +28,7 @@ from werewolf_agent.agents.discussion_summary import (
     DiscussionSummaryGenerationError,
     discussion_summary_tool,
 )
+from werewolf_agent.memory.reflection_synthesis import ReflectionDraft
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
@@ -91,6 +92,22 @@ _SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS = (
     "not_voting_reason",
     "private_reason",
 )
+
+class ReflectionDraftGenerationError(RuntimeError):
+    """携带稳定安全码的赛后反思生成失败。"""
+
+    def __init__(
+        self,
+        failure_code: str,
+        *,
+        field_paths: tuple[str, ...] = (),
+        error_types: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(failure_code)
+        self.failure_code = failure_code
+        self.field_paths = field_paths
+        self.error_types = error_types
+
 
 class PlayerAgent:
     """Schema-constrained player agent with retry and fallback.
@@ -193,6 +210,56 @@ class PlayerAgent:
             raise DiscussionSummaryGenerationError(
                 "schema_validation_failed"
             ) from exc
+
+    def generate_reflection(
+        self,
+        context: AgentContext,
+        prompt: str,
+    ) -> ReflectionDraft:
+        """直接生成严格的赛后反思草稿，不进入 PlayerAction 流程。"""
+        if context.task_type is not TaskType.REFLECTION:
+            raise ReflectionDraftGenerationError("task_contract_mismatch")
+        reflection_schema = json.dumps(
+            ReflectionDraft.model_json_schema(),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        reflection_system_prompt = (
+            "只输出符合下列 ReflectionDraft JSON Schema 的对象，禁止附加解释：\n"
+            f"{reflection_schema}"
+        )
+        last_validation_error: ValidationError | None = None
+        for _attempt in range(self.max_retries):
+            try:
+                result = self.model_router.generate(
+                    agent_id=self.agent_id,
+                    task_type=TaskType.REFLECTION.value,
+                    prompt=prompt,
+                    system_prompt=reflection_system_prompt,
+                    structured_output_mode="text_json",
+                )
+            except Exception as exc:
+                raise ReflectionDraftGenerationError(
+                    "model_generation_failed"
+                ) from exc
+            raw_text = str(getattr(result, "text", "") or "").strip()
+            if not raw_text:
+                continue
+            try:
+                return ReflectionDraft.model_validate_json(raw_text)
+            except ValidationError as exc:
+                last_validation_error = exc
+        if last_validation_error is not None:
+            errors = last_validation_error.errors(include_input=False)
+            raise ReflectionDraftGenerationError(
+                "invalid_structured_draft",
+                field_paths=tuple(
+                    ".".join(str(item) for item in error["loc"])
+                    for error in errors
+                ),
+                error_types=tuple(str(error["type"]) for error in errors),
+            )
+        raise ReflectionDraftGenerationError("empty_response")
 
     _attach_persona_snapshot = attach_persona_snapshot
     _record_persona_exposure = staticmethod(record_persona_exposure)
