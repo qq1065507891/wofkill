@@ -178,6 +178,7 @@ def test_vote_display_tally_supports_v1_v2_and_unknown_legacy_base(
         ["node", "-e", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -194,3 +195,127 @@ def test_dashboard_labels_unknown_v1_vote_units_as_unsupported(
 ) -> None:
     assert "不支持的旧版票权" in dashboard_js
     assert "voteDisplayTally(d, data.ruleset_base_vote_weight)" in dashboard_js
+
+
+def _run_vote_renderer(dashboard_js: str, vote_data_expression: str) -> dict:
+    """在最小可执行 DOM 中调用真实 renderVotes 并返回节点快照。"""
+    start = dashboard_js.index("function voteDisplayTally")
+    end = dashboard_js.index("// -- Moderator Data --", start)
+    functions = dashboard_js[start:end]
+    script = f"""
+class FakeElement {{
+  constructor(tagName) {{
+    this.tagName = tagName;
+    this.className = '';
+    this.children = [];
+    this.innerHTML = '';
+    this._textContent = '';
+    this.style = {{}};
+  }}
+  set textContent(value) {{
+    this._textContent = String(value);
+    this.children = [];
+  }}
+  get textContent() {{
+    return this._textContent + this.children.map(child => child.textContent).join('');
+  }}
+  append(...children) {{
+    this.children.push(...children);
+  }}
+  replaceChildren(...children) {{
+    this.innerHTML = '';
+    this._textContent = '';
+    this.children = [...children];
+  }}
+}}
+const votePanel = new FakeElement('div');
+const document = {{
+  createElement: tagName => new FakeElement(tagName),
+  getElementById: id => {{
+    if (id !== 'votePanel') throw new Error(`unexpected element: ${{id}}`);
+    return votePanel;
+  }},
+}};
+{functions}
+renderVotes({{
+  events: [{{
+    event_type: 'vote_resolved',
+    data: {vote_data_expression},
+  }}],
+}});
+function snapshot(node) {{
+  return {{
+    tagName: node.tagName,
+    className: node.className,
+    textContent: node._textContent,
+    children: node.children.map(snapshot),
+  }};
+}}
+console.log(JSON.stringify({{
+  innerHTML: votePanel.innerHTML,
+  textContent: votePanel.textContent,
+  children: votePanel.children.map(snapshot),
+}}));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_vote_rows_render_malicious_player_id_as_text(dashboard_js) -> None:
+    malicious_id = '<img src=x onerror="globalThis.pwned=true">'
+    rendered = _run_vote_renderer(
+        dashboard_js,
+        json.dumps({
+            "vote_weight_format_version": 2,
+            "weighted_tally_display": {malicious_id: 1.5},
+        }),
+    )
+
+    assert rendered["innerHTML"] == ""
+    assert rendered["children"] == [{
+        "tagName": "div",
+        "className": "vote-row",
+        "textContent": "",
+        "children": [
+            {
+                "tagName": "span",
+                "className": "",
+                "textContent": malicious_id,
+                "children": [],
+            },
+            {
+                "tagName": "span",
+                "className": "vote-count",
+                "textContent": "1.5票",
+                "children": [],
+            },
+        ],
+    }]
+
+
+@pytest.mark.parametrize(
+    "value_expression",
+    ["Infinity", "-1", "{amount: 1.5}"],
+    ids=["non-finite", "negative", "object"],
+)
+def test_vote_rows_fail_closed_for_unsafe_display_values(
+    dashboard_js,
+    value_expression: str,
+) -> None:
+    rendered = _run_vote_renderer(
+        dashboard_js,
+        (
+            "{vote_weight_format_version: 2, "
+            f"weighted_tally_display: {{p03: {value_expression}}}}}"
+        ),
+    )
+
+    assert rendered["innerHTML"] == ""
+    assert rendered["textContent"] == "不支持的投票载荷"

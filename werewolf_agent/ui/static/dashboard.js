@@ -385,25 +385,72 @@ function voteDisplayTally(data, rulesetBaseVoteWeight) {
   return null;
 }
 
+function safeVoteDisplayEntries(tally) {
+  if (typeof tally !== 'object' || tally === null || Array.isArray(tally)) return null;
+  const prototype = Object.getPrototypeOf(tally);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const entries = Object.entries(tally);
+  if (!entries.every(([_, value]) => typeof value === 'number' && Number.isFinite(value) && value >= 0)) return null;
+  return entries.sort((left, right) => right[1] - left[1]);
+}
+
+function voteRowElement(playerId, value) {
+  const row = document.createElement('div');
+  row.className = 'vote-row';
+  const player = document.createElement('span');
+  player.textContent = playerId;
+  const count = document.createElement('span');
+  count.className = 'vote-count';
+  count.style.color = '#58a6ff';
+  count.textContent = `${value}票`;
+  row.append(player, count);
+  return row;
+}
+
+function voteStatusElement(message, detail = '') {
+  const row = document.createElement('div');
+  row.className = detail ? 'vote-row' : 'empty-state';
+  const messageNode = document.createElement('span');
+  messageNode.textContent = message;
+  row.append(messageNode);
+  if (detail) {
+    const detailNode = document.createElement('span');
+    detailNode.style.color = '#8b949e';
+    detailNode.textContent = detail;
+    row.append(detailNode);
+  }
+  return row;
+}
+
 function renderVotes(data) {
   const el = document.getElementById('votePanel');
   const events = (data.events || []).filter(e => e.event_type === 'vote_resolved' || e.event_type === 'speech');
   const votes = events.filter(e => e.event_type === 'vote_resolved');
   if (!votes.length) {
     const speeches = events.filter(e => e.event_type === 'speech');
-    if (!speeches.length) { el.innerHTML = '<div class="empty-state">暂无投票记录</div>'; return; }
+    if (!speeches.length) {
+      el.replaceChildren(voteStatusElement('暂无投票记录'));
+      return;
+    }
   }
-  el.innerHTML = votes.map(e => {
+  const rows = [];
+  votes.forEach(e => {
     const d = e.data || {};
     const tally = voteDisplayTally(d, data.ruleset_base_vote_weight);
     if (tally === null) {
-      return '<div class="vote-row"><span>不支持的旧版票权</span><span style="color:#8b949e">legacy base unknown</span></div>';
+      rows.push(voteStatusElement('不支持的旧版票权', 'legacy base unknown'));
+      return;
     }
-    return Object.entries(tally)
-      .sort((left, right) => right[1] - left[1])
-      .map(([playerId, value]) => `<div class="vote-row"><span>${playerId}</span><span style="color:#58a6ff">${value}票</span></div>`)
-      .join('');
-  }).join('') || '<div class="empty-state">暂无投票记录</div>';
+    const entries = safeVoteDisplayEntries(tally);
+    if (entries === null) {
+      rows.push(voteStatusElement('不支持的投票载荷'));
+      return;
+    }
+    entries.forEach(([playerId, value]) => {
+      rows.push(voteRowElement(playerId, value));
+    });
+  });
+  el.replaceChildren(...(rows.length ? rows : [voteStatusElement('暂无投票记录')]));
 }
 
 // -- Moderator Data --
