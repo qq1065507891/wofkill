@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-23
+修改日期: 2026-07-25
 
 使用示例:
     内部运行时节点模块。
@@ -39,6 +39,10 @@ from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.evaluation.balance_public_claims import (
     public_speech_history,
     sanitize_public_text,
+)
+from werewolf_agent.runtime.vote_display import (
+    format_vote_count,
+    vote_units_to_display,
 )
 
 
@@ -177,22 +181,35 @@ def _broadcast_vote_details(
     )
     sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
     # 构造票型统计，用于结构化法官公告。
-    tally: dict[str, float] = {}
+    tally: dict[str, int] = {}
     vote_lines = []
     engine = state.get("engine")
+    base_vote_weight = (
+        engine.base_vote_weight()
+        if isinstance(engine, RuleEngine)
+        else 2
+    )
     sheriff_vote_weight = (
         engine.sheriff_vote_weight()
         if isinstance(engine, RuleEngine)
-        else 1.5
+        else 3
+    )
+    sheriff_display = vote_units_to_display(
+        sheriff_vote_weight,
+        base_vote_weight=base_vote_weight,
     )
     for voter_id, target_id in votes.items():
         weight = (
             engine.vote_weight(gs, voter_id)
             if isinstance(engine, RuleEngine)
-            else (1.5 if voter_id == sheriff_id else 1.0)
+            else (sheriff_vote_weight if voter_id == sheriff_id else base_vote_weight)
         )
-        tally[target_id] = tally.get(target_id, 0.0) + weight
-        weight_label = f" (警长{sheriff_vote_weight}票)" if voter_id == sheriff_id else ""
+        tally[target_id] = tally.get(target_id, 0) + weight
+        weight_label = (
+            f" (警长{format_vote_count(sheriff_display)}票)"
+            if voter_id == sheriff_id
+            else ""
+        )
         vote_lines.append(
             f"{_player_display(state, voter_id)}{weight_label} 投票给 {_player_display(state, target_id)}"
         )
@@ -210,10 +227,22 @@ def _broadcast_vote_details(
         visibility="public",
         judge_method="vote_tally",
         extra_payload={
+            "vote_weight_format_version": 2,
+            "base_vote_weight": base_vote_weight,
             "tally": tally,
             "player_names": player_names,
             "sheriff_id": sheriff_id,
             "sheriff_weight": sheriff_vote_weight,
+            "tally_units": tally,
+            "sheriff_weight_units": sheriff_vote_weight,
+            "tally_display": {
+                target_id: vote_units_to_display(
+                    units,
+                    base_vote_weight=base_vote_weight,
+                )
+                for target_id, units in tally.items()
+            },
+            "sheriff_weight_display": sheriff_display,
         },
     )
     return gs
@@ -242,8 +271,8 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
     base_vote_weight = engine.base_vote_weight()
     sheriff_vote_weight = engine.sheriff_vote_weight()
-    weighted_tally: dict[str, float] = {}
-    vote_weights: dict[str, float] = {}
+    weighted_tally: dict[str, int] = {}
+    vote_weights: dict[str, int] = {}
     if votes:
         for voter_id, target_id in votes.items():
             weight = engine.vote_weight(gs, voter_id)
@@ -251,7 +280,9 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
             weighted_tally[target_id] = weighted_tally.get(target_id, 0) + weight
         tally_items = sorted(weighted_tally.items(), key=lambda x: -x[1])
         tally_text = "  投票统计: " + ", ".join(
-            f"{_player_display(state, t)}:{v}票" for t, v in tally_items
+            f"{_player_display(state, target_id)}:"
+            f"{format_vote_count(vote_units_to_display(units, base_vote_weight=base_vote_weight))}票"
+            for target_id, units in tally_items
         )
     else:
         tally_text = "  投票统计: 无有效票"
@@ -303,6 +334,8 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
             vote["redacted_public_claims"] = redacted_claims
         public_votes.append(vote)
     payload: dict[str, Any] = {
+        "vote_weight_format_version": 2,
+        "base_vote_weight": base_vote_weight,
         "exiled": result.exiled_player_id,
         "reason": result.reason,
         "day_number": gs.day_number,
@@ -310,6 +343,22 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         "sheriff_vote_weight": sheriff_vote_weight if sheriff_id else base_vote_weight,
         "weighted_tally": weighted_tally,
         "vote_weights": vote_weights,
+        "weighted_tally_units": weighted_tally,
+        "vote_weight_units": vote_weights,
+        "weighted_tally_display": {
+            target_id: vote_units_to_display(
+                units,
+                base_vote_weight=base_vote_weight,
+            )
+            for target_id, units in weighted_tally.items()
+        },
+        "vote_weights_display": {
+            voter_id: vote_units_to_display(
+                units,
+                base_vote_weight=base_vote_weight,
+            )
+            for voter_id, units in vote_weights.items()
+        },
         "votes": public_votes,
     }
     if result.tied_player_ids:

@@ -511,17 +511,45 @@ class TestJudgeStructuredBroadcasts:
 
     def test_vote_tally_includes_weighted_counts(self):
         """Vote tally broadcast includes structured tally in extra_payload."""
-        from werewolf_agent.runtime.nodes._shared import _jb
-        state = self._make_state_with_judge()
-        gs = state["game_state"]
-        tally = {"p02": 3.0, "p05": 1.5}
-        names = {"p02": "玩家2", "p05": "玩家5"}
-        _, ev = _jb(
-            state, phase="vote_result", message="投票结果",
-            gs=gs, judge_method="vote_tally",
-            extra_payload={"tally": tally, "player_names": names},
+        from werewolf_agent.runtime.graph import _new_engine
+        from werewolf_agent.runtime.nodes.day_vote import _broadcast_vote_details
+
+        players = {
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="werewolf", alive=True),
+        }
+        gs = GameState(
+            game_id="vote_tally_v2",
+            phase="day",
+            day_number=2,
+            players=players,
+            sheriff_id="p01",
+            sheriff_badge_state="active",
         )
-        assert ev.type == "judge_broadcast"
+        state = {
+            "game_state": gs,
+            "engine": _new_engine(),
+            "judge_llm_enabled": False,
+        }
+
+        gs_now = _broadcast_vote_details(
+            state,
+            gs,
+            {"p01": "p03", "p02": "p02"},
+        )
+        event = gs_now.events[-1]
+        payload = event.payload
+
+        assert event.type == "judge_broadcast"
+        assert payload["vote_weight_format_version"] == 2
+        assert payload["base_vote_weight"] == 2
+        assert payload["tally"] == payload["tally_units"] == {"p03": 3, "p02": 2}
+        assert payload["sheriff_weight"] == payload["sheriff_weight_units"] == 3
+        assert payload["tally_display"] == {"p03": 1.5, "p02": 1}
+        assert payload["sheriff_weight_display"] == 1.5
+        assert "警长1.5票" in payload["message"]
+        assert "警长3票" not in payload["message"]
 
     # -- Exile announcement --
 

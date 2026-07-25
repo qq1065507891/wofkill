@@ -295,10 +295,17 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
     })
 
     vote_event = next(event for event in result["game_state"].events if event.type == "vote_resolved")
-    assert vote_event.payload["sheriff_id"] == "p01"
-    assert vote_event.payload["sheriff_vote_weight"] == 3
-    assert vote_event.payload["weighted_tally"] == {"p03": 3, "p02": 2}
-    assert vote_event.payload["vote_weights"] == {"p01": 3, "p02": 2}
+    payload = vote_event.payload
+    assert payload["vote_weight_format_version"] == 2
+    assert payload["base_vote_weight"] == 2
+    assert payload["sheriff_id"] == "p01"
+    assert payload["sheriff_vote_weight"] == 3
+    assert payload["weighted_tally"] == {"p03": 3, "p02": 2}
+    assert payload["vote_weights"] == {"p01": 3, "p02": 2}
+    assert payload["weighted_tally_units"] == payload["weighted_tally"]
+    assert payload["vote_weight_units"] == payload["vote_weights"]
+    assert payload["weighted_tally_display"] == {"p03": 1.5, "p02": 1}
+    assert payload["vote_weights_display"] == {"p01": 1.5, "p02": 1}
 
 def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:
     from werewolf_agent.runtime.graph import resolve_vote
