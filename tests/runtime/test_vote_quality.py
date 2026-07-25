@@ -18,13 +18,52 @@ from werewolf_agent.runtime.vote_quality import (
 
 
 def test_day_vote_passes_runtime_state_to_discussion_accessor() -> None:
-    import inspect
+    from werewolf_agent.agents.schemas import (
+        ActionType,
+        PlayerAction,
+        RetryInfo,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.agent_adapter import agent_day_vote
+    from werewolf_agent.runtime.nodes.runtime_state import _new_engine
 
-    from werewolf_agent.runtime.agent_day_vote_actions import agent_day_vote
+    gs = GameState(
+        game_id="vote-summary-upgrade",
+        day_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="villager"),
+        },
+    )
+    state = {
+        "game_state": gs,
+        "discussion_positions": {"p01": "legacy summary"},
+    }
 
-    source = inspect.getsource(agent_day_vote)
+    class _Agent:
+        @staticmethod
+        def act(context):
+            assert "legacy summary" in context.internal_discussion_summary
+            return PlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p02",
+                reason="p02发言前后矛盾",
+                suspect_reason="p02发言前后矛盾",
+                not_voting_reason="没有其他合法候选",
+                candidate_comparison="p02是唯一合法候选",
+                private_reason="我投p02",
+            ), RetryInfo()
 
-    assert "discussion_state=state" in source
+    class _Registry:
+        @staticmethod
+        def get_agent(_player_id):
+            return _Agent()
+
+    result = agent_day_vote(state, _new_engine(), _Registry(), "p01")
+
+    assert result["vote_target"] == "p02"
+    assert state["discussion_positions_version"] == 2
+    assert state["discussion_positions"]["p01"]["summary"] == "legacy summary"
 
 
 class TestVoteBasisValidator:

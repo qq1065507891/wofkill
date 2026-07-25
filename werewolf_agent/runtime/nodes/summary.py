@@ -200,8 +200,13 @@ def _build_deterministic_summary(
             detail += f" 想投{v}"
             vote_targets.append((str(speaker), v))
         parts.append(detail)
-        suspected_players.extend(pid for pid in s if pid not in suspected_players)
-        trusted_players.extend(pid for pid in t if pid not in trusted_players)
+        if speaker == player_id:
+            suspected_players.extend(
+                pid for pid in s if pid not in suspected_players
+            )
+            trusted_players.extend(
+                pid for pid in t if pid not in trusted_players
+            )
         evidence_ref = ev.event_id or ev.payload.get("source_event_id")
         if evidence_ref and str(evidence_ref) not in evidence_refs:
             evidence_refs.append(str(evidence_ref))
@@ -213,7 +218,9 @@ def _build_deterministic_summary(
     return DiscussionSummary(
         summary="\n".join(parts) if parts else "今日无有效发言",
         suspected_players=suspected_players,
-        trusted_players=trusted_players,
+        trusted_players=[
+            pid for pid in trusted_players if pid not in suspected_players
+        ],
         vote_target=own_vote,
         evidence_refs=evidence_refs,
     )

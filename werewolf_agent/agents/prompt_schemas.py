@@ -62,7 +62,8 @@ class AgentContext(BaseModel):
     # belief_state, cognition_matrix_hint, contradiction_alerts,
     # day_number, hybrid_master_faction, legal_actions, legal_targets,
     # night_number, own_role, persona_snapshot, phase,
-    # private_memory_caveat, private_memory_hints, profile_memory_hint,
+    # internal_discussion_summary, private_memory_caveat,
+    # private_memory_hints, profile_memory_hint,
     # public_summary, rag_hints, recent_transcript,
     # reflection_memory_hints, salience_items, skill_analyses,
     # skill_analysis_hints, strategy_directive, task_type,
@@ -75,6 +76,11 @@ class AgentContext(BaseModel):
     day_number: int = 0
     night_number: int = 0
     public_summary: str = ""
+    internal_discussion_summary: str = Field(
+        default="",
+        exclude=True,
+        description="仅供当前玩家决策的讨论总结，不得作为公开证据。",
+    )
     own_role: str | None = None
     # P1-2: hybrid's master faction ("good" or "werewolf") — set by
     # runtime from gs.hybrid_master_faction. Controls whether the

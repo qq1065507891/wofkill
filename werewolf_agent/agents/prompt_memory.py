@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_memory import PromptMemoryMixin
@@ -38,8 +39,15 @@ class PromptMemoryMixin:
         # which caused duplicate injection if both fields were populated
         # and risked surfacing stale data from an older code path.
         memory = ctx.private_memory_hints
+        private_parts: list[str] = []
+        if ctx.internal_discussion_summary:
+            private_parts.append(
+                f"{ctx.internal_discussion_summary}\n"
+                "以上是你的私有策略整理，不是权威公开记录；"
+                "公开发言中的事实仍须由公开游戏概况或近期发言支持。"
+            )
         if not memory:
-            return ""
+            return "\n\n".join(private_parts)
         # P0-M1: prepend a "本局·第N轮·私有记忆" label so the LLM cannot
         # confuse this section with cross-game reflection memory or
         # with public speech.
@@ -58,7 +66,7 @@ class PromptMemoryMixin:
             caveat_block = f"---\n{caveat}\n---\n"
         else:
             caveat_block = ""
-        return (
+        private_parts.append(
             f"【本局·{day_label}·私有记忆】以下只代表你在本局形成的观察、站边和私有思考，"
             "不是公开记录。"
             "【严禁】在公开发言中复述以下任何角色身份信息或暗示你从私有记忆中获知的身份。"
@@ -66,6 +74,7 @@ class PromptMemoryMixin:
             + caveat_block
             + self._compact_json(memory)
         )
+        return "\n\n".join(private_parts)
 
     def _build_rag_hints(self) -> str:
         return build_rag_hints(self.context)

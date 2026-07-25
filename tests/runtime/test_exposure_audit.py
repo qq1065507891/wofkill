@@ -425,6 +425,29 @@ def test_collector_records_prompt_injection_rows_without_raw_content() -> None:
     assert "werewolf" not in str(events[0].payload)
 
 
+def test_internal_discussion_summary_is_audited_as_viewer_private() -> None:
+    collector = ModuleExposureAuditCollector()
+    private_summary = "PRIVATE_DISCUSSION_SUMMARY_SENTINEL"
+    context = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        internal_discussion_summary=private_summary,
+    )
+
+    collector.record_prompt_injections(_identity(), context)
+
+    rows = collector.flush_events()[0].payload["injections"]
+    row = next(
+        item
+        for item in rows
+        if item["field_path"] == "internal_discussion_summary"
+    )
+    assert row["injected"] is True
+    assert row["visibility_scope"] == "viewer_private"
+    assert row["injection_kind"] == "memory_section"
+    assert private_summary not in str(row)
+
+
 def test_persona_exposure_can_be_recorded_after_prompt_visible_attachment() -> None:
     agent = PlayerAgent(
         agent_id="p01",

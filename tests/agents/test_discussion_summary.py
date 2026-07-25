@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-25
+修改日期: 2026-07-25
 
 使用示例:
     >>> python -m pytest tests/agents/test_discussion_summary.py -q
@@ -19,6 +20,10 @@ from werewolf_agent.agents.discussion_summary import (
     discussion_summary_for_player,
     discussion_summary_text,
 )
+from werewolf_agent.agents.player import PlayerAgent
+from werewolf_agent.agents.schemas import AgentContext, TaskType
+from werewolf_agent.model_gateway.router import ModelRouter
+from werewolf_agent.model_gateway.usage_records import GenerateResult
 
 
 def _v2_payload(summary: str = "我怀疑p03") -> dict[str, object]:
@@ -189,3 +194,80 @@ def test_text_projection_is_deterministic_and_excludes_private_fields() -> None:
     )
     assert "private" not in first.lower()
     assert "我是狼人" not in first
+
+
+def test_text_json_provider_request_contains_exact_narrow_schema() -> None:
+    class _CapturingProvider:
+        name = "capture"
+
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+
+        def generate(
+            self,
+            prompt,
+            config,
+            system_prompt=None,
+            tools=None,
+            tool_choice=None,
+            final_prompt_observer=None,
+        ):
+            self.requests.append({
+                "prompt": prompt,
+                "mode": config.structured_output_mode,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            })
+            return GenerateResult(
+                text=DiscussionSummary(
+                    summary="p02发言前后矛盾。",
+                    suspected_players=["p02"],
+                    vote_target="p02",
+                    evidence_refs=["speech-1"],
+                ).model_dump_json(),
+                provider=self.name,
+                model=config.model,
+            )
+
+    provider = _CapturingProvider()
+    router = ModelRouter(
+        model_profiles={
+            "summary_model": {
+                "model": "summary-model",
+                "structured_output": {"mode": "text_json"},
+                "reasoning": {"level": "medium"},
+                "retry_count": 0,
+            },
+        },
+        llm_profiles={
+            "player": {
+                "tasks": {
+                    "discussion_summary": {
+                        "provider": "capture",
+                        "model_profile": "summary_model",
+                    },
+                },
+            },
+        },
+        player_assignments={"p01": "player"},
+        providers={"capture": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router)
+
+    summary = agent.summarize_discussion(AgentContext(
+        agent_id="p01",
+        task_type=TaskType.DISCUSSION_SUMMARY,
+        strategy_directive={"transcript_text": "[p02]: 我怀疑p03。"},
+    ))
+
+    request = provider.requests[0]
+    prompt = str(request["prompt"])
+    assert summary.vote_target == "p02"
+    assert request["mode"] == "text_json"
+    assert request["tool_choice"] is None
+    assert '"additionalProperties": false' in prompt
+    assert '"required": ["summary"]' in prompt
+    for field in DiscussionSummary.model_fields:
+        assert f'"{field}"' in prompt
+    for generic_field in ("action_type", "speech", "reason", "private_intent"):
+        assert f'"{generic_field}"' not in prompt

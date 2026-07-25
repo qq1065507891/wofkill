@@ -229,6 +229,69 @@ def test_summarize_positions_records_safe_deterministic_fallback(
     assert "model_failure" in caplog.text
 
 
+def test_deterministic_fallback_personalizes_stance_fields(monkeypatch) -> None:
+    class _FailingAgent:
+        @staticmethod
+        def summarize_discussion(_context: AgentContext) -> DiscussionSummary:
+            raise RuntimeError("model unavailable")
+
+    class _Registry:
+        @staticmethod
+        def get_agent(_player_id: str) -> _FailingAgent:
+            return _FailingAgent()
+
+    monkeypatch.setattr(
+        "werewolf_agent.runtime.nodes.summary.build_agent_context",
+        lambda _engine, _gs, player_id, task_type, **_kwargs: AgentContext(
+            agent_id=player_id,
+            task_type=task_type,
+        ),
+    )
+    gs = GameState(
+        game_id="summary-personal-fallback",
+        day_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="villager"),
+            "p03": PlayerState(id="p03", role="villager"),
+        },
+        events=[
+            GameEvent(
+                "speech",
+                {
+                    "speaker": "p01",
+                    "text": "我认好p03。",
+                    "day_number": 1,
+                },
+            ),
+            GameEvent(
+                "speech",
+                {
+                    "speaker": "p02",
+                    "text": "我怀疑p03，我投票p03。",
+                    "day_number": 1,
+                },
+            ),
+        ],
+    )
+
+    result = summarize_positions({
+        "game_state": gs,
+        "engine": object(),
+        "agent_registry": _Registry(),
+        "agent_call_delay_ms": -1,
+    })
+
+    p01 = DiscussionSummary.model_validate(
+        result["discussion_positions"]["p01"]
+    )
+    assert "p01:" in p01.summary
+    assert "p02:" in p01.summary
+    assert p01.trusted_players == ["p03"]
+    assert p01.suspected_players == []
+    assert p01.vote_target is None
+
+
 def test_summarize_positions_normalizes_unsafe_failure_code(monkeypatch) -> None:
     class _FailingAgent:
         @staticmethod

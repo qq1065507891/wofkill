@@ -222,7 +222,7 @@ def build_agent_context(
     transcript = build_recent_transcript(gs)
     public_summary = build_public_summary(gs)
 
-    # ── 玩家自己的讨论摘要（模型结果或确定性 fallback） ──
+    # ── 玩家自己的讨论摘要（私有策略记忆，不属于公开记录） ──
     summary_state: MutableMapping[str, Any] = (
         discussion_state
         if discussion_state is not None
@@ -231,8 +231,11 @@ def build_agent_context(
     own_summary = discussion_summary_text(
         discussion_summary_for_player(summary_state, player_id)
     )
-    if own_summary:
-        public_summary += f"\n\n--- 你对今日讨论的总结 (D{gs.day_number}) ---\n{own_summary}"
+    internal_discussion_summary = (
+        f"【私有策略记忆·今日讨论总结 D{gs.day_number}】\n{own_summary}"
+        if own_summary
+        else ""
+    )
 
     # Build contradiction alerts and belief state from world state
     ctx_alerts: list[dict[str, Any]] = []
@@ -538,6 +541,7 @@ def build_agent_context(
         legal_actions=legal_actions,
         legal_targets=legal_targets,
         public_summary=public_summary,
+        internal_discussion_summary=internal_discussion_summary,
         public_claim_ledger=build_public_claim_text_ledger(gs),
         visible_world_state=visible,
         private_memory_hints=private_memory_hints,

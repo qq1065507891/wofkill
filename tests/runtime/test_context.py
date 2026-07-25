@@ -3497,6 +3497,9 @@ def test_summarize_positions_passes_memory_context_managers() -> None:
 
 
 def test_context_projects_v2_discussion_summary_through_accessor() -> None:
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.schemas import RetryInfo
+    from werewolf_agent.runtime.context_public_summary import build_public_summary
     from werewolf_agent.runtime.nodes.runtime_state import _new_engine
 
     gs = GameState(
@@ -3523,15 +3526,63 @@ def test_context_projects_v2_discussion_summary_through_accessor() -> None:
         },
     )
 
+    assert context.public_summary == build_public_summary(gs)
     assert (
-        "--- 你对今日讨论的总结 (D2) ---\n"
+        "【私有策略记忆·今日讨论总结 D2】\n"
         "我怀疑p03。\n"
         "怀疑玩家: p03\n"
         "信任玩家: p02\n"
         "投票目标: p03\n"
         "证据引用: speech-7"
-    ) in context.public_summary
-    assert "{'summary':" not in context.public_summary
+    ) == context.internal_discussion_summary
+    assert "{'summary':" not in context.internal_discussion_summary
+    assert "internal_discussion_summary" not in context.model_dump()
+    prompt = PlayerPromptBuilder(context).build_user_prompt(RetryInfo())
+    assert context.internal_discussion_summary in prompt
+    assert "不是权威公开记录" in prompt
+
+
+def test_internal_summary_cannot_ground_fabricated_public_death_claim() -> None:
+    from werewolf_agent.runtime.nodes.runtime_state import _new_engine
+    from werewolf_agent.runtime.speech_quality import validate_public_speech
+
+    gs = GameState(
+        game_id="discussion-summary-public-boundary",
+        phase="day",
+        day_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="villager"),
+            "p03": PlayerState(id="p03", role="villager"),
+        },
+    )
+    context = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        discussion_positions={
+            "p01": {
+                "summary": "p02声称p03被狼刀。",
+                "suspected_players": ["p02"],
+                "trusted_players": [],
+                "vote_target": "p02",
+                "evidence_refs": [],
+            },
+        },
+    )
+
+    result = validate_public_speech(
+        "我是好人阵营。p02声称p03被狼刀，所以我怀疑并倾向投票p02。",
+        phase="day_discussion",
+        context=context.model_dump(),
+    )
+
+    assert "p02声称p03被狼刀" not in context.public_summary
+    assert "p02声称p03被狼刀" in context.internal_discussion_summary
+    assert result["valid"] is False
+    assert "public_record_grounding" in result["missing_fields"]
 
 
 def test_context_preserves_explicit_v2_fail_closed_semantics() -> None:
@@ -3558,6 +3609,7 @@ def test_context_preserves_explicit_v2_fail_closed_semantics() -> None:
     )
 
     assert "legacy string must fail closed" not in context.public_summary
+    assert "legacy string must fail closed" not in context.internal_discussion_summary
     assert summary_state["discussion_positions_version"] == 2
     assert summary_state["discussion_positions"]["p01"] == (
         "legacy string must fail closed"
@@ -3586,7 +3638,8 @@ def test_context_legacy_summary_upgrade_writes_real_runtime_state() -> None:
         discussion_state=summary_state,
     )
 
-    assert "legacy summary" in context.public_summary
+    assert "legacy summary" not in context.public_summary
+    assert "legacy summary" in context.internal_discussion_summary
     assert summary_state["discussion_positions_version"] == 2
     assert summary_state["discussion_positions"]["p01"] == {
         "summary": "legacy summary",

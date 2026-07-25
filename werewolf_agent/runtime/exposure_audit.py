@@ -2,7 +2,7 @@
 """Runtime audit events for module exposure, call monitoring, and prompt injection.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-18
+    修改日期: 2026-07-25
     使用示例: 内部模块，无对外接口
 """
 
@@ -135,6 +135,12 @@ _PERSONA_PROOF_KEYS = frozenset({
 })
 _PROMPT_INJECTION_FIELDS = (
     ("public_summary", "public_summary", "text_section", "public"),
+    (
+        "internal_discussion_summary",
+        "internal_discussion_summary",
+        "memory_section",
+        "viewer_private",
+    ),
     ("recent_transcript", "recent_transcript", "transcript_section", "public"),
     ("visible_world_state", "visible_world_state", "structured_state", "viewer_visible"),
     ("rag_hints", "rag_hints", "retrieval_section", "viewer_visible"),

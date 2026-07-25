@@ -12,7 +12,10 @@
 
 from __future__ import annotations
 
+import json
+
 from werewolf_agent.agents.action_contract import ActionContract
+from werewolf_agent.agents.discussion_summary import DiscussionSummary
 from werewolf_agent.agents.parse_dispatch import select_output_mode
 from werewolf_agent.agents.prompt_choice import (
     format_choice_prompt,
@@ -72,17 +75,25 @@ def discussion_summary_prompts(context: AgentContext) -> tuple[str, str]:
         )
     )
     transcript = str(context.strategy_directive.get("transcript_text", ""))
+    schema = json.dumps(
+        DiscussionSummary.model_json_schema(),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     system_prompt = (
         "你是狼人杀玩家的内部讨论整理器。此任务不是公开发言，"
         "不得输出 action_type、speech、reason 或 private_intent。"
-        "只提交符合 DiscussionSummary JSON Schema 的对象。"
+        "只提交符合下列 DiscussionSummary JSON Schema 的对象，"
+        "不得添加 Schema 未声明的字段。"
     )
     prompt = (
         f"任务：{directive}\n"
-        f"已有上下文与兼容文本投影：\n{context.public_summary}\n"
+        f"公开游戏概况：\n{context.public_summary}\n"
+        "私有策略记忆（不是公开记录）：\n"
+        f"{context.internal_discussion_summary or '无'}\n"
         f"当天公开发言：\n{transcript}\n"
-        "请提炼 summary、suspected_players、trusted_players、vote_target、"
-        "evidence_refs；没有对应信息时使用空列表或 null。"
+        f"DiscussionSummary JSON Schema：\n{schema}\n"
+        "严格按该 Schema 提炼字段；没有对应信息时使用空列表或 null。"
     )
     return system_prompt, prompt
 
