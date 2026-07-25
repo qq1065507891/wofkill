@@ -275,7 +275,7 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         pk_candidates=state.get("pk_candidates"),
     )
     result = engine.resolve_vote(
-        gs, votes=votes,
+        gs, votes=raw_votes,
         revote=state.get("revote", False),
         consecutive_no_exile_days=consecutive,
         pk_candidates=state.get("pk_candidates"),

@@ -492,6 +492,54 @@ def test_vote_events_only_include_rule_accepted_votes(
     } == accepted_votes
 
 
+def test_runtime_anti_stall_keeps_raw_sheriff_tie_break_with_accepted_event() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    engine = _new_engine()
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="werewolf", alive=True),
+        "p04": PlayerState(id="p04", role="werewolf", alive=True),
+    }
+    gs = GameState(
+        game_id="raw_sheriff_anti_stall",
+        players=players,
+        sheriff_id="p01",
+        sheriff_badge_state="active",
+        day_number=3,
+    )
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": engine,
+        "exile_votes": {
+            "p01": "p01",
+            "p02": "p01",
+            "p03": "p04",
+        },
+        "revote": True,
+        "pk_candidates": ["p01", "p04"],
+        "consecutive_no_exile_days": 2,
+    })
+    payload = next(
+        event.payload
+        for event in result["game_state"].events
+        if event.type == "vote_resolved"
+    )
+
+    assert result["_vote_result"].reason == "anti_stall_tie_break"
+    assert result["_vote_result"].exiled_player_id == "p01"
+    assert payload["weighted_tally_units"] == {"p01": 2, "p04": 2}
+    assert payload["vote_weight_units"] == {"p02": 2, "p03": 2}
+    assert {
+        vote["voter"]: vote["target"]
+        for vote in payload["votes"]
+    } == {
+        "p02": "p01",
+        "p03": "p04",
+    }
+
+
 def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:
     from werewolf_agent.runtime.graph import resolve_vote
 

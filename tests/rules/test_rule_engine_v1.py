@@ -542,6 +542,49 @@ def test_accepted_votes_exposes_rule_normalization(
     assert accepted == expected
 
 
+def test_anti_stall_tie_break_preserves_raw_sheriff_vote_compatibility() -> None:
+    engine = make_engine()
+    state = GameState(
+        game_id="raw_sheriff_anti_stall",
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="werewolf", alive=True),
+            "p04": PlayerState(id="p04", role="werewolf", alive=True),
+        },
+        sheriff_id="p01",
+        sheriff_badge_state="active",
+        day_number=3,
+    )
+    raw_votes = {
+        "p01": "p01",
+        "p02": "p01",
+        "p03": "p04",
+    }
+
+    assert engine.accepted_votes(
+        state,
+        votes=raw_votes,
+        revote=True,
+        pk_candidates=["p01", "p04"],
+    ) == {
+        "p02": "p01",
+        "p03": "p04",
+    }
+
+    result = engine.resolve_vote(
+        state,
+        votes=raw_votes,
+        revote=True,
+        consecutive_no_exile_days=2,
+        pk_candidates=["p01", "p04"],
+        rng_seed="a",
+    )
+
+    assert result.reason == "anti_stall_tie_break"
+    assert result.exiled_player_id == "p01"
+
+
 def test_dead_or_vote_disabled_players_do_not_count_in_exile_vote() -> None:
     engine = make_engine()
     state = make_state(dead={"v1"}, revealed_idiot=True)

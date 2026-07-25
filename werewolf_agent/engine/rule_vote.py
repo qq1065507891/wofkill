@@ -148,13 +148,13 @@ def resolve_vote(
                         state,
                         top,
                         rng_seed,
-                        normalized_votes,
+                        votes,
                     )
                 return anti_stall_tie_break(
                     state,
                     top,
                     rng_seed,
-                    normalized_votes,
+                    votes,
                 )
             return VoteResult(exiled_player_id=None, next_phase="night", reason="second_tie_no_exile")
 
