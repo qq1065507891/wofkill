@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-功能描述：消费已保存的 JSON 对局和强类型运行时审计，汇总平衡与验收指标。
+功能描述：消费已保存的 JSON 对局，汇总带事件支持状态的平衡与验收指标。
 作者: Project contributors
 创建日期：2025-01-15
 修改日期：2026-07-18
@@ -87,6 +87,18 @@ def compute_balance_audit(
     finished_games = [
         game for game in all_games if game.get("status") == "finished"
     ]
+    fallback_action_metrics_supported = bool(finished_games) and all(
+        game.get("_acceptance_events_supported") is not False
+        for game in finished_games
+    )
+    fallback_action_unsupported_reason = next(
+        (
+            str(game.get("_acceptance_events_unsupported_reason") or "incomplete_events")
+            for game in finished_games
+            if game.get("_acceptance_events_supported") is False
+        ),
+        None if finished_games else "no_finished_games",
+    )
     balance_game_count = len(finished_games)
     unique_game_ids = {
         str(game.get("game_id")) for game in all_games if game.get("game_id")
@@ -138,7 +150,9 @@ def compute_balance_audit(
 
     wolf_win_rate = wolf_wins / balance_game_count if balance_game_count else 0.0
     good_win_rate = good_wins / balance_game_count if balance_game_count else 0.0
-    fallback_action_rate = fallback_count / len(action_traces) if action_traces else 0.0
+    fallback_action_rate = (
+        fallback_count / len(action_traces) if action_traces else 0.0
+    ) if fallback_action_metrics_supported else None
     wolf_team_plan_fallback_rate = (
         wolf_plan_fallback_count / wolf_plan_count
         if wolf_plan_count else None
@@ -217,6 +231,10 @@ def compute_balance_audit(
         "completion_rate": completed_games / game_count if game_count else None,
         "wolf_win_rate": wolf_win_rate,
         "good_win_rate": good_win_rate,
+        "fallback_action_metrics_supported": fallback_action_metrics_supported,
+        "fallback_action_metrics_unsupported_reason": (
+            fallback_action_unsupported_reason
+        ),
         "fallback_action_rate": fallback_action_rate,
         "wolf_team_plan_fallback_rate": wolf_team_plan_fallback_rate,
         "wolf_team_plan_fallback_count": wolf_plan_fallback_count,

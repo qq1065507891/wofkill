@@ -480,9 +480,26 @@ def test_balance_audit_normalizes_each_game_once(monkeypatch) -> None:
     monkeypatch.setattr(game_projection, "project_acceptance_game", counting_project)
 
     compute_balance_audit([source])
-
     assert calls == [source]
 
+
+def test_balance_audit_marks_fallback_metrics_unsupported_for_partial_events() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    audit = compute_balance_audit([{
+        "game_id": "g-partial",
+        "players": {"p01": {"id": "p01", "role": "villager", "alive": True}},
+        "events": [],
+        "deaths": [],
+        "winning_faction": "good",
+        "status": "finished",
+        "_acceptance_events_supported": False,
+        "_acceptance_events_unsupported_reason": "partial_event_export",
+    }])
+
+    assert audit["fallback_action_metrics_supported"] is False
+    assert audit["fallback_action_metrics_unsupported_reason"] == "partial_event_export"
+    assert audit["fallback_action_rate"] is None
 
 def test_balance_audit_does_not_trust_forged_projection_markers() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
