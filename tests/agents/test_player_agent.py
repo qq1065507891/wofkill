@@ -4270,6 +4270,100 @@ def test_speech_quality_terminal_fallback_redacts_correction_prompt(
     assert correction_sentinel not in action.trace.model_dump_json()
 
 
+def test_speech_quality_terminal_redacts_rejected_speech_everywhere(
+    monkeypatch,
+    caplog,
+    capsys,
+) -> None:
+    """纯质量修复终退保留内存提示，但所有持久化与诊断边界均脱敏。"""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from scripts import probe_real_game_baidu_action as probe
+    from werewolf_agent.runtime.nodes.action_audit import _action_trace_event
+
+    sentinel = "REJECTED_SPEECH_SENTINEL"
+    provider = _SequenceJsonProvider([
+        _semantic_speech_payload(f"我怀疑p05，{sentinel}。"),
+        _semantic_speech_payload(f"我仍怀疑p05，{sentinel}。"),
+    ])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(
+        agent,
+        "_speech_quality_error",
+        side_effect=["缺少身份立场", "缺少身份立场"],
+    ):
+        action, retry = agent.act(context)
+
+    assert isinstance(action, FallbackAction)
+    assert sentinel in provider.prompts[1]
+    assert retry.correction_hint is not None
+    assert sentinel in retry.correction_hint
+    assert action.trace is not None
+    assert sentinel not in action.trace.raw_text
+    assert action.trace.parsed_action is None
+    assert sentinel not in action.trace.model_dump_json()
+    assert sentinel not in caplog.text
+
+    audit_event = _action_trace_event(
+        player_id="p01",
+        phase="speech",
+        action_trace=action.trace.model_dump(),
+    )
+    persisted_payload = json.dumps(audit_event.payload, ensure_ascii=False)
+    assert sentinel not in persisted_payload
+
+    class FakeProbeRouter:
+        def provider_names(self) -> list[str]:
+            return ["mock"]
+
+        def resolve_config(self, _agent_id: str, _task_type: str):
+            return (
+                SimpleNamespace(
+                    provider="mock",
+                    model="mock-model",
+                    allow_text_tool_fallback=True,
+                ),
+                False,
+            )
+
+    class FakeProbeAgent:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def act(self, _context):
+            return action, retry
+
+    monkeypatch.setattr(probe, "load_local_dotenv", lambda: None)
+    monkeypatch.setattr(
+        probe.ModelRouter,
+        "from_yaml",
+        lambda *_args, **_kwargs: FakeProbeRouter(),
+    )
+    monkeypatch.setattr(probe, "PlayerAgent", FakeProbeAgent)
+    monkeypatch.setattr(
+        probe.sys,
+        "argv",
+        ["probe_real_game_baidu_action.py", "--task", "speech"],
+    )
+    capsys.readouterr()
+    assert probe.main() == 0
+    probe_stdout = capsys.readouterr().out
+    assert sentinel not in probe_stdout
+
+
 def test_cumulative_repair_constraints_survive_quality_then_semantic_failure(
     monkeypatch,
 ) -> None:

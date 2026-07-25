@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-24
+修改日期: 2026-07-25
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -147,7 +147,7 @@ def run_player_action_flow(
         failure_stage: str | None,
         metrics_error_code: str | None = None,
     ) -> FallbackAction:
-        """统一终退收尾，确保修复源的安全 fallback 与审计不会被早退绕过。"""
+        """统一终退收尾，确保修复源的安全 fallback 与脱敏审计不会被早退绕过。"""
         generation_attempt_context.append_terminal_fallback(failure_reason)
         fallback_action, fallback_kind = build_task_terminal_fallback(
             context, agent._fallback_action(context)
@@ -156,13 +156,22 @@ def run_player_action_flow(
             fallback_action = preserve_verified_claim_in_fallback(
                 context, repair_state.source_action, fallback_action
             )
+        # 一旦进入发言修复，后续所有失败输出都属于未发布草稿，不能进入持久 trace。
+        trace_raw_text = (
+            "" if repair_state.source_action is not None else attempt_raw_text
+        )
+        trace_parsed_action = (
+            None
+            if repair_state.source_action is not None
+            else attempt_parsed_action
+        )
         return finalize_fallback_player_action(
             agent=agent,
             context=context,
             fallback=fallback_action,
             retry=retry_info,
-            raw_text=attempt_raw_text,
-            parsed_action=attempt_parsed_action,
+            raw_text=trace_raw_text,
+            parsed_action=trace_parsed_action,
             tool_call_required=attempt_tool_call_required,
             tool_call_received=attempt_tool_call_received,
             parse_success=attempt_parse_success,
