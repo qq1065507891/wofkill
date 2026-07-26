@@ -296,7 +296,7 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
     self_seer_context = _has_self_seer_context(text)
     seer_spans: list[tuple[int, int]] = []
     for match in re.finditer(r"(?:查验|验了?|验人)\s*(p\d{2})\s*(?:是|为)?\s*(狼人|查杀|狼|wolf)", text):
-        if self_seer_context and not _is_third_party_seer_report(text, match.start()):
+        if self_seer_context and not _is_third_party_seer_report(text, match.start(1)):
             facts.append(StructuredFact(
                 fact_type="seer_check_claim",
                 source_player=speaker,
@@ -312,7 +312,7 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
         r"(?:结果\s*)?(?:是|为)\s*(好人|金水|good)",
         text,
     ):
-        if self_seer_context and not _is_third_party_seer_report(text, match.start()):
+        if self_seer_context and not _is_third_party_seer_report(text, match.start(1)):
             facts.append(StructuredFact(
                 fact_type="seer_check_claim",
                 source_player=speaker,
@@ -326,7 +326,7 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
         # 跳过已被 seer_check_claim 覆盖的区间
         if any(match.start() >= s and match.end() <= e for s, e in seer_spans):
             continue
-        if _is_third_party_seer_report(text, match.start()):
+        if _is_third_party_seer_report(text, match.start(2)):
             continue
         facts.append(StructuredFact(
             fact_type="claimed_suspect",
@@ -337,8 +337,13 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
         ))
     # --- H-7: 右侧分支 p\d{2} 也放入捕获组 ---
     for match in re.finditer(r"(保|金水|好人)\s*(p\d{2})|(p\d{2})\s*(是|为)?\s*(金水|好人)", text):
-        target = next((group for group in match.groups() if group and re.fullmatch(r"p\d{2}", group)), None)
-        if target and not _is_third_party_seer_report(text, match.start()):
+        target_group = next(
+            (index for index, group in enumerate(match.groups(), 1)
+             if group and re.fullmatch(r"p\d{2}", group)),
+            None,
+        )
+        target = match.group(target_group) if target_group else None
+        if target and not _is_third_party_seer_report(text, match.start(target_group)):
             facts.append(StructuredFact(
                 fact_type="claimed_good",
                 source_player=speaker,
@@ -402,37 +407,48 @@ def _has_self_seer_context(text: str) -> bool:
     )
 
 
-def _is_third_party_seer_report(text: str, span_start: int) -> bool:
-    if span_start < 0:
+def _is_third_party_seer_report(text: str, target_start: int) -> bool:
+    """判断目标查验是否属于第三方转述，调用方统一传目标起点。"""
+    if target_start < 0:
         return False
     # 只检查目标所在的句/子句，避免整段中较早的第三方描述污染自己的声明。
-    clause_start = max(
-        text.rfind(mark, 0, span_start)
+    boundary = max(
+        text.rfind(mark, 0, target_start)
         for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
-    ) + 1
-    prefix = re.sub(r"\s+", "", text[clause_start:span_start])
-    # 当前子句明确使用“我验/我查”时，以自身声明为准，不受前一子句的
-    # 第三方报道影响。
-    if re.search(
+    )
+    clause_start = boundary + 1
+    prefix = re.sub(r"\s+", "", text[clause_start:target_start])
+    direct_self = re.search(
         r"我(?:昨晚|今晚|夜里|首夜|刚刚)?(?:查验|查了?|验了?|验人)$",
         prefix,
-    ):
-        # 若同一子句前面已有“p01说/报”等 marker，则这是被转述的第一人称。
-        return _contains_third_party_report_marker(prefix)
+    )
+    marker_in_clause = _contains_third_party_report_marker(prefix)
+    if direct_self:
+        # 同一子句已有“p01说/报”是被转述的第一人称；独立的“我验了”保留。
+        if marker_in_clause:
+            return True
+        # 跨逗号引语的开头带引号时，前一子句的说话者仍然负责归因。
+        return prefix.startswith(("“", '"', "「", "『")) and _previous_clause_has_marker(
+            text, boundary
+        )
     # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了..."
     # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
-    if _contains_third_party_report_marker(prefix):
+    if marker_in_clause:
         return True
 
     # “p01说，昨晚验了p02”中编号和查验动词跨逗号，检查紧邻的前一子句。
-    if clause_start > 0 and text[clause_start - 1] in "，,":
-        previous_start = max(
-            text.rfind(mark, 0, clause_start - 1)
-            for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
-        ) + 1
-        previous = re.sub(r"\s+", "", text[previous_start:clause_start - 1])
-        return _contains_third_party_report_marker(previous)
-    return False
+    return _previous_clause_has_marker(text, boundary)
+
+
+def _previous_clause_has_marker(text: str, boundary: int) -> bool:
+    if boundary < 0 or text[boundary] not in "，,":
+        return False
+    previous_start = max(
+        text.rfind(mark, 0, boundary)
+        for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
+    ) + 1
+    previous = re.sub(r"\s+", "", text[previous_start:boundary])
+    return _contains_third_party_report_marker(previous)
 
 
 def _contains_third_party_report_marker(prefix: str) -> bool:

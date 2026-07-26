@@ -1059,6 +1059,58 @@ class TestSeerClaimContractExtraction:
             for c in claims
         )
 
+    def test_mixed_third_party_and_self_wolf_check_keeps_self_claim(self):
+        """混合第三方查杀后，当前玩家的查杀查验仍应保留。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p03查杀。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "wolf"
+            for c in claims
+        )
+
+    def test_mixed_third_party_and_self_explicit_good_keeps_self_claim(self):
+        """混合第三方查杀后，显式“查验是好人”仍应保留。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我查验p03是好人。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_cross_clause_quoted_self_check_is_third_party(self):
+        """跨逗号引语中的第一人称查验不能归因给当前玩家。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说，“我验了p02金水”。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
     def test_third_party_comment_with_self_pronoun_does_not_claim_check(self):
         """“我不信他验了”中的我不是查验主语。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text
