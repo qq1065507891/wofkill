@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-26
 
 使用示例:
     >>> pytest tests/api/test_game_persistence_helpers.py
@@ -63,10 +64,13 @@ def test_game_router_keeps_route_registration_surface() -> None:
     auth = AuthManager(AuthConfig(mode="local", secret_key="test-secret"))
     app = create_app(repository=InMemoryGameRepository(), auth_manager=auth)
 
+    route_methods = {"get", "post", "put", "patch", "delete", "options", "head"}
     routes = {
-        (",".join(sorted(route.methods or [])), route.path)
-        for route in app.routes
-        if route.path == "/" or route.path.startswith(("/auth", "/games"))
+        (method.upper(), path)
+        for path, operations in app.openapi()["paths"].items()
+        for method in operations
+        if method in route_methods
+        and (path == "/" or path.startswith(("/auth", "/games")))
     }
 
     assert routes == {
