@@ -307,6 +307,21 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
             ))
             seer_spans.append(match.span())
 
+    for match in re.finditer(
+        r"(?:查验|验了?|验人)\s*(p\d{2})\s*(?:[,，、]\s*)?"
+        r"(?:结果\s*)?(?:是|为)\s*(好人|金水|good)",
+        text,
+    ):
+        if self_seer_context and not _is_third_party_seer_report(text, match.start()):
+            facts.append(StructuredFact(
+                fact_type="seer_check_claim",
+                source_player=speaker,
+                target_player=match.group(1),
+                value="good",
+                day=day,
+                metadata={"claim_type": "seer_good_check"},
+            ))
+
     for match in re.finditer(r"(查验|验了|验人)?\s*(p\d{2})\s*(是|为)?\s*(狼人|查杀)", text):
         # 跳过已被 seer_check_claim 覆盖的区间
         if any(match.start() >= s and match.end() <= e for s, e in seer_spans):
@@ -437,11 +452,14 @@ def _extract_badge_flow_targets(text: str) -> list[list[str]]:
         targets = re.findall(r"p\d{2}", compact_match.group(1)) if compact_match else []
         if not targets:
             ordered_match = re.match(
-                r"^[\s:：]*先\s*(p\d{2})\s*后\s*(p\d{2})(?=$|[\s，、。！？；])",
+                r"^[\s:：]*先\s*(?:验|查)?\s*(p\d{2})"
+                r"\s*[，、,]?\s*后\s*(?:验|查)?\s*(p\d{2})"
+                r"(?:\s*[，、,]?\s*再\s*(?:验|查)?\s*(p\d{2}))?"
+                r"(?=$|[\s，、。！？；])",
                 lines[0],
             )
             if ordered_match:
-                targets = [ordered_match.group(1), ordered_match.group(2)]
+                targets = [group for group in ordered_match.groups() if group]
         if not targets:
             for line in lines[1:]:
                 stripped = line.strip()

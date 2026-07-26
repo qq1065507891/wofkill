@@ -1054,11 +1054,42 @@ class TestSeerClaimContractExtraction:
         """紧凑警徽流支持中文逗号和顿号并保留顺序。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text
 
-        for text in ("警徽流：p05，p07", "警徽流：p05、p07"):
+        cases = (
+            ("警徽流：p05，p07", ["p05", "p07"]),
+            ("警徽流：p05、p07", ["p05", "p07"]),
+            ("警徽流：先p05后p07再p09", ["p05", "p07", "p09"]),
+        )
+        for text, expected_order in cases:
             claims = _infer_claims_from_text(speaker="p03", text=text, day=1)
             badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
             assert len(badge_facts) == 1
-            assert badge_facts[0].metadata["badge_flow_order"] == ["p05", "p07"]
+            assert badge_facts[0].metadata["badge_flow_order"] == expected_order
+
+    def test_real_log_seer_result_and_ordered_badge_flow(self):
+        """真实日志句式应提取好人查验和先验/后验警徽流。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p03",
+            text=(
+                "我是预言家，昨晚我验了p02，结果是好人。"
+                "我的警徽流：先验p08，后验p06。"
+            ),
+            day=1,
+        )
+
+        good_checks = [
+            c for c in claims
+            if c.fact_type == "seer_check_claim"
+            and c.target_player == "p02"
+            and c.value == "good"
+        ]
+        assert len(good_checks) == 1
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p08"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p08", "p06"]
 
 
 class TestSeerClaimCommitment:
