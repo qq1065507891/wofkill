@@ -71,10 +71,18 @@ def _strip_json_comments(text: str) -> str:
 
     result: list[str] = []
     in_string = False
+    in_url = False
     escape = False
     index = 0
     while index < len(text):
         char = text[index]
+        if in_url:
+            if char.isspace() or char in '{}[],"\'':
+                in_url = False
+            else:
+                result.append(char)
+                index += 1
+                continue
         if in_string:
             result.append(char)
             if escape:
@@ -88,6 +96,11 @@ def _strip_json_comments(text: str) -> str:
 
         if char == '"':
             in_string = True
+            result.append(char)
+            index += 1
+            continue
+        if char == "/" and _is_url_scheme_prefix(text, index):
+            in_url = True
             result.append(char)
             index += 1
             continue
@@ -112,6 +125,13 @@ def _strip_json_comments(text: str) -> str:
         result.append(char)
         index += 1
     return "".join(result)
+
+
+def _is_url_scheme_prefix(text: str, index: int) -> bool:
+    """判断当前位置是否为 scheme:// URL 的首个斜杠。"""
+
+    prefix = text[max(0, index - 64):index + 1]
+    return re.search(r"[A-Za-z][A-Za-z0-9+.-]*:/$", prefix) is not None
 
 
 def extract_json_object_candidates(text: str) -> list[str]:

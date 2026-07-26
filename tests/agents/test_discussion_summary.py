@@ -296,6 +296,12 @@ def test_parse_discussion_summary_text_preserves_urls_in_summary() -> None:
     ).summary == "查看 https://example.com/a"
 
 
+def test_parse_discussion_summary_text_accepts_mixed_prose_url() -> None:
+    assert parse_discussion_summary_text(
+        'See https://example.com before {"summary":"ok"}'
+    ) == DiscussionSummary(summary="ok")
+
+
 @pytest.mark.parametrize(
     "raw_text",
     [
