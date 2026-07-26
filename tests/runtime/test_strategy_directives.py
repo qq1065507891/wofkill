@@ -3,7 +3,7 @@
 验证各角色策略指令及其公开证据、投票单位消费语义。
 
 作者: Project contributors
-修改日期: 2026-07-25
+修改日期: 2026-07-26
 """
 
 from __future__ import annotations
@@ -3588,6 +3588,7 @@ class TestReflectionRoleSpecific:
         reflection 失败。修复后 TaskType.REFLECTION 在映射表里没有 →
         返回 None → 短路退出。
         """
+        from werewolf_agent.agents.player import ReflectionDraftGenerationError
         from werewolf_agent.agents.schemas import TaskType
         from werewolf_agent.runtime import agent_adapter as aa
 
@@ -3605,19 +3606,9 @@ class TestReflectionRoleSpecific:
 
         monkeypatch.setattr(aa, "build_agent_context", fake_build_agent_context)
 
-        # Fake agent that returns a valid PlayerAction with reflection text.
         class FakeAgent:
-            def act(self, context):
-                from werewolf_agent.agents.schemas import PlayerAction
-                return (
-                    PlayerAction(
-                        action_type=ActionType.SPEECH,
-                        target_id=None,
-                        speech="本局我投错了 p03,他其实不是狼",
-                        reason="",
-                    ),
-                    None,
-                )
+            def generate_reflection(self, context, prompt):
+                raise ReflectionDraftGenerationError("invalid_structured_draft")
 
         class FakeRegistry:
             def get_agent(self, player_id):
@@ -3640,8 +3631,9 @@ class TestReflectionRoleSpecific:
         assert result["reflection_verification"]["status"] == "invalid_structured_draft"
         assert "reflection_text" not in result
 
-    def test_agent_reflection_rejects_unstructured_draft_without_exposure(self, monkeypatch) -> None:
-        """非结构化 provider 草稿不得通过 reflection_text 暴露给运行时。"""
+    def test_agent_reflection_rejects_invalid_structured_draft_without_exposure(self, monkeypatch) -> None:
+        """无效结构化草稿不得通过 reflection_text 暴露给运行时。"""
+        from werewolf_agent.agents.player import ReflectionDraftGenerationError
         from werewolf_agent.runtime import agent_adapter as aa
 
         def fake_build_agent_context(engine, gs, player_id, task_type, **kwargs):
@@ -3653,25 +3645,12 @@ class TestReflectionRoleSpecific:
         monkeypatch.setattr(aa, "build_agent_context", fake_build_agent_context)
 
         class FakeAgent:
-            def __init__(self, text):
-                self._text = text
-            def act(self, context):
-                from werewolf_agent.agents.schemas import PlayerAction
-                return (
-                    PlayerAction(
-                        action_type=ActionType.SPEECH,
-                        target_id=None,
-                        speech=self._text,
-                        reason="",
-                    ),
-                    None,
-                )
+            def generate_reflection(self, context, prompt):
+                raise ReflectionDraftGenerationError("invalid_structured_draft")
 
         class FakeRegistry:
-            def __init__(self, text):
-                self._text = text
             def get_agent(self, player_id):
-                return FakeAgent(self._text)
+                return FakeAgent()
 
         gs = GameState(
             game_id="g_test",
@@ -3682,10 +3661,9 @@ class TestReflectionRoleSpecific:
         )
         state = {"game_state": gs}
 
-        # Multiple p\d+ ids should all be replaced.
         result = aa._agent_reflection(
             state, engine=None,
-            registry=FakeRegistry("我查杀了 p03,后来 p05 也查杀了 p07,他们都死了"),
+            registry=FakeRegistry(),
             player_id="p01",
         )
         verification = result["reflection_verification"]
