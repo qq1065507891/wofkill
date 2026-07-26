@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-25
-修改日期: 2026-07-25
+修改日期: 2026-07-26
 
 使用示例:
     >>> python -m pytest tests/agents/test_discussion_summary.py -q
