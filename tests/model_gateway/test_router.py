@@ -3,7 +3,7 @@
 验证 ModelRouter 的配置解析、provider 路由、重试与 fallback 记录。
 
 作者: Project contributors
-修改日期: 2026-07-23
+修改日期: 2026-07-26
 """
 
 import pytest
@@ -1593,6 +1593,48 @@ class TestRetryHelpers:
 
 
 class TestFromYamlValidation:
+    def test_route_provider_comparison_is_normalized(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "openai", "model": "primary-model"},
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "OPENAI",
+                        "model_profile": "primary",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+
+        router._validate_config()
+
+    def test_route_provider_must_match_referenced_model_profile(self) -> None:
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "openai", "model": "primary-model"},
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "minimax",
+                        "model_profile": "primary",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+
+        with pytest.raises(ProviderConfigError, match="provider"):
+            router._validate_config()
+
     @pytest.mark.parametrize(
         ("profile", "expected_context"),
         [

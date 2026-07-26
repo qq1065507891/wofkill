@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-16
+修改日期: 2026-07-26
 
 使用示例:
     >>> _configured_provider_names({"p": {"provider": "mock"}}, {})
@@ -136,6 +136,15 @@ def _validate_route_block(
     if model_profile_id not in model_profiles:
         raise ProviderConfigError(
             f"{context} references unknown model_profile {model_profile_id!r}"
+        )
+    route_provider = str(route["provider"]).strip().lower()
+    profile_provider = (
+        str(model_profiles[model_profile_id].get("provider", "")).strip().lower()
+    )
+    if route_provider != profile_provider:
+        raise ProviderConfigError(
+            f"{context} provider {route_provider!r} does not match "
+            f"model_profile {model_profile_id!r} provider {profile_provider!r}"
         )
 
 

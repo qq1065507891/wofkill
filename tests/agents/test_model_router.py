@@ -1,4 +1,10 @@
-"""Tests for Model Router Gateway routing, fallback, and usage tracking."""
+# -*- coding: utf-8 -*-
+"""
+验证模型路由网关的配置解析、provider 路由、fallback 与用量记录。
+
+作者: Project contributors
+修改日期: 2026-07-26
+"""
 
 from __future__ import annotations
 
@@ -32,6 +38,45 @@ class TestModelRouter:
     def test_load_from_yaml(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         assert "pro_reasoner" in router._llm_profiles
+
+    def test_yaml_task_profiles_resolve_declared_temperatures(self) -> None:
+        router = ModelRouter.from_yaml(MODELS_YAML)
+
+        expected = {
+            "discussion_summary": 0.2,
+            "judge_vote_tally": 0.2,
+            "speech": 0.4,
+            "vote": 0.3,
+            "night_action": 0.3,
+            "deception": 0.5,
+            "wolf_discussion": 0.5,
+        }
+        for task_type, temperature in expected.items():
+            config, _ = router.resolve_config("p02", task_type)
+            assert config.temperature == temperature
+            assert config.top_p == 0.9
+
+    def test_minimax_judge_and_thinking_profiles_declare_wire_temperatures(self) -> None:
+        router = ModelRouter.from_yaml(MODELS_YAML)
+        model_profiles = router._model_profiles
+
+        assert model_profiles["minimax_m27_judge"]["temperature"] == 0.2
+        assert model_profiles["minimax_m27_thinking"]["temperature"] == 1.0
+        assert model_profiles["minimax_m27_reflection"]["temperature"] == 1.0
+
+        judge, _ = router.resolve_config("judge", "judge_vote_tally")
+        reflection, _ = router.resolve_config("p02", "reflection")
+        fallback = router._resolve_fallback_model("ark_minimax")
+
+        assert judge.temperature == 0.2
+        assert reflection.temperature == 1.0
+        assert fallback is not None
+        assert fallback.temperature == 1.0
+        assert {
+            judge.structured_output_mode,
+            reflection.structured_output_mode,
+            fallback.structured_output_mode,
+        } == {"text_json"}
 
     def test_resolve_config_for_known_agent(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
