@@ -1137,6 +1137,24 @@ class TestSeerClaimContractExtraction:
             for c in claims
         )
 
+    def test_announcement_before_self_gold_sender_does_not_filter_target(self):
+        """公告中的“发”不能把后续自身“我给”误判为第三方。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01在群里发了一段公告然后我给p02发金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.value == "good"
+            for c in claims
+        )
+
     def test_adjacent_self_gold_claims_are_not_reported_as_third_party(self):
         """连续自述的金水结果不能因前一个目标编号而被误归因。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text
@@ -1154,6 +1172,96 @@ class TestSeerClaimContractExtraction:
             and c.source_player == "p08"
             and c.value == "good"
         } >= {"p03", "p04"}
+
+    def test_colon_seer_reports_filter_claims(self):
+        """说/报后的中英文冒号不应阻断第三方归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in (
+            "我是预言家，p01说：p02金水。",
+            "我是预言家，p01报：p02查杀。",
+            "我是预言家，p01说：“p02金水”。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+            assert not [
+                c for c in claims
+                if c.source_player == "p06"
+                and c.target_player == "p02"
+                and c.fact_type in {"claimed_good", "seer_check_claim", "claimed_suspect"}
+            ]
+
+    def test_third_party_check_verbs_filter_targets_before_self_check(self):
+        """第三方完整“验了/查了”动词后的目标不能归因给当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01验了p02金水，我验了p03金水。",
+            day=1,
+        )
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"claimed_good", "seer_check_claim"}
+        ]
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01查了p02查杀。",
+            day=1,
+        )
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"claimed_suspect", "seer_check_claim"}
+        ]
+
+    def test_unpronounced_gold_sender_after_description_is_self_claim(self):
+        """前置描述后无主语“给目标发金水”仍归因给当前自称预言家。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in (
+            "我是预言家，p01报p02查杀，给p03发金水。",
+            "我是预言家，p01在群里发公告然后给p03发金水。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+            assert any(
+                c.fact_type == "seer_check_claim"
+                and c.source_player == "p06"
+                and c.target_player == "p03"
+                and c.value == "good"
+                for c in claims
+            )
+
+    def test_third_party_attribution_context_is_bounded(self, monkeypatch):
+        """无标点重复声明时，归因扫描窗口不应随文本长度增长。"""
+        from werewolf_agent.cognition import world_state
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        observed_prefix_lengths = []
+        original = world_state._contains_third_party_report_marker
+
+        def observe(prefix):
+            observed_prefix_lengths.append(len(prefix))
+            return original(prefix)
+
+        monkeypatch.setattr(
+            world_state, "_contains_third_party_report_marker", observe
+        )
+        text = "我是预言家 " + " ".join("p01是金水" for _ in range(200))
+        _infer_claims_from_text(speaker="p06", text=text, day=1)
+
+        assert observed_prefix_lengths
+        assert max(observed_prefix_lengths) <= world_state._THIRD_PARTY_CONTEXT_WINDOW
 
     def test_long_third_party_name_filters_gold_claim(self):
         """超长第三方姓名仍应在当前句内正确归因。"""
