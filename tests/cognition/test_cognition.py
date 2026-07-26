@@ -1457,6 +1457,21 @@ class TestSeerClaimContractExtraction:
         assert badge_facts[0].target_player == "p02"
         assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p11"]
 
+    def test_inline_night_badge_flow_extracts_target(self):
+        """真实日志的同一行 N2 验人计划应形成警徽流事实。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p01",
+            text="我是预言家，昨晚验了p02是好人。警徽流：N2验p04。",
+            day=1,
+        )
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p04"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p04"]
+
     def test_badge_flow_accepts_chinese_separators(self):
         """紧凑警徽流支持中文逗号和顿号并保留顺序。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text

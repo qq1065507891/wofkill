@@ -535,6 +535,19 @@ def _extract_badge_flow_targets(text: str) -> list[list[str]]:
             if ordered_match:
                 targets = [group for group in ordered_match.groups() if group]
         if not targets:
+            inline_plan_match = re.match(
+                r"^[\s:：]*N\d+\s*[:：]?\s*(?:我\s*)?(?:计划\s*)?"
+                r"(?:验|查)\s*p\d{2}(?![A-Za-z0-9_])"
+                r"(?:(?:\s+|[，、,；;]\s*)N\d+\s*[:：]?\s*"
+                r"(?:我\s*)?(?:计划\s*)?(?:验|查)\s*"
+                r"p\d{2}(?![A-Za-z0-9_]))*",
+                lines[0],
+            )
+            if inline_plan_match:
+                targets = re.findall(
+                    r"p\d{2}(?![A-Za-z0-9_])", inline_plan_match.group(0)
+                )
+        if not targets:
             for line in lines[1:]:
                 stripped = line.strip()
                 if not stripped:
