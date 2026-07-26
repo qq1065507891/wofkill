@@ -1659,6 +1659,64 @@ class TestRetryHelpers:
 
 
 class TestFromYamlValidation:
+    def test_whitespace_glm_profile_is_not_reasoning_capable(self) -> None:
+        from werewolf_agent.model_gateway.reasoning_policy import (
+            validate_player_reasoning_profiles,
+        )
+
+        with pytest.raises(ValueError, match="required"):
+            validate_player_reasoning_profiles(
+                model_profiles={
+                    "glm_profile": {
+                        "provider": " GLM ",
+                        "model": "glm-model",
+                        "reasoning": {"level": "high"},
+                    },
+                },
+                llm_profiles={
+                    "profile": {
+                        "default": {
+                            "provider": " glm ",
+                            "model_profile": "glm_profile",
+                        },
+                    },
+                },
+                player_assignments={"p01": "profile"},
+            )
+
+    def test_from_yaml_rejects_whitespace_glm_player_profile(self, tmp_path) -> None:
+        import yaml
+
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "glm_profile.yaml"
+        yaml_path.write_text(
+            yaml.safe_dump(
+                {
+                    "model_profiles": {
+                        "glm_profile": {
+                            "provider": " GLM ",
+                            "model": "glm-model",
+                            "reasoning": {"level": "high"},
+                        },
+                    },
+                    "llm_profiles": {
+                        "profile": {
+                            "default": {
+                                "provider": " glm ",
+                                "model_profile": "glm_profile",
+                            },
+                        },
+                    },
+                    "players": {"p01": {"llm_profile": "profile"}},
+                },
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="required"):
+            ModelRouter.from_yaml(yaml_path)
+
     def test_route_provider_comparison_is_normalized(self) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
 

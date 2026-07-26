@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-25
+修改日期: 2026-07-26
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.model_gateway.execution_records import ReasoningLevel
+from werewolf_agent.model_gateway.router_config import _canonical_provider_name
 
 
 _MEDIUM_TASKS = {
@@ -57,7 +58,7 @@ def enforce_minimum_reasoning(task_type: str, configured: str) -> ReasoningLevel
 
 
 def _profile_level(model_profile: dict[str, Any]) -> ReasoningLevel:
-    if str(model_profile.get("provider", "")).lower() == "glm":
+    if _canonical_provider_name(model_profile.get("provider", "")) == "glm":
         return ReasoningLevel.NONE
     raw = model_profile.get("reasoning", "none")
     if isinstance(raw, dict):
