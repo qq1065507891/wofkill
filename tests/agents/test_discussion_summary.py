@@ -303,6 +303,8 @@ def test_parse_discussion_summary_text_preserves_urls_in_summary() -> None:
         '{"suspected_players":[]}',
         '{"summary":"ok","suspected_players":"p03"}',
         '[{"summary":"ok"}]',
+        '```json\n[{"summary":"ok"}]\n```',
+        '前置说明：[{"summary":"ok"}]\n以上是结果。',
     ],
 )
 def test_parse_discussion_summary_text_rejects_invalid_schema(raw_text: str) -> None:

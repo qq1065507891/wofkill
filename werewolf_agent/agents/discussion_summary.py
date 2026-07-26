@@ -66,6 +66,8 @@ def parse_discussion_summary_text(raw_text: str) -> DiscussionSummary:
     """修复并严格解析包含 DiscussionSummary 的模型文本。"""
 
     repaired = repair_json_text(raw_text)
+    if _contains_object_in_array(repaired):
+        return DiscussionSummary.model_validate([])
     if repaired.lstrip().startswith("["):
         payload = json.loads(repaired)
         return DiscussionSummary.model_validate(payload)
@@ -92,6 +94,32 @@ def parse_discussion_summary_text(raw_text: str) -> DiscussionSummary:
     if validation_error is not None:
         raise validation_error
     raise ValueError("no_discussion_summary_object")
+
+
+def _contains_object_in_array(text: str) -> bool:
+    """识别字符串外数组容器中的对象，避免提取其内部摘要。"""
+
+    array_depth = 0
+    in_string = False
+    escape = False
+    for char in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "[":
+            array_depth += 1
+        elif char == "]" and array_depth:
+            array_depth -= 1
+        elif char == "{" and array_depth:
+            return True
+    return False
 
 
 def discussion_summary_tool() -> dict[str, Any]:
