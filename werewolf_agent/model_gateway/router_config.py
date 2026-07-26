@@ -22,6 +22,11 @@ from werewolf_agent.model_gateway.usage_records import ModelConfig
 _KNOWN_PROVIDER_NAMES = {"anthropic", "openai", "glm", "minimax", "mock"}
 
 
+def _canonical_provider_name(value: Any) -> str:
+    """归一化 provider 名称，避免配置与 registry 使用不同 key。"""
+    return str(value).strip().lower()
+
+
 def _validate_config(
     *,
     model_profiles: dict[str, dict[str, Any]],
@@ -41,7 +46,7 @@ def _validate_config(
             )
 
     for provider_name in _configured_provider_names(model_profiles, llm_profiles):
-        if provider_name.lower() not in _KNOWN_PROVIDER_NAMES:
+        if _canonical_provider_name(provider_name) not in _KNOWN_PROVIDER_NAMES:
             raise ProviderConfigError(
                 f"provider {provider_name!r} is not registered "
                 "(known: anthropic, openai, glm, minimax, mock)"
@@ -137,9 +142,9 @@ def _validate_route_block(
         raise ProviderConfigError(
             f"{context} references unknown model_profile {model_profile_id!r}"
         )
-    route_provider = str(route["provider"]).strip().lower()
-    profile_provider = (
-        str(model_profiles[model_profile_id].get("provider", "")).strip().lower()
+    route_provider = _canonical_provider_name(route["provider"])
+    profile_provider = _canonical_provider_name(
+        model_profiles[model_profile_id].get("provider", "")
     )
     if route_provider != profile_provider:
         raise ProviderConfigError(
@@ -199,7 +204,7 @@ def _route_config(
     if str(profile.get("provider", "")).lower() == "glm":
         reasoning = "none"
     return ModelConfig(
-        provider=str(route.get("provider", "mock")),
+        provider=_canonical_provider_name(route.get("provider", "mock")),
         model=str(profile.get("model", profile_id)),
         reasoning_capability=str(reasoning or "none"),
     )
@@ -211,23 +216,27 @@ def _configured_provider_names(
 ) -> set[str]:
     """收集配置中显式声明的 provider 名称。"""
     providers: set[str] = {
-        str(cfg.get("provider", ""))
+        _canonical_provider_name(cfg.get("provider", ""))
         for cfg in model_profiles.values()
         if cfg.get("provider")
     }
     for llm_profile in llm_profiles.values():
         default_cfg = llm_profile.get("default", {})
         if default_cfg.get("provider"):
-            providers.add(str(default_cfg["provider"]))
+            providers.add(_canonical_provider_name(default_cfg["provider"]))
         for task_cfg in llm_profile.get("tasks", {}).values():
             if task_cfg.get("provider"):
-                providers.add(str(task_cfg["provider"]))
+                providers.add(_canonical_provider_name(task_cfg["provider"]))
         fallback_raw = llm_profile.get("fallback", {})
         fallback_items = fallback_raw if isinstance(fallback_raw, list) else [fallback_raw]
         for fallback_cfg in fallback_items:
             if fallback_cfg.get("provider"):
-                providers.add(str(fallback_cfg["provider"]))
+                providers.add(_canonical_provider_name(fallback_cfg["provider"]))
     return providers
 
 
-__all__ = ["_configured_provider_names", "_validate_config"]
+__all__ = [
+    "_canonical_provider_name",
+    "_configured_provider_names",
+    "_validate_config",
+]

@@ -181,6 +181,38 @@ class TestModelRouterConstruction:
 
 
 class TestResolveConfig:
+    def test_normalized_route_provider_resolves_and_generates(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = _StaticTextProvider("ok", " OPENAI ")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "openai",
+                    "model": "model",
+                    "reasoning": {"level": "high"},
+                    "retry_count": 0,
+                },
+            },
+            llm_profiles={
+                "profile": {
+                    "default": {
+                        "provider": " OPENAI ",
+                        "model_profile": "primary",
+                    },
+                },
+            },
+            player_assignments={"p01": "profile"},
+        )
+        router.register_provider(provider)
+
+        config, _ = router.resolve_config("p01", "speech")
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert config.provider == "openai"
+        assert provider.calls == 1
+        assert result.text == "ok"
+
     def test_resolves_config_for_known_player(self) -> None:
         router = _make_router()
         config, fallback = router.resolve_config(agent_id="p01", task_type="speech")
