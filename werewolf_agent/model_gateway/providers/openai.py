@@ -126,14 +126,17 @@ def _extract_reasoning_details_text(details: Any) -> str:
     if isinstance(details, str):
         return details.strip()
     if isinstance(details, dict):
-        for key in ("text", "summary", "reasoning"):
+        detail_type = details.get("type")
+        if detail_type is not None and detail_type not in {"text", "reasoning.text"}:
+            return ""
+        for key in ("text", "reasoning"):
             value = details.get(key)
             if isinstance(value, str) and value.strip():
                 parts.append(value.strip())
         content = details.get("content")
         if isinstance(content, str) and content.strip():
             parts.append(content.strip())
-        elif isinstance(content, (dict, list)):
+        elif detail_type is None and isinstance(content, (dict, list)):
             nested = _extract_reasoning_details_text(content)
             if nested:
                 parts.append(nested)
@@ -293,7 +296,11 @@ def _generate_openai_compatible(
     # _strip_thinking_prefix 是空操作; 其 reasoning_content 独立字段通过
     # thinking_text 走入审计通道。
     clean_text, embedded_thinking = _strip_thinking_prefix(text)
-    thinking_text = thinking_text or embedded_thinking
+    if embedded_thinking:
+        thinking_text = (
+            f"{thinking_text}\n---\n{embedded_thinking}"
+            if thinking_text else embedded_thinking
+        )
     text = clean_text
     usage = data.get("usage", {})
     details = usage.get("completion_tokens_details") or {}

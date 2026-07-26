@@ -308,7 +308,11 @@ class TestGenerateResultThinkingText:
                             "reasoning_details": [
                                 {"type": "text", "text": "step one"},
                                 {"type": "summary", "summary": "step two"},
-                                {"type": "tool_call", "id": "abc", "args": {}},
+                                {
+                                    "type": "tool_call",
+                                    "summary": "SHOULD_NOT",
+                                    "content": [{"type": "text", "text": "NESTED"}],
+                                },
                             ],
                         },
                     }],
@@ -326,6 +330,32 @@ class TestGenerateResultThinkingText:
         ).generate("hi", ModelConfig(provider="openai", model="x"))
         assert result.text == "answer"
         assert "step one" in result.thinking_text
-        assert "step two" in result.thinking_text
-        assert "tool_call" not in result.thinking_text
-        assert "args" not in result.thinking_text
+        assert "step two" not in result.thinking_text
+        assert "SHOULD_NOT" not in result.thinking_text
+        assert "NESTED" not in result.thinking_text
+
+    def test_openai_merges_reasoning_field_with_embedded_think(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+        from werewolf_agent.model_gateway.usage_records import ModelConfig
+
+        class Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {
+                    "choices": [{"message": {
+                        "content": "<think>embedded</think>answer",
+                        "reasoning_content": "field",
+                    }}],
+                }
+
+        class Client:
+            def post(self, _url, *, json, **_kwargs):  # noqa: A002
+                return Response()
+
+        result = OpenAIProvider(
+            api_key="k", base_url="https://api.example/v1", http_client=Client()
+        ).generate("hi", ModelConfig(provider="openai", model="x"))
+        assert "field" in result.thinking_text
+        assert "embedded" in result.thinking_text

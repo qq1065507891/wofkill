@@ -242,6 +242,23 @@ class _CapturingClient:
         return _FakeResponse(self._response)
 
 
+class _FailOnceClient(_CapturingClient):
+    """首次请求失败、后续请求成功，用于真实 router fallback。"""
+
+    def __init__(self, response_data: dict | None = None) -> None:
+        super().__init__(response_data)
+        self.calls = 0
+
+    def post(self, url, *, json, **kwargs):  # noqa: A002
+        self.calls += 1
+        if self.calls == 1:
+            self.last_url = url
+            self.last_payload = json
+            self.last_timeout = kwargs["timeout"]
+            raise TimeoutError("primary timeout")
+        return super().post(url, json=json, **kwargs)
+
+
 class _FakeResponse:
     def __init__(self, data: dict) -> None:
         self._data = data
@@ -347,6 +364,8 @@ class TestOpenAIProviderPerProfile:
         ).generate(
             "hi", ModelConfig(provider="openai", model="x", temperature=0.23)
         )
+        assert client.last_payload is not None
+        assert client.last_payload["temperature"] == 0.23
         assert result.effective_temperature == 0.23
         assert result.temperature_override_reason is None
 
@@ -388,6 +407,128 @@ class TestOpenAIProviderPerProfile:
         provider.generate("hi", ModelConfig(provider="openai", model="x"))
         assert client.last_url is not None
         assert "ark.example.com" in client.last_url
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {"agent": "p01", "task": "speech", "temperature": 0.2, "top_p": 0.8,
+         "reasoning": "none", "requested": False, "mode": "json_schema"},
+        {"agent": "p07", "task": "speech", "temperature": 0.4, "top_p": 0.7,
+         "reasoning": "medium", "requested": True, "mode": "json_object"},
+        {"agent": "p02", "task": "reflection", "temperature": 0.3, "top_p": 0.9,
+         "reasoning": "high", "requested": True, "mode": "json_schema"},
+        {"agent": "judge", "task": "vote_tally", "temperature": 0.1, "top_p": 1.0,
+         "reasoning": "high", "requested": True, "mode": "native_tool"},
+    ],
+)
+def test_active_openai_payload_matrix_records_effective_request(case: dict) -> None:
+    """固定关键调用场景的最终 HTTP 参数，避免只断言配置解析。"""
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.usage_records import ModelConfig
+
+    client = _CapturingClient()
+    provider = OpenAIProvider(
+        api_key="k", base_url="https://api.example/v1", http_client=client,
+    )
+    tools = [{
+        "name": "vote",
+        "description": "vote action",
+        "input_schema": {
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+        },
+    }]
+    config = ModelConfig(
+        provider="openai", model=f"{case['agent']}-model",
+        temperature=case["temperature"], top_p=case["top_p"], timeout=137,
+        reasoning_level=case["reasoning"], reasoning_requested=case["requested"],
+        structured_output_mode=case["mode"],
+        extra_body={"reasoning_split": True},
+    )
+    result = provider.generate(
+        f"{case['agent']} {case['task']}", config, tools=tools,
+        tool_choice={"name": "vote"},
+    )
+    payload = client.last_payload
+    assert payload is not None
+    assert payload["temperature"] == case["temperature"]
+    assert payload["top_p"] == case["top_p"]
+    assert client.last_timeout == 137
+    assert payload["reasoning_split"] is True
+    assert result.effective_temperature == case["temperature"]
+    if case["requested"]:
+        assert payload["reasoning_effort"] == case["reasoning"]
+    else:
+        assert "reasoning_effort" not in payload
+    if case["mode"] == "json_schema":
+        assert payload["response_format"]["type"] == "json_schema"
+        assert payload["response_format"]["json_schema"]["schema"]["required"] == ["target"]
+    elif case["mode"] == "json_object":
+        assert payload["response_format"] == {"type": "json_object"}
+    else:
+        assert payload["tools"][0]["function"]["name"] == "vote"
+        assert payload["tool_choice"]["function"]["name"] == "vote"
+
+
+def test_active_payload_matrix_real_fallback_keeps_medium_speech_policy() -> None:
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    client = _FailOnceClient()
+    provider = OpenAIProvider(
+        api_key="k", base_url="https://api.example/v1", http_client=client,
+    )
+    router = ModelRouter(
+        model_profiles={
+            "primary": {
+                "provider": "openai", "model": "primary-model", "temperature": 0.2,
+                "top_p": 0.8, "timeout": 131, "retry_count": 0,
+                "reasoning": {"level": "medium"},
+                "structured_output": {"mode": "json_schema"},
+                "extra_body": {"reasoning_split": True},
+            },
+            "fallback": {
+                "provider": "openai", "model": "fallback-model", "temperature": 0.6,
+                "top_p": 0.95, "timeout": 149, "retry_count": 0,
+                "reasoning": {"level": "high"},
+                "structured_output": {"mode": "json_schema"},
+                "extra_body": {"reasoning_split": True},
+            },
+        },
+        llm_profiles={"profile": {
+            "default": {"provider": "openai", "model_profile": "primary"},
+            "fallback": {"provider": "openai", "model_profile": "fallback"},
+        }},
+        player_assignments={"p01": "profile"},
+        providers={"openai": provider},
+        validate_reasoning=False,
+    )
+    tools = [{
+        "name": "vote",
+        "input_schema": {
+            "type": "object", "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+        },
+    }]
+    result = router.generate(
+        "p01", "speech", "vote", tools=tools, tool_choice={"name": "vote"},
+        structured_output_mode="json_schema", jitter_seconds=(0, 0),
+    )
+    assert client.calls == 2
+    assert result.text == "ok"
+    assert result.attempts[1].requested_reasoning_level.value == "medium"
+    payload = client.last_payload
+    assert payload is not None
+    assert payload["model"] == "fallback-model"
+    assert payload["temperature"] == 0.6
+    assert payload["top_p"] == 0.95
+    assert client.last_timeout == 149
+    assert payload["reasoning_effort"] == "medium"
+    assert payload["reasoning_split"] is True
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"]["schema"]["required"] == ["target"]
 
 
 class TestGLMProviderPerProfile:
