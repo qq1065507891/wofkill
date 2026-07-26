@@ -1,8 +1,19 @@
+# -*- coding: utf-8 -*-
+"""
+验证近期平衡报告与审计闭环 PowerShell 脚本契约。
+
+作者: Project contributors
+修改日期: 2026-07-26
+"""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import shutil
 import subprocess
+from pathlib import Path
+
+import pytest
 
 
 def test_recent_balance_report_includes_new_guardrails(tmp_path):
@@ -94,6 +105,10 @@ def test_soak_script_is_isolated_and_requires_explicit_exact_seeds() -> None:
 
 
 def test_soak_script_has_valid_powershell_ast() -> None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("需要 pwsh 或 powershell 才能验证 PowerShell AST")
+
     root = Path(__file__).resolve().parents[2]
     script = root / "scripts" / "run_audit_closure_soak.ps1"
     command = (
@@ -104,7 +119,7 @@ def test_soak_script_has_valid_powershell_ast() -> None:
     )
 
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", command],
+        [powershell, "-NoProfile", "-Command", command],
         check=False,
         capture_output=True,
         text=True,
