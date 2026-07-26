@@ -1095,6 +1095,66 @@ class TestSeerClaimContractExtraction:
             for c in claims
         )
 
+    def test_mixed_gold_forms_are_all_scanned(self):
+        """同一发言中的第三方和自身两种金水形式都应分别归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说p02金水，我给p03发金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
+    def test_unrelated_long_announcement_does_not_block_self_check(self):
+        """无关的长公告动作不能把后续自身查验误判为第三方。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01在群里发了一段很长的公告然后我验了p02金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_adjacent_self_gold_claims_are_not_reported_as_third_party(self):
+        """连续自述的金水结果不能因前一个目标编号而被误归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p08",
+            text="我是预言家 查杀p01 p02是狼人 p03是金水 给p04发金水",
+            day=1,
+        )
+
+        assert {
+            c.target_player
+            for c in claims
+            if c.fact_type == "seer_check_claim"
+            and c.source_player == "p08"
+            and c.value == "good"
+        } >= {"p03", "p04"}
+
     def test_long_third_party_name_filters_gold_claim(self):
         """超长第三方姓名仍应在当前句内正确归因。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text

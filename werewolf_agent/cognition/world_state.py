@@ -366,13 +366,20 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
     ))
 
     # Gold claim: p05是金水, 给p05发金水
-    gold_matches = list(re.finditer(r"(p\d{2})\s*(?:是金水|金水)", text))
-    if not gold_matches:
-        gold_matches = list(re.finditer(r"给\s*(p\d{2})\s*(?:发)?金水", text))
+    gold_matches = [
+        *re.finditer(r"(p\d{2})\s*(?:是金水|金水)", text),
+        *re.finditer(r"给\s*(p\d{2})\s*(?:发)?金水", text),
+    ]
+    gold_matches.sort(key=lambda match: match.start(1))
+    seen_gold_targets: set[int] = set()
     for match in gold_matches:
         target = match.group(1)
+        target_start = match.start(1)
+        if target_start in seen_gold_targets:
+            continue
+        seen_gold_targets.add(target_start)
         if self_seer_context and not _is_third_party_seer_report(
-            text, match.start(1)
+            text, target_start
         ):
             facts.append(StructuredFact(
                 fact_type="seer_check_claim",
@@ -424,7 +431,8 @@ def _is_third_party_seer_report(text: str, target_start: int) -> bool:
         r"我(?:昨晚|今晚|夜里|首夜|刚刚)?(?:查验|查了?|验了?|验人|给)$",
         prefix,
     )
-    marker_in_clause = _contains_third_party_report_marker(prefix)
+    suffix = re.sub(r"\s+", "", text[target_start:target_start + 16])
+    marker_in_clause = _contains_third_party_report_marker(prefix, suffix)
     if direct_self:
         # 同一子句已有“p01说/报”是被转述的第一人称；独立的“我验了”保留。
         if marker_in_clause:
@@ -453,13 +461,33 @@ def _previous_clause_has_marker(text: str, boundary: int) -> bool:
     return _contains_third_party_report_marker(previous)
 
 
-def _contains_third_party_report_marker(prefix: str) -> bool:
-    if not prefix:
+_THIRD_PARTY_MARKER_WINDOW = 120
+_THIRD_PARTY_REPORT_MARKER_RE = re.compile(
+    rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:"
+    r"(?:报|说|称|讲|表示)(?=(?:我|他|她|验|查|p\d{2}|[“\"「『]))"
+    # “p03是金水给p04发金水”中的“给”是自身连续陈述，不能把 p03
+    # 当作第三方报告者；真正的第三方给金水通常不会紧跟结果词。
+    r"|(?<!金水)(?<!好人)(?<!狼人)(?<!查杀)(?:给|发)(?=(?:p\d{2}|金水|查杀|好人))"
+    r"|(?:验|查)(?=\s*(?:p\d{2}|我))"
+    r")"
+)
+_THIRD_PARTY_TERMINAL_MARKER_RE = re.compile(
+    rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:报|说|称|讲|表示)$"
+)
+
+
+def _contains_third_party_report_marker(prefix: str, suffix: str = "") -> bool:
+    if not prefix and not suffix:
         return False
-    return bool(
-        re.search(r"p\d{2}.{0,120}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
-        or re.search(r"你.{0,120}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
-    )
+    compact_prefix = re.sub(r"\s+", "", prefix)
+    # 只让 marker 关联目标之前的文本。追加占位目标即可识别
+    # “p01说p02/给p02”这种 marker 在目标起点前结束的紧凑写法，
+    # 同时避免把目标之后的下一个“给/发”倒灌到当前目标。
+    marker_match = _THIRD_PARTY_REPORT_MARKER_RE.search(compact_prefix + "p00")
+    # 目标自身的 pXX 不能被当成报告者；报告者必须位于 target 起点之前。
+    if marker_match and marker_match.start() < len(compact_prefix):
+        return True
+    return bool(_THIRD_PARTY_TERMINAL_MARKER_RE.search(compact_prefix))
 
 
 def _extract_badge_flow_targets(text: str) -> list[list[str]]:
