@@ -1075,6 +1075,38 @@ class TestSeerClaimContractExtraction:
             and c.fact_type in {"seer_check_claim", "claimed_good"}
         ]
 
+    def test_reported_first_person_check_is_not_speaker_claim(self):
+        """第三方直接转述“我验了”仍不属于当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说我验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
+    def test_reported_first_person_check_after_doubt_is_not_speaker_claim(self):
+        """“我不信p01说我验了”中的验人仍是被引述内容。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我不信p01说我验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
     def test_multiline_badge_flow_preserves_order(self):
         """多行警徽流应提取首个目标并保留完整顺序。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text

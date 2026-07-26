@@ -417,7 +417,8 @@ def _is_third_party_seer_report(text: str, span_start: int) -> bool:
         r"我(?:昨晚|今晚|夜里|首夜|刚刚)?(?:查验|查了?|验了?|验人)$",
         prefix,
     ):
-        return False
+        # 若同一子句前面已有“p01说/报”等 marker，则这是被转述的第一人称。
+        return _contains_third_party_report_marker(prefix)
     # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了..."
     # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
     if _contains_third_party_report_marker(prefix):
