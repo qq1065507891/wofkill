@@ -302,6 +302,7 @@ def test_parse_discussion_summary_text_preserves_urls_in_summary() -> None:
         '{"summary":"ok","unknown":true}',
         '{"suspected_players":[]}',
         '{"summary":"ok","suspected_players":"p03"}',
+        '[{"summary":"ok"}]',
     ],
 )
 def test_parse_discussion_summary_text_rejects_invalid_schema(raw_text: str) -> None:

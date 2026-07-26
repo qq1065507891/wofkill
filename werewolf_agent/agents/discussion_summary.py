@@ -66,6 +66,9 @@ def parse_discussion_summary_text(raw_text: str) -> DiscussionSummary:
     """修复并严格解析包含 DiscussionSummary 的模型文本。"""
 
     repaired = repair_json_text(raw_text)
+    if repaired.lstrip().startswith("["):
+        payload = json.loads(repaired)
+        return DiscussionSummary.model_validate(payload)
     candidates = extract_balanced_json_objects(repaired)
     if not candidates:
         payload = json.loads(repaired)
