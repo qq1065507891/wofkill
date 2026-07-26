@@ -1190,6 +1190,51 @@ class TestSeerClaimContractExtraction:
                 and c.fact_type in {"claimed_good", "seer_check_claim", "claimed_suspect"}
             ]
 
+    def test_completed_report_verbs_filter_claims(self):
+        """报了/说了完成体后的目标仍应归因给第三方。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in (
+            "我是预言家，p01报了p02查杀。",
+            "我是预言家，p01说了p02金水。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+            assert not [
+                c for c in claims
+                if c.source_player == "p06"
+                and c.target_player == "p02"
+                and c.fact_type in {"claimed_good", "seer_check_claim", "claimed_suspect"}
+            ]
+
+    def test_cross_comma_quoted_first_person_without_quotes_is_third_party(self):
+        """p01说，后的无引号第一人称查验仍属于 p01 的转述。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说，我验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"claimed_good", "seer_check_claim"}
+        ]
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p03金水。",
+            day=1,
+        )
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
     def test_third_party_check_verbs_filter_targets_before_self_check(self):
         """第三方完整“验了/查了”动词后的目标不能归因给当前发言者。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text

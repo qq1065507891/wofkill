@@ -444,9 +444,11 @@ def _is_third_party_seer_report(text: str, target_start: int) -> bool:
         if marker_in_clause:
             return True
         # 跨逗号引语的开头带引号时，前一子句的说话者仍然负责归因。
-        return prefix.startswith(("“", '"', "「", "『")) and _previous_clause_has_marker(
-            text, boundary
-        )
+        if prefix.startswith(("“", '"', "「", "『")):
+            return _previous_clause_has_marker(text, boundary)
+        # 无引号的“p01说，我验了...”同样是 p01 的第一人称转述；
+        # 带完整结果的“p01报p02查杀，我验了...”则保留当前玩家自述。
+        return _previous_clause_has_marker(text, boundary, terminal_only=True)
     # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了..."
     # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
     if marker_in_clause:
@@ -456,7 +458,9 @@ def _is_third_party_seer_report(text: str, target_start: int) -> bool:
     return _previous_clause_has_marker(text, boundary)
 
 
-def _previous_clause_has_marker(text: str, boundary: int) -> bool:
+def _previous_clause_has_marker(
+    text: str, boundary: int, *, terminal_only: bool = False
+) -> bool:
     if boundary < 0 or text[boundary] not in "，,":
         return False
     context_start = max(0, boundary - _THIRD_PARTY_CONTEXT_WINDOW)
@@ -466,6 +470,8 @@ def _previous_clause_has_marker(text: str, boundary: int) -> bool:
         for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
     )
     previous = re.sub(r"\s+", "", context[previous_offset + 1:])
+    if terminal_only:
+        return bool(_THIRD_PARTY_TERMINAL_MARKER_RE.search(previous))
     return _contains_third_party_report_marker(previous)
 
 
@@ -474,14 +480,14 @@ _THIRD_PARTY_CONTEXT_WINDOW = 180
 _THIRD_PARTY_REPORT_MARKER_RE = re.compile(
     rf"(?:"
     rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:"
-    r"(?:报|说|称|讲|表示)(?=[:：]*[“\"「『]?(?:我|他|她|验|查|p\d{2}))"
+    r"(?:报|说|称|讲|表示)了?(?=[:：]*[“\"「『]?(?:我|他|她|验|查|p\d{2}))"
     r")"
     rf"|(?:p\d{{2}}|你)(?:给|发)(?=(?:p\d{{2}}|我|他|她|金水|查杀|好人))"
     rf"|(?:p\d{{2}}|你)(?:验了?|查(?:了|验)?)(?=(?:p\d{{2}}|我))"
     rf")"
 )
 _THIRD_PARTY_TERMINAL_MARKER_RE = re.compile(
-    rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:报|说|称|讲|表示)$"
+    rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:报|说|称|讲|表示)了?$"
 )
 
 
