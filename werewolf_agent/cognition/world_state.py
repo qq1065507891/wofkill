@@ -457,8 +457,8 @@ def _contains_third_party_report_marker(prefix: str) -> bool:
     if not prefix:
         return False
     return bool(
-        re.search(r"p\d{2}.{0,20}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
-        or re.search(r"你.{0,20}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
+        re.search(r"p\d{2}.{0,120}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
+        or re.search(r"你.{0,120}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
     )
 
 

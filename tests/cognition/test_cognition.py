@@ -1095,6 +1095,40 @@ class TestSeerClaimContractExtraction:
             for c in claims
         )
 
+    def test_long_third_party_name_filters_gold_claim(self):
+        """超长第三方姓名仍应在当前句内正确归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        text = (
+            "我是预言家，p01这是一个非常非常非常非常非常非常非常非常非常长的名字"
+            "说验了p02金水。"
+        )
+        claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+            and c.target_player == "p02"
+        ]
+
+    def test_long_third_party_name_filters_suspect_claim(self):
+        """超长第三方姓名后的查杀不能成为当前玩家的怀疑事实。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        text = (
+            "我是预言家，p01这是一个非常非常非常非常非常非常非常非常非常长的名字"
+            "报p02查杀。"
+        )
+        claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_suspect"}
+            and c.target_player == "p02"
+        ]
+
     def test_mixed_third_party_and_self_wolf_check_keeps_self_claim(self):
         """混合第三方查杀后，当前玩家的查杀查验仍应保留。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text
