@@ -85,13 +85,13 @@ tests/               # pytest 测试套件
 
 ```powershell
 conda env create -f environment.yml
-conda activate wofkill
+conda run -n wofkill python --version
 ```
 
 已有环境可以更新：
 
 ```powershell
-conda env update -f environment.yml --prune
+conda env update -n wofkill -f environment.yml --prune
 ```
 
 ### 2. 配置环境变量
