@@ -1035,6 +1035,30 @@ class TestSeerClaimContractExtraction:
                 if c.fact_type == "claimed_good" and c.source_player == "p06"
             ]
 
+    def test_mixed_third_party_and_self_check_keeps_self_claim(self):
+        """前置第三方查杀不能屏蔽同段后续自己的金水查验。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p03金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+        assert not any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            for c in claims
+        )
+
     def test_multiline_badge_flow_preserves_order(self):
         """多行警徽流应提取首个目标并保留完整顺序。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text

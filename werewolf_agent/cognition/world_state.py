@@ -411,6 +411,10 @@ def _is_third_party_seer_report(text: str, span_start: int) -> bool:
         for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
     ) + 1
     prefix = re.sub(r"\s+", "", text[clause_start:span_start])
+    # 当前子句明确使用“我验/我查”时，以自身声明为准，不受前一子句的
+    # 第三方报道影响。
+    if re.search(r"我.{0,12}(?:查验|查了?|验了?|验人)", prefix):
+        return False
     # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了..."
     # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
     if _contains_third_party_report_marker(prefix):
