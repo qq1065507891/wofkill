@@ -1059,6 +1059,22 @@ class TestSeerClaimContractExtraction:
             for c in claims
         )
 
+    def test_third_party_comment_with_self_pronoun_does_not_claim_check(self):
+        """“我不信他验了”中的我不是查验主语。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，我不信p01说他验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
     def test_multiline_badge_flow_preserves_order(self):
         """多行警徽流应提取首个目标并保留完整顺序。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text
