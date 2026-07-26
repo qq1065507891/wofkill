@@ -64,7 +64,8 @@ def test_game_router_keeps_route_registration_surface() -> None:
     auth = AuthManager(AuthConfig(mode="local", secret_key="test-secret"))
     app = create_app(repository=InMemoryGameRepository(), auth_manager=auth)
 
-    route_methods = {"get", "post", "put", "patch", "delete", "options", "head"}
+    route_methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
+    assert "trace" in route_methods
     routes = {
         (method.upper(), path)
         for path, operations in app.openapi()["paths"].items()
