@@ -120,22 +120,22 @@ Provider、模型和玩家分配以 [config/models.yaml](config/models.yaml) 为
 ### 3. 运行测试
 
 ```powershell
-python -m pytest -q
+conda run -n wofkill python -m pytest -q -o addopts=''
 ```
 
-Windows 默认临时目录出现 `WinError 5` 时，改用仓库内可写目录：
+Windows 默认临时目录出现 `WinError 5` 时，可显式使用不被嵌套测试管理的仓库目录：
 
 ```powershell
-python -m pytest -q -o addopts='' --basetemp .tmp/pytest
+conda run -n wofkill python -m pytest -q -o addopts='' --basetemp .pytest-tmp/full-suite
 ```
 
 常用聚焦测试：
 
 ```powershell
-python -m pytest tests/rules/test_rule_engine_v1.py -q
-python -m pytest tests/api/test_api.py -q
-python -m pytest tests/ui/test_dashboard.py -q
-python -m pytest tests/scripts/test_run_real_game.py -q
+conda run -n wofkill python -m pytest tests/rules/test_rule_engine_v1.py -q
+conda run -n wofkill python -m pytest tests/api/test_api.py -q
+conda run -n wofkill python -m pytest tests/ui/test_dashboard.py -q
+conda run -n wofkill python -m pytest tests/scripts/test_run_real_game.py -q
 ```
 
 ## 启动 API 与 Dashboard
