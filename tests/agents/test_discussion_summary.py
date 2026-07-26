@@ -290,6 +290,12 @@ def test_parse_discussion_summary_text_accepts_fenced_bom_and_mixed_prose(
     )
 
 
+def test_parse_discussion_summary_text_preserves_urls_in_summary() -> None:
+    assert parse_discussion_summary_text(
+        '{"summary":"查看 https://example.com/a"}'
+    ).summary == "查看 https://example.com/a"
+
+
 @pytest.mark.parametrize(
     "raw_text",
     [

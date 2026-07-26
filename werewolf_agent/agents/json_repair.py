@@ -47,8 +47,7 @@ def repair_json_text(raw: str) -> str:
     """修复 LLM 输出里常见的 JSON 语法瑕疵。"""
     text = raw.strip()
     text = text.replace("﻿", "").replace("​", "")
-    text = re.sub(r"//[^\n]*", "", text)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = _strip_json_comments(text)
     text = re.sub(r"\bNaN\b", "null", text)
     text = re.sub(r"\bInfinity\b|\binf\b", "null", text, flags=re.IGNORECASE)
 
@@ -65,6 +64,54 @@ def repair_json_text(raw: str) -> str:
     text = re.sub(r",\s*([}\]])", r"\1", text)
     text = re.sub(r",\s*,", ",", text)
     return text
+
+
+def _strip_json_comments(text: str) -> str:
+    """仅移除 JSON 字符串之外的单行和块注释。"""
+
+    result: list[str] = []
+    in_string = False
+    escape = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            result.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < len(text):
+            next_char = text[index + 1]
+            if next_char == "/":
+                index += 2
+                while index < len(text) and text[index] != "\n":
+                    index += 1
+                continue
+            if next_char == "*":
+                index += 2
+                while index + 1 < len(text):
+                    if text[index] == "*" and text[index + 1] == "/":
+                        index += 2
+                        break
+                    if text[index] == "\n":
+                        result.append("\n")
+                    index += 1
+                continue
+
+        result.append(char)
+        index += 1
+    return "".join(result)
 
 
 def extract_json_object_candidates(text: str) -> list[str]:
