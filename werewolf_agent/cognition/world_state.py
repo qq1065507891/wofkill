@@ -420,7 +420,7 @@ def _is_third_party_seer_report(text: str, target_start: int) -> bool:
     """判断目标查验是否属于第三方转述，调用方统一传目标起点。"""
     if target_start < 0:
         return False
-    # 只复制目标前的有限窗口，避免无标点长发言中每个目标都重复扫描全文。
+    # 只截取目标前的有限窗口，避免无标点长发言中每个目标都重复扫描全文。
     context_start = max(0, target_start - _THIRD_PARTY_CONTEXT_WINDOW)
     context = text[context_start:target_start]
     boundary_offset = max(
