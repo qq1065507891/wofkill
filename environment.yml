@@ -5,8 +5,10 @@ dependencies:
   - python=3.12
   - pip
   - pyyaml
+  - numpy
   - pytest
   - pytest-cov
+  - pytest-xdist
   - pydantic
   - fastapi
   - uvicorn
