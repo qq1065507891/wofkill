@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# ruff: noqa: UP009
 """
 验证近期平衡报告与审计闭环 PowerShell 脚本契约。
 
