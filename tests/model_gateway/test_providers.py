@@ -322,7 +322,7 @@ class TestGenerateResultThinkingText:
             def __init__(self) -> None:
                 self.response = Response()
 
-            def post(self, _url, *, json, **_kwargs):  # noqa: A002
+            def post(self, _url, *, json, **_kwargs):
                 return self.response
 
         result = OpenAIProvider(
@@ -351,7 +351,7 @@ class TestGenerateResultThinkingText:
                 }
 
         class Client:
-            def post(self, _url, *, json, **_kwargs):  # noqa: A002
+            def post(self, _url, *, json, **_kwargs):
                 return Response()
 
         result = OpenAIProvider(

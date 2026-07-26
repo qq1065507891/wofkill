@@ -342,15 +342,16 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
              if group and re.fullmatch(r"p\d{2}", group)),
             None,
         )
-        target = match.group(target_group) if target_group else None
-        if target and not _is_third_party_seer_report(text, match.start(target_group)):
-            facts.append(StructuredFact(
-                fact_type="claimed_good",
-                source_player=speaker,
-                target_player=target,
-                value="good",
-                day=day,
-            ))
+        if target_group is not None:
+            target = match.group(target_group)
+            if target and not _is_third_party_seer_report(text, match.start(target_group)):
+                facts.append(StructuredFact(
+                    fact_type="claimed_good",
+                    source_player=speaker,
+                    target_player=target,
+                    value="good",
+                    day=day,
+                ))
 
     # Badge flow: 支持紧凑格式和逐行列出的 N2/N3 验人计划。
     for targets in _extract_badge_flow_targets(text):

@@ -249,7 +249,7 @@ class _FailOnceClient(_CapturingClient):
         super().__init__(response_data)
         self.calls = 0
 
-    def post(self, url, *, json, **kwargs):  # noqa: A002
+    def post(self, url, *, json, **kwargs):
         self.calls += 1
         if self.calls == 1:
             self.last_url = url
