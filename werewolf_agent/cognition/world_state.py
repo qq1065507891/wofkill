@@ -321,7 +321,7 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
     # --- H-7: 右侧分支 p\d{2} 也放入捕获组 ---
     for match in re.finditer(r"(保|金水|好人)\s*(p\d{2})|(p\d{2})\s*(是|为)?\s*(金水|好人)", text):
         target = next((group for group in match.groups() if group and re.fullmatch(r"p\d{2}", group)), None)
-        if target:
+        if target and not _is_third_party_seer_report(text, match.start()):
             facts.append(StructuredFact(
                 fact_type="claimed_good",
                 source_player=speaker,
@@ -394,10 +394,25 @@ def _is_third_party_seer_report(text: str, span_start: int) -> bool:
         for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
     ) + 1
     prefix = re.sub(r"\s+", "", text[clause_start:span_start])
+    # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了..."
+    # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
+    if _contains_third_party_report_marker(prefix):
+        return True
+
+    # “p01说，昨晚验了p02”中编号和查验动词跨逗号，检查紧邻的前一子句。
+    if clause_start > 0 and text[clause_start - 1] in "，,":
+        previous_start = max(
+            text.rfind(mark, 0, clause_start - 1)
+            for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
+        ) + 1
+        previous = re.sub(r"\s+", "", text[previous_start:clause_start - 1])
+        return _contains_third_party_report_marker(previous)
+    return False
+
+
+def _contains_third_party_report_marker(prefix: str) -> bool:
     if not prefix:
         return False
-    # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了...”
-    # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
     return bool(
         re.search(r"p\d{2}.{0,20}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
         or re.search(r"你.{0,20}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
@@ -413,7 +428,7 @@ def _extract_badge_flow_targets(text: str) -> list[list[str]]:
         if not lines:
             continue
 
-        compact_match = re.search(r"(p\d{2}(?:\s+p\d{2})*)", lines[0])
+        compact_match = re.match(r"^[\s:：]*(p\d{2}(?:\s+p\d{2})*)", lines[0])
         targets = re.findall(r"p\d{2}", compact_match.group(1)) if compact_match else []
         if not targets:
             for line in lines[1:]:

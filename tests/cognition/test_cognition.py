@@ -992,6 +992,33 @@ class TestSeerClaimContractExtraction:
             and c.source_player == "p06"
             and c.target_player == "p02"
         ]
+        assert not [
+            c for c in claims
+            if c.fact_type == "badge_flow_claim" and c.source_player == "p06"
+        ]
+        assert not [
+            c for c in claims
+            if c.fact_type == "claimed_good"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+        ]
+
+    def test_cross_clause_third_party_seer_recap_does_not_create_speaker_check(self):
+        """第三方编号与查验结果跨逗号时仍不能归因给当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说，昨晚验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+        ]
 
     def test_multiline_badge_flow_preserves_order(self):
         """多行警徽流应提取首个目标并保留完整顺序。"""
