@@ -56,6 +56,77 @@ class TestModelRouter:
             assert config.temperature == temperature
             assert config.top_p == 0.9
 
+    def test_all_active_routes_use_task_sampling_profiles(self) -> None:
+        """每个活动路由的六类主任务都必须使用声明的采样档位。"""
+        router = ModelRouter.from_yaml(MODELS_YAML)
+        task_temperatures = {
+            "discussion_summary": 0.2,
+            "vote": 0.3,
+            "night_action": 0.3,
+            "speech": 0.4,
+            "deception": 0.5,
+            "wolf_discussion": 0.5,
+        }
+        route_contracts = {
+            **{
+                player_id: {
+                    "provider": "openai",
+                    "model": "MiniMax-M3",
+                    "base_url": "https://api.minimaxi.com/v1",
+                    "extra_body": {"reasoning_split": True},
+                }
+                for player_id in ("p01", "p03", "p08")
+            },
+            **{
+                player_id: {
+                    "provider": "openai",
+                    "model": "MiniMax-M2.7",
+                    "base_url": "https://api.minimaxi.com/v1",
+                    "extra_body": {"reasoning_split": True},
+                }
+                for player_id in ("p06", "p10")
+            },
+            **{
+                player_id: {
+                    "provider": "openai",
+                    "model": "DeepSeek-V4-Pro",
+                    "base_url": None,
+                    "extra_body": {},
+                }
+                for player_id in ("p07", "p11")
+            },
+            "p05": {
+                "provider": "openai",
+                "model": "deepseek-v4-flash",
+                "base_url": None,
+                "extra_body": {},
+            },
+            **{
+                player_id: {
+                    "provider": "openai",
+                    "model": "DeepSeek-V4-Pro",
+                    "base_url": None,
+                    "extra_body": {},
+                }
+                for player_id in ("p02", "p04", "p09", "p12", "judge")
+            },
+        }
+
+        assert set(route_contracts) == {
+            *(f"p{index:02d}" for index in range(1, 13)),
+            "judge",
+        }
+        for player_id, contract in route_contracts.items():
+            for task_type, temperature in task_temperatures.items():
+                config, _ = router.resolve_config(player_id, task_type)
+                assert config.temperature == temperature, (player_id, task_type)
+                assert config.top_p == 0.9, (player_id, task_type)
+                assert config.provider == contract["provider"]
+                assert config.model == contract["model"]
+                assert config.base_url == contract["base_url"]
+                assert config.extra_body == contract["extra_body"]
+                assert config.structured_output_mode == "text_json"
+
     def test_minimax_judge_and_thinking_profiles_declare_wire_temperatures(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         model_profiles = router._model_profiles
