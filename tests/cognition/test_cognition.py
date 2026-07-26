@@ -1091,6 +1091,24 @@ class TestSeerClaimContractExtraction:
         assert badge_facts[0].target_player == "p08"
         assert badge_facts[0].metadata["badge_flow_order"] == ["p08", "p06"]
 
+    def test_badge_flow_requires_player_token_boundaries(self):
+        """紧凑警徽流拒绝前缀 token，并支持 ASCII/中文分隔后的目标。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in ("警徽流：p020 p11", "警徽流：p02x p11"):
+            claims = _infer_claims_from_text(speaker="p03", text=text, day=1)
+            assert not [c for c in claims if c.fact_type == "badge_flow_claim"]
+
+        valid_cases = (
+            ("警徽流：p05， p07", ["p05", "p07"]),
+            ("警徽流：p05, p07", ["p05", "p07"]),
+        )
+        for text, expected_order in valid_cases:
+            claims = _infer_claims_from_text(speaker="p03", text=text, day=1)
+            badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+            assert len(badge_facts) == 1
+            assert badge_facts[0].metadata["badge_flow_order"] == expected_order
+
 
 class TestSeerClaimCommitment:
     """Seer claim commitments persist and detect later contradictions."""

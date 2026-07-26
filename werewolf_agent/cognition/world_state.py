@@ -446,15 +446,19 @@ def _extract_badge_flow_targets(text: str) -> list[list[str]]:
             continue
 
         compact_match = re.match(
-            r"^[\s:：]*(p\d{2}(?:(?:\s+|[，、])p\d{2})*)",
+            r"^[\s:：]*(p\d{2}(?![A-Za-z0-9_])"
+            r"(?:(?:\s+|[，、,]\s*)p\d{2}(?![A-Za-z0-9_]))*)",
             lines[0],
         )
-        targets = re.findall(r"p\d{2}", compact_match.group(1)) if compact_match else []
+        targets = (
+            re.findall(r"p\d{2}(?![A-Za-z0-9_])", compact_match.group(1))
+            if compact_match else []
+        )
         if not targets:
             ordered_match = re.match(
-                r"^[\s:：]*先\s*(?:验|查)?\s*(p\d{2})"
-                r"\s*[，、,]?\s*后\s*(?:验|查)?\s*(p\d{2})"
-                r"(?:\s*[，、,]?\s*再\s*(?:验|查)?\s*(p\d{2}))?"
+                r"^[\s:：]*先\s*(?:验|查)?\s*(p\d{2}(?![A-Za-z0-9_]))"
+                r"\s*[，、,]?\s*后\s*(?:验|查)?\s*(p\d{2}(?![A-Za-z0-9_]))"
+                r"(?:\s*[，、,]?\s*再\s*(?:验|查)?\s*(p\d{2}(?![A-Za-z0-9_])))?"
                 r"(?=$|[\s，、。！？；])",
                 lines[0],
             )
@@ -471,7 +475,7 @@ def _extract_badge_flow_targets(text: str) -> list[list[str]]:
                     stripped,
                 ):
                     break
-                targets.extend(re.findall(r"p\d{2}", stripped))
+                targets.extend(re.findall(r"p\d{2}(?![A-Za-z0-9_])", stripped))
         if targets:
             flows.append(targets)
     return flows
