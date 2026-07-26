@@ -363,15 +363,17 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
             phase="",
             value="badge_flow",
             metadata={"badge_flow_order": targets},
-        ))
+    ))
 
     # Gold claim: p05是金水, 给p05发金水
-    gold_match = re.findall(r"(p\d{2})\s*(?:是金水|金水)", text)
-    if not gold_match:
-        gold_match = re.findall(r"给\s*(p\d{2})\s*(?:发)?金水", text)
-    for target in gold_match:
-        match_start = text.find(target)
-        if self_seer_context and not _is_third_party_seer_report(text, match_start):
+    gold_matches = list(re.finditer(r"(p\d{2})\s*(?:是金水|金水)", text))
+    if not gold_matches:
+        gold_matches = list(re.finditer(r"给\s*(p\d{2})\s*(?:发)?金水", text))
+    for match in gold_matches:
+        target = match.group(1)
+        if self_seer_context and not _is_third_party_seer_report(
+            text, match.start(1)
+        ):
             facts.append(StructuredFact(
                 fact_type="seer_check_claim",
                 source_player=speaker,
@@ -419,7 +421,7 @@ def _is_third_party_seer_report(text: str, target_start: int) -> bool:
     clause_start = boundary + 1
     prefix = re.sub(r"\s+", "", text[clause_start:target_start])
     direct_self = re.search(
-        r"我(?:昨晚|今晚|夜里|首夜|刚刚)?(?:查验|查了?|验了?|验人)$",
+        r"我(?:昨晚|今晚|夜里|首夜|刚刚)?(?:查验|查了?|验了?|验人|给)$",
         prefix,
     )
     marker_in_clause = _contains_third_party_report_marker(prefix)

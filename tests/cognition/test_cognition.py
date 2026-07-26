@@ -1059,6 +1059,42 @@ class TestSeerClaimContractExtraction:
             for c in claims
         )
 
+    def test_mixed_gold_reuses_actual_target_occurrence(self):
+        """前置同名第三方目标不能遮蔽后续自身金水查验。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p02金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_gold_sender_reuses_actual_target_occurrence(self):
+        """给目标发金水时应按实际命中位置归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我给p03发金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
     def test_mixed_third_party_and_self_wolf_check_keeps_self_claim(self):
         """混合第三方查杀后，当前玩家的查杀查验仍应保留。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text
