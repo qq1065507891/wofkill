@@ -115,15 +115,44 @@ def test_soak_script_has_valid_powershell_ast() -> None:
     command = (
         "$errors=$null; "
         "[System.Management.Automation.Language.Parser]::ParseFile("
-        f"'{script}', [ref]$null, [ref]$errors) | Out-Null; "
+        "$args[0], [ref]$null, [ref]$errors) | Out-Null; "
         "if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }"
     )
 
     result = subprocess.run(
-        [powershell, "-NoProfile", "-Command", command],
+        [powershell, "-NoProfile", "-Command", command, str(script)],
         check=False,
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_powershell_ast_check_passes_script_path_as_separate_argument(monkeypatch) -> None:
+    captured = {}
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/mock/pwsh" if name == "pwsh" else None,
+    )
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    test_soak_script_has_valid_powershell_ast()
+
+    root = Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "run_audit_closure_soak.ps1"
+    argv = captured["args"]
+    assert argv[:3] == ["/mock/pwsh", "-NoProfile", "-Command"]
+    assert "$args[0]" in argv[3]
+    assert str(script) not in argv[3]
+    assert argv[4] == str(script)
+    assert captured["kwargs"]["timeout"] == 30
