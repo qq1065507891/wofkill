@@ -994,6 +994,12 @@ class TestSeerClaimContractExtraction:
         ]
         assert not [
             c for c in claims
+            if c.fact_type == "claimed_suspect"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+        ]
+        assert not [
+            c for c in claims
             if c.fact_type == "badge_flow_claim" and c.source_player == "p06"
         ]
         assert not [
@@ -1007,18 +1013,27 @@ class TestSeerClaimContractExtraction:
         """第三方编号与查验结果跨逗号时仍不能归因给当前发言者。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text
 
-        claims = _infer_claims_from_text(
-            speaker="p06",
-            text="我是预言家，p01说，昨晚验了p02金水。",
-            day=1,
-        )
+        for text in (
+            "我是预言家，p01说，昨晚验了p02金水。",
+            "我是预言家，p01说，昨晚验了p02查杀。",
+            "我是预言家，p02报p01查杀，我认为不可信。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
 
-        assert not [
-            c for c in claims
-            if c.fact_type == "seer_check_claim"
-            and c.source_player == "p06"
-            and c.target_player == "p02"
-        ]
+            assert not [
+                c for c in claims
+                if c.fact_type == "seer_check_claim"
+                and c.source_player == "p06"
+            ]
+            assert not [
+                c for c in claims
+                if c.fact_type == "claimed_suspect"
+                and c.source_player == "p06"
+            ]
+            assert not [
+                c for c in claims
+                if c.fact_type == "claimed_good" and c.source_player == "p06"
+            ]
 
     def test_multiline_badge_flow_preserves_order(self):
         """多行警徽流应提取首个目标并保留完整顺序。"""
@@ -1034,6 +1049,16 @@ class TestSeerClaimContractExtraction:
         assert len(badge_facts) == 1
         assert badge_facts[0].target_player == "p02"
         assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p11"]
+
+    def test_badge_flow_accepts_chinese_separators(self):
+        """紧凑警徽流支持中文逗号和顿号并保留顺序。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in ("警徽流：p05，p07", "警徽流：p05、p07"):
+            claims = _infer_claims_from_text(speaker="p03", text=text, day=1)
+            badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+            assert len(badge_facts) == 1
+            assert badge_facts[0].metadata["badge_flow_order"] == ["p05", "p07"]
 
 
 class TestSeerClaimCommitment:
