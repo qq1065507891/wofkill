@@ -3580,13 +3580,10 @@ class TestReflectionRoleSpecific:
         assert "模糊指代" not in _WOLF_REFLECTION_TEMPLATE
 
     def test_agent_reflection_uses_REFLECTION_task_type(self, monkeypatch) -> None:
-        """P0-RF1: _agent_reflection 必须用 TaskType.REFLECTION,而不是 SPEECH。
+        """P0-RF1: _agent_reflection 必须为 generate_reflection 构建反思上下文。
 
-        修复前的 bug:传 TaskType.SPEECH → speech_quality_phase 返回
-        'day_discussion' → validate_public_speech 跑 4 字段检查 → 反思
-        文本没有 stance/suspicion_target/vote_leaning/evidence → 8/12
-        reflection 失败。修复后 TaskType.REFLECTION 在映射表里没有 →
-        返回 None → 短路退出。
+        专用 generate_reflection 路径要求 TaskType.REFLECTION；其他
+        任务类型会违反结构化反思契约，并返回 task_contract_mismatch。
         """
         from werewolf_agent.agents.player import ReflectionDraftGenerationError
         from werewolf_agent.agents.schemas import TaskType
@@ -3625,8 +3622,9 @@ class TestReflectionRoleSpecific:
         result = aa._agent_reflection(state, engine=None, registry=FakeRegistry(), player_id="p01")
 
         assert captured["task_type"] == TaskType.REFLECTION, (
-            f"_agent_reflection should use TaskType.REFLECTION to bypass "
-            f"public-speech 4-field check, got {captured['task_type']!r}"
+            f"_agent_reflection 必须使用 TaskType.REFLECTION 调用专用 "
+            f"generate_reflection，否则会触发 task_contract_mismatch；"
+            f"实际为 {captured['task_type']!r}"
         )
         assert result["reflection_verification"]["status"] == "invalid_structured_draft"
         assert "reflection_text" not in result
