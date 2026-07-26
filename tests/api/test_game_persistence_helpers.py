@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import threading
 
 import pytest
@@ -42,6 +43,19 @@ class _Repo:
         self.saved.append(state)
 
 
+def _public_route_surface(
+    paths: Mapping[str, Mapping[str, object]],
+) -> set[tuple[str, str]]:
+    route_methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
+    return {
+        (method.upper(), path)
+        for path, operations in paths.items()
+        for method in operations
+        if method in route_methods
+        and (path == "/" or path.startswith(("/auth", "/games")))
+    }
+
+
 def test_helper_modules_are_reexported_from_games_facade() -> None:
     assert games._get_game is game_persistence._get_game
     assert games._persist is game_persistence._persist
@@ -60,19 +74,23 @@ def test_game_route_group_modules_expose_registration_helpers() -> None:
     assert game_snapshot_state.register_game_snapshot_state_routes is not None
 
 
+def test_public_route_surface_includes_trace_and_ignores_path_item_metadata() -> None:
+    paths = {
+        "/games/trace": {
+            "trace": {},
+            "summary": "metadata",
+            "parameters": [],
+        }
+    }
+
+    assert _public_route_surface(paths) == {("TRACE", "/games/trace")}
+
+
 def test_game_router_keeps_route_registration_surface() -> None:
     auth = AuthManager(AuthConfig(mode="local", secret_key="test-secret"))
     app = create_app(repository=InMemoryGameRepository(), auth_manager=auth)
 
-    route_methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
-    assert "trace" in route_methods
-    routes = {
-        (method.upper(), path)
-        for path, operations in app.openapi()["paths"].items()
-        for method in operations
-        if method in route_methods
-        and (path == "/" or path.startswith(("/auth", "/games")))
-    }
+    routes = _public_route_surface(app.openapi()["paths"])
 
     assert routes == {
         ("GET", "/"),
