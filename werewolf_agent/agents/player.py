@@ -3,7 +3,7 @@
 玩家 Agent public facade，提供行动、讨论摘要与赛后反思的窄生成入口。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-25
+修改日期：2026-07-26
 使用示例：内部模块，无对外接口
 """
 
@@ -27,6 +27,7 @@ from werewolf_agent.agents.discussion_summary import (
     DiscussionSummary,
     DiscussionSummaryGenerationError,
     discussion_summary_tool,
+    parse_discussion_summary_text,
 )
 from werewolf_agent.memory.reflection_synthesis import ReflectionDraft
 from werewolf_agent.agents.schemas import (
@@ -201,15 +202,15 @@ class PlayerAgent:
         if not raw_text:
             raise DiscussionSummaryGenerationError("empty_response")
         try:
-            payload = json.loads(raw_text)
+            return parse_discussion_summary_text(raw_text)
         except json.JSONDecodeError as exc:
             raise DiscussionSummaryGenerationError("invalid_json") from exc
-        try:
-            return DiscussionSummary.model_validate(payload)
         except ValidationError as exc:
             raise DiscussionSummaryGenerationError(
                 "schema_validation_failed"
             ) from exc
+        except ValueError as exc:
+            raise DiscussionSummaryGenerationError("invalid_json") from exc
 
     def generate_reflection(
         self,

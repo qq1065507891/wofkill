@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-定义讨论摘要 V2 契约，并兼容读取旧版字符串 checkpoint。
+定义讨论摘要 V2 契约、解析模型输出，并兼容读取旧版字符串 checkpoint。
 
 作者: Project contributors
 创建日期: 2026-07-25
-修改日期: 2026-07-25
+修改日期: 2026-07-26
 
 使用示例:
     >>> state = {"discussion_positions": {"p01": "我怀疑p03"}}
@@ -14,10 +14,16 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from werewolf_agent.agents.json_repair import (
+    extract_balanced_json_objects,
+    repair_json_text,
+)
 
 
 _SAFE_FAILURE_CODES = frozenset({
@@ -54,6 +60,35 @@ class DiscussionSummaryGenerationError(RuntimeError):
         )
         super().__init__(safe_code)
         self.failure_code = safe_code
+
+
+def parse_discussion_summary_text(raw_text: str) -> DiscussionSummary:
+    """修复并严格解析包含 DiscussionSummary 的模型文本。"""
+
+    repaired = repair_json_text(raw_text)
+    candidates = extract_balanced_json_objects(repaired)
+    if not candidates:
+        payload = json.loads(repaired)
+        return DiscussionSummary.model_validate(payload)
+
+    validated: list[DiscussionSummary] = []
+    validation_error: ValidationError | None = None
+    for candidate in candidates:
+        payload = json.loads(candidate)
+        try:
+            validated.append(DiscussionSummary.model_validate(payload))
+        except ValidationError as exc:
+            validation_error = validation_error or exc
+
+    if len(validated) == 1:
+        return validated[0]
+    if len(validated) > 1:
+        raise ValueError(
+            "ambiguous_discussion_summary: multiple objects validated"
+        )
+    if validation_error is not None:
+        raise validation_error
+    raise ValueError("no_discussion_summary_object")
 
 
 def discussion_summary_tool() -> dict[str, Any]:
@@ -165,4 +200,5 @@ __all__ = [
     "discussion_summary_for_player",
     "discussion_summary_text",
     "discussion_summary_tool",
+    "parse_discussion_summary_text",
 ]

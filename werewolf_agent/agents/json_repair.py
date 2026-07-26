@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-26
 
 使用示例:
     >>> from werewolf_agent.agents.json_repair import repair_json_text
@@ -69,6 +69,27 @@ def repair_json_text(raw: str) -> str:
 
 def extract_json_object_candidates(text: str) -> list[str]:
     """从混合文本中提取看起来像玩家动作的平衡 JSON 对象。"""
+    candidates = extract_balanced_json_objects(text)
+
+    action_candidates = [
+        candidate for candidate in candidates
+        if _looks_like_action_candidate(candidate)
+    ]
+    if not action_candidates:
+        if not candidates:
+            return []
+        raise ValueError(
+            "no_action_type_found: extract_json_object_candidates found "
+            f"{len(candidates)} balanced JSON object(s) but none carried an "
+            f"action_type discriminator (first-key form, or "
+            f"action_type field). Refusing to fall back to non-action JSON."
+        )
+    return action_candidates
+
+
+def extract_balanced_json_objects(text: str) -> list[str]:
+    """按出现顺序提取字符串外的平衡 JSON 对象。"""
+
     candidates: list[str] = []
     start: int | None = None
     depth = 0
@@ -98,21 +119,7 @@ def extract_json_object_candidates(text: str) -> list[str]:
             if depth == 0 and start is not None:
                 candidates.append(text[start:idx + 1])
                 start = None
-
-    action_candidates = [
-        candidate for candidate in candidates
-        if _looks_like_action_candidate(candidate)
-    ]
-    if not action_candidates:
-        if not candidates:
-            return []
-        raise ValueError(
-            "no_action_type_found: extract_json_object_candidates found "
-            f"{len(candidates)} balanced JSON object(s) but none carried an "
-            f"action_type discriminator (first-key form, or "
-            f"action_type field). Refusing to fall back to non-action JSON."
-        )
-    return action_candidates
+    return candidates
 
 
 def _looks_like_action_candidate(candidate: str) -> bool:
