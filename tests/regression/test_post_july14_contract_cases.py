@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
-修改日期: 2026-07-18
+修改日期: 2026-07-26
 """
 
 import ast
@@ -61,7 +61,7 @@ CASE_TEST_NODE_IDS: dict[str, tuple[str, ...]] = {
     ),
     "N7": (
         "tests/integration/test_post_july14_repair_closure.py::"
-        "test_runtime_no_kill_event_has_complete_v2_audit_identity",
+        "test_provider_failure_no_kill_event_has_complete_v2_audit_identity",
     ),
     "N8": (
         "tests/runtime/test_reflection_transaction.py::"
