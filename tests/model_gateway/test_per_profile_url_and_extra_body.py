@@ -337,6 +337,19 @@ class TestOpenAIProviderPerProfile:
         assert client.last_payload is not None
         assert client.last_payload.get("reasoning_split") is True
 
+    def test_openai_records_configured_effective_temperature(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+        from werewolf_agent.model_gateway.usage_records import ModelConfig
+
+        client = _CapturingClient()
+        result = OpenAIProvider(
+            api_key="k", base_url="https://api.example/v1", http_client=client
+        ).generate(
+            "hi", ModelConfig(provider="openai", model="x", temperature=0.23)
+        )
+        assert result.effective_temperature == 0.23
+        assert result.temperature_override_reason is None
+
     def test_extra_body_setdefault_does_not_clobber_explicit_field(self) -> None:
         """reasoning_effort 已显式设置时，extra_body 里的同名 key 不应覆盖。"""
         from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
@@ -536,6 +549,30 @@ class TestMiniMaxAnthropicProviderPerProfile:
         )
         assert client.last_payload is not None
         assert client.last_payload.get("reasoning_split") is True
+
+    def test_thinking_forces_temperature_one_and_records_override(self) -> None:
+        from werewolf_agent.model_gateway.providers.minimax import MiniMaxProvider
+        from werewolf_agent.model_gateway.usage_records import ModelConfig
+
+        client = _CapturingClient(
+            response_data={
+                "content": [{"type": "thinking", "thinking": "step"}, {"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+        result = MiniMaxProvider(
+            api_key="k", base_url="https://api.minimaxi.com/anthropic", http_client=client
+        ).generate(
+            "hi",
+            ModelConfig(
+                provider="minimax", model="abab-test", temperature=0.2,
+                reasoning_requested=True, reasoning_level="medium",
+            ),
+        )
+        assert client.last_payload is not None
+        assert client.last_payload["temperature"] == 1.0
+        assert result.effective_temperature == 1.0
+        assert result.temperature_override_reason == "thinking_requires_temperature_1"
 
 
 # ---------------------------------------------------------------------------

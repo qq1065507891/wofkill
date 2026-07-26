@@ -4,7 +4,7 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-21
+修改日期：2026-07-26
 
 支持 ``config.base_url`` 覆盖 provider 实例默认 URL（2026-07-15），
 用于同一 OpenAI 客户端服务多个 endpoint（``api.minimaxi.com/v1`` 与
@@ -118,6 +118,44 @@ def _strip_thinking_prefix(content: str) -> tuple[str, str]:
     else:
         clean = content
     return clean, "\n---\n".join(thinking_parts)
+
+
+def _extract_reasoning_details_text(details: Any) -> str:
+    """从 reasoning_details 中提取文本，忽略工具调用等结构化对象。"""
+    parts: list[str] = []
+    if isinstance(details, str):
+        return details.strip()
+    if isinstance(details, dict):
+        for key in ("text", "summary", "reasoning"):
+            value = details.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+        content = details.get("content")
+        if isinstance(content, str) and content.strip():
+            parts.append(content.strip())
+        elif isinstance(content, (dict, list)):
+            nested = _extract_reasoning_details_text(content)
+            if nested:
+                parts.append(nested)
+    elif isinstance(details, list):
+        for item in details:
+            text = _extract_reasoning_details_text(item)
+            if text:
+                parts.append(text)
+    return "\n---\n".join(parts)
+
+
+def _normalize_thinking_text(message: dict[str, Any]) -> str:
+    """统一 OpenAI 兼容响应中的 reasoning 文本字段。"""
+    parts: list[str] = []
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    details = _extract_reasoning_details_text(message.get("reasoning_details"))
+    if details:
+        parts.append(details)
+    return "\n---\n".join(parts)
 
 
 def _resolve_api_key_for_base_url(base_url: str, default_key: str) -> str:
@@ -249,7 +287,7 @@ def _generate_openai_compatible(
     message = data.get("choices", [{}])[0].get("message", {})
     tool_call_received = bool(message.get("tool_calls"))
     text = message.get("content", "") or _extract_openai_tool_text(message)
-    thinking_text = message.get("reasoning_content") or message.get("reasoning") or ""
+    thinking_text = _normalize_thinking_text(message)
     # 标准化: 将 MiniMax native 的非标准 <think> 嵌入剥离, 与推理字段合并。
     # Ark 等符合标准的端点 message.content 不含 <think>,
     # _strip_thinking_prefix 是空操作; 其 reasoning_content 独立字段通过
@@ -294,6 +332,7 @@ def _generate_openai_compatible(
             else "not_requested"
         ),
         reasoning_tokens=reasoning_tokens,
+        effective_temperature=config.temperature,
         usage=provider._usage(
             model=config.model,
             latency_ms=latency_ms,
