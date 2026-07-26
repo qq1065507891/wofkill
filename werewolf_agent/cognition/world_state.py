@@ -3,7 +3,7 @@
 功能描述：每个事实是带已知模式的冻结 dataclass。事实列表是所有下游认知模块
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-15
+修改日期：2026-07-26
 使用示例：内部模块，无对外接口
 """
 
@@ -330,22 +330,18 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
                 day=day,
             ))
 
-    # Badge flow: 警徽流p05 p07
-    badge_match = re.findall(r"警徽流\s*(p\d{2}(?:\s*p\d{2})*)", text)
-    if badge_match:
-        for bf_str in badge_match:
-            targets = re.findall(r"p\d{2}", bf_str)
-            if targets:
-                facts.append(StructuredFact(
-                    fact_type="badge_flow_claim",
-                    source_player=speaker,
-                    target_player=targets[0],
-                    day=day,
-                    night=0,
-                    phase="",
-                    value="badge_flow",
-                    metadata={"badge_flow_order": targets},
-                ))
+    # Badge flow: 支持紧凑格式和逐行列出的 N2/N3 验人计划。
+    for targets in _extract_badge_flow_targets(text):
+        facts.append(StructuredFact(
+            fact_type="badge_flow_claim",
+            source_player=speaker,
+            target_player=targets[0],
+            day=day,
+            night=0,
+            phase="",
+            value="badge_flow",
+            metadata={"badge_flow_order": targets},
+        ))
 
     # Gold claim: p05是金水, 给p05发金水
     gold_match = re.findall(r"(p\d{2})\s*(?:是金水|金水)", text)
@@ -392,8 +388,48 @@ def _has_self_seer_context(text: str) -> bool:
 def _is_third_party_seer_report(text: str, span_start: int) -> bool:
     if span_start < 0:
         return False
-    prefix = re.sub(r"\s+", "", text[max(0, span_start - 16):span_start])
-    return bool(re.search(r"p\d{2}.{0,8}(?:报|说|称|讲|表示|给|发|验|查)$", prefix))
+    # 只检查目标所在的句/子句，避免整段中较早的第三方描述污染自己的声明。
+    clause_start = max(
+        text.rfind(mark, 0, span_start)
+        for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
+    ) + 1
+    prefix = re.sub(r"\s+", "", text[clause_start:span_start])
+    if not prefix:
+        return False
+    # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了...”
+    # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
+    return bool(
+        re.search(r"p\d{2}.{0,20}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
+        or re.search(r"你.{0,20}(?:报|说|称|讲|表示|给|发|验|查)", prefix)
+    )
+
+
+def _extract_badge_flow_targets(text: str) -> list[list[str]]:
+    """提取警徽流目标，限制在标记后的紧凑文本或连续计划行内。"""
+    flows: list[list[str]] = []
+    for marker in re.finditer(r"警徽流", text):
+        tail = text[marker.end():]
+        lines = tail.splitlines()
+        if not lines:
+            continue
+
+        compact_match = re.search(r"(p\d{2}(?:\s+p\d{2})*)", lines[0])
+        targets = re.findall(r"p\d{2}", compact_match.group(1)) if compact_match else []
+        if not targets:
+            for line in lines[1:]:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # 只接受明显的 N2/N3 验人计划行，避免吞掉后续普通发言中的玩家编号。
+                if not re.match(
+                    r"[-*]?\s*(?:N\d+\s*[:：]?\s*)?(?:我\s*)?(?:计划\s*)?(?:验|查)",
+                    stripped,
+                ):
+                    break
+                targets.extend(re.findall(r"p\d{2}", stripped))
+        if targets:
+            flows.append(targets)
+    return flows
 
 
 def _extract_vote(event: GameEvent, state: GameState) -> list[StructuredFact]:

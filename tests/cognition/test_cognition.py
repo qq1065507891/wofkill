@@ -973,6 +973,41 @@ class TestSeerClaimContractExtraction:
             if c.fact_type == "claimed_role" and c.value == "seer"
         ]
 
+    def test_long_third_party_seer_recap_does_not_create_speaker_check(self):
+        """长转述前缀中的查验结果不能归因给当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text=(
+                "p01陈思远，你跳预言家说验了p02金水，但你警徽流里含了我p06。"
+                "我想问，你首夜验人的逻辑是什么？"
+            ),
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+        ]
+
+    def test_multiline_badge_flow_preserves_order(self):
+        """多行警徽流应提取首个目标并保留完整顺序。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p03",
+            text="警徽流：\n- N2我计划验p02赵猛\n- N3我计划验p11郑铭",
+            day=1,
+        )
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p02"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p11"]
+
 
 class TestSeerClaimCommitment:
     """Seer claim commitments persist and detect later contradictions."""
