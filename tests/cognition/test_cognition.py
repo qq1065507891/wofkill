@@ -934,7 +934,7 @@ class TestSeerClaimContractExtraction:
         badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
         assert len(badge_facts) >= 1
         # The badge flow order should be in metadata
-        assert badge_facts[0].metadata.get("badge_flow_order") is not None
+        assert badge_facts[0].metadata.get("badge_flow_order") == ["p05", "p07"]
 
     def test_gold_claim_extracted(self):
         """金水 (gold claim) should be extracted."""
