@@ -22,6 +22,58 @@ model_profiles:
       mode: text_json
       fallback_modes: []
 
+  ark_deepseek_v4_flash_summary:
+    provider: openai
+    model: deepseek-v4-flash
+    temperature: 0.2
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  ark_deepseek_v4_flash_vote:
+    provider: openai
+    model: deepseek-v4-flash
+    temperature: 0.3
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  ark_deepseek_v4_flash_speech:
+    provider: openai
+    model: deepseek-v4-flash
+    temperature: 0.4
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  ark_deepseek_v4_flash_deception:
+    provider: openai
+    model: deepseek-v4-flash
+    temperature: 0.5
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
   ark_deepseek_v4_pro:
     provider: openai
     model: DeepSeek-V4-Pro
@@ -40,6 +92,59 @@ model_profiles:
     model: DeepSeek-V4-Pro
     temperature: 0.6
     top_p: 0.95
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  # 按任务类型拆分采样参数；路由只引用 profile，不在 tasks route 中内联参数。
+  ark_deepseek_v4_pro_summary:
+    provider: openai
+    model: DeepSeek-V4-Pro
+    temperature: 0.2
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  ark_deepseek_v4_pro_vote:
+    provider: openai
+    model: DeepSeek-V4-Pro
+    temperature: 0.3
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  ark_deepseek_v4_pro_speech:
+    provider: openai
+    model: DeepSeek-V4-Pro
+    temperature: 0.4
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  ark_deepseek_v4_pro_deception:
+    provider: openai
+    model: DeepSeek-V4-Pro
+    temperature: 0.5
+    top_p: 0.9
     timeout: 300
     reasoning:
       level: high
@@ -72,7 +177,135 @@ model_profiles:
       mode: text_json
       fallback_modes: []
 
+  minimax_native_m3_summary:
+    provider: openai
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.2
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m3_vote:
+    provider: openai
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.3
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m3_speech:
+    provider: openai
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.4
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m3_deception:
+    provider: openai
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.5
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
   minimax_native_m2_7:
+    provider: openai
+    model: MiniMax-M2.7
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.5
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m2_7_summary:
+    provider: openai
+    model: MiniMax-M2.7
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.2
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m2_7_vote:
+    provider: openai
+    model: MiniMax-M2.7
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.3
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m2_7_speech:
+    provider: openai
+    model: MiniMax-M2.7
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.4
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m2_7_deception:
     provider: openai
     model: MiniMax-M2.7
     base_url: https://api.minimaxi.com/v1
@@ -92,7 +325,7 @@ model_profiles:
   minimax_m27_default:
     provider: minimax
     model: MiniMax-M2.7
-    temperature: 0.5
+    temperature: 1.0
     top_p: 0.9
     timeout: 300
     reasoning:
@@ -105,7 +338,7 @@ model_profiles:
   minimax_m27_reflection:
     provider: minimax
     model: MiniMax-M2.7
-    temperature: 0.4
+    temperature: 1.0
     top_p: 0.9
     timeout: 300
     reasoning:
@@ -118,8 +351,34 @@ model_profiles:
   minimax_m27_fast:
     provider: minimax
     model: MiniMax-M2.7
-    temperature: 0.7
-    top_p: 0.95
+    temperature: 1.0
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_m27_judge:
+    provider: minimax
+    model: MiniMax-M2.7
+    temperature: 0.2
+    top_p: 0.9
+    timeout: 300
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_m27_thinking:
+    provider: minimax
+    model: MiniMax-M2.7
+    temperature: 1.0
+    top_p: 0.9
     timeout: 300
     reasoning:
       level: high
@@ -142,6 +401,25 @@ llm_profiles:
     default:
       provider: openai
       model_profile: ark_deepseek_v4_flash
+    tasks:
+      discussion_summary:
+        provider: openai
+        model_profile: ark_deepseek_v4_flash_summary
+      vote:
+        provider: openai
+        model_profile: ark_deepseek_v4_flash_vote
+      night_action:
+        provider: openai
+        model_profile: ark_deepseek_v4_flash_vote
+      speech:
+        provider: openai
+        model_profile: ark_deepseek_v4_flash_speech
+      deception:
+        provider: openai
+        model_profile: ark_deepseek_v4_flash_deception
+      wolf_discussion:
+        provider: openai
+        model_profile: ark_deepseek_v4_flash_deception
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
@@ -150,6 +428,25 @@ llm_profiles:
     default:
       provider: openai
       model_profile: ark_deepseek_v4_pro
+    tasks:
+      discussion_summary:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_summary
+      vote:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_vote
+      night_action:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_vote
+      speech:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_speech
+      deception:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_deception
+      wolf_discussion:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_deception
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
@@ -158,6 +455,25 @@ llm_profiles:
     default:
       provider: openai
       model_profile: ark_deepseek_v4_pro_secondary
+    tasks:
+      discussion_summary:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_summary
+      vote:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_vote
+      night_action:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_vote
+      speech:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_speech
+      deception:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_deception
+      wolf_discussion:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_deception
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
@@ -173,17 +489,55 @@ llm_profiles:
     default:
       provider: openai
       model_profile: minimax_native_m3
+    tasks:
+      discussion_summary:
+        provider: openai
+        model_profile: minimax_native_m3_summary
+      vote:
+        provider: openai
+        model_profile: minimax_native_m3_vote
+      night_action:
+        provider: openai
+        model_profile: minimax_native_m3_vote
+      speech:
+        provider: openai
+        model_profile: minimax_native_m3_speech
+      deception:
+        provider: openai
+        model_profile: minimax_native_m3_deception
+      wolf_discussion:
+        provider: openai
+        model_profile: minimax_native_m3_deception
     fallback:
       provider: minimax
-      model_profile: minimax_m27_default
+      model_profile: minimax_m27_thinking
 
   minimax_native_m2_7:
     default:
       provider: openai
       model_profile: minimax_native_m2_7
+    tasks:
+      discussion_summary:
+        provider: openai
+        model_profile: minimax_native_m2_7_summary
+      vote:
+        provider: openai
+        model_profile: minimax_native_m2_7_vote
+      night_action:
+        provider: openai
+        model_profile: minimax_native_m2_7_vote
+      speech:
+        provider: openai
+        model_profile: minimax_native_m2_7_speech
+      deception:
+        provider: openai
+        model_profile: minimax_native_m2_7_deception
+      wolf_discussion:
+        provider: openai
+        model_profile: minimax_native_m2_7_deception
     fallback:
       provider: minimax
-      model_profile: minimax_m27_default
+      model_profile: minimax_m27_thinking
 
   # --- MiniMax profiles ---
   # ``minimax_default`` 的 default、speech、deception、night_action
@@ -192,43 +546,49 @@ llm_profiles:
   minimax_default:
     default:
       provider: openai
-      model_profile: ark_deepseek_v4_pro
+      model_profile: ark_deepseek_v4_pro_speech
     tasks:
       reflection:
         provider: minimax
         model_profile: minimax_m27_reflection
       speech:
         provider: openai
-        model_profile: ark_deepseek_v4_pro
+        model_profile: ark_deepseek_v4_pro_speech
       discussion_summary:
         provider: openai
-        model_profile: ark_deepseek_v4_pro
+        model_profile: ark_deepseek_v4_pro_summary
       deception:
         provider: openai
-        model_profile: ark_deepseek_v4_pro
+        model_profile: ark_deepseek_v4_pro_deception
+      wolf_discussion:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_deception
+      vote:
+        provider: openai
+        model_profile: ark_deepseek_v4_pro_vote
       night_action:
         provider: openai
-        model_profile: ark_deepseek_v4_pro
+        model_profile: ark_deepseek_v4_pro_vote
       # 五个 judge_* 任务是显式 override：使用 ``minimax`` provider
-      # 与 ``minimax_m27_default``（``MiniMax-M2.7``），不跟随 speech
+      # 与 ``minimax_m27_judge``（``MiniMax-M2.7``），不跟随 speech
       # 的 Ark DeepSeek 路由。逐项列出便于后续按任务独立调优。
       judge_vote_calling:
         provider: minimax
-        model_profile: minimax_m27_default
+        model_profile: minimax_m27_judge
       judge_skill_guide:
         provider: minimax
-        model_profile: minimax_m27_default
+        model_profile: minimax_m27_judge
       judge_vote_tally:
         provider: minimax
-        model_profile: minimax_m27_default
+        model_profile: minimax_m27_judge
       judge_exile:
         provider: minimax
-        model_profile: minimax_m27_default
+        model_profile: minimax_m27_judge
       judge_sheriff:
         provider: minimax
-        model_profile: minimax_m27_default
-    # fallback 保持同 provider、不同 model profile：主路由使用
-    # ``ark_deepseek_v4_pro``，回退使用 ``ark_deepseek_v4_flash``。
+        model_profile: minimax_m27_judge
+    # fallback 保持同 provider、不同 model profile：主路由使用任务专用
+    # DeepSeek-V4-Pro profile，回退使用 ``ark_deepseek_v4_flash``。
     fallback:
       provider: openai
       model_profile: ark_deepseek_v4_flash

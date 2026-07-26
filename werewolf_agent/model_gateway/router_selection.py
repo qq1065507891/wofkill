@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-23
+修改日期: 2026-07-26
 
 使用示例:
     >>> _resolve_config(model_profiles={}, llm_profiles={}, player_assignments={}, agent_id="p01", task_type="speech")[0].provider
@@ -20,6 +20,7 @@ from werewolf_agent.model_gateway.fallback_policy import (
     build_fallback_routes,
 )
 from werewolf_agent.model_gateway.reasoning_policy import minimum_reasoning_level
+from werewolf_agent.model_gateway.router_config import _canonical_provider_name
 from werewolf_agent.model_gateway.structured_output import StructuredOutputPolicy
 from werewolf_agent.model_gateway.usage_records import ModelConfig
 
@@ -43,7 +44,7 @@ def _resolve_config(
     if not source:
         return ModelConfig(provider="mock", model="mock"), "mock"
 
-    provider_name = source.get("provider", "mock")
+    provider_name = _canonical_provider_name(source.get("provider", "mock"))
     model_profile_id = source.get("model_profile", "")
     model_profile = model_profiles.get(model_profile_id, {})
     structured_policy = StructuredOutputPolicy.from_model_profile(
@@ -186,12 +187,13 @@ def _fallback_config(
             f"unknown model_profile {model_profile_id!r}"
         )
     model_profile = model_profiles.get(model_profile_id, {})
+    provider_name = _canonical_provider_name(fallback_cfg.get("provider", "mock"))
     structured_policy = StructuredOutputPolicy.from_model_profile(
-        provider=fallback_cfg.get("provider", "mock"),
+        provider=provider_name,
         model_profile=model_profile,
     )
     return ModelConfig(
-        provider=fallback_cfg.get("provider", "mock"),
+        provider=provider_name,
         model=model_profile.get("model", model_profile_id),
         temperature=model_profile.get("temperature", 0.3),
         max_tokens=model_profile.get("max_tokens"),
@@ -213,7 +215,7 @@ def _fallback_config(
 
 def _reasoning_level(model_profile: dict[str, Any]) -> str:
     """读取供应商无关的推理意图，不把它误当成已生效能力。"""
-    if str(model_profile.get("provider", "")).lower() == "glm":
+    if _canonical_provider_name(model_profile.get("provider", "")) == "glm":
         return "none"
     value = model_profile.get("reasoning", "none")
     if isinstance(value, dict):

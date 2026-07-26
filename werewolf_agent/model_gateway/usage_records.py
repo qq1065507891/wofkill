@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-23
+修改日期: 2026-07-26
 
 使用示例:
     >>> from werewolf_agent.model_gateway.usage_records import ModelConfig
@@ -169,6 +169,8 @@ class GenerateResult:
     thinking_text: str = ""  # 2026-07-21: reasoning 原文, 不进 text。Ark reasoning_content / MiniMax <think> 剥离内容统一走此字段。
     failure_disposition: FailureDisposition = FailureDisposition.NONE
     attempts: tuple[AttemptExecutionRecord, ...] = ()
+    effective_temperature: float | None = None
+    temperature_override_reason: str | None = None
 
     def __post_init__(self) -> None:
         """在兼容构造边界固定旧 reasoning 视图，避免实例化后漂移。"""

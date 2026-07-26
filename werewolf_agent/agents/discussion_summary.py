@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-定义讨论摘要 V2 契约，并兼容读取旧版字符串 checkpoint。
+定义讨论摘要 V2 契约、解析模型输出，并兼容读取旧版字符串 checkpoint。
 
 作者: Project contributors
 创建日期: 2026-07-25
-修改日期: 2026-07-25
+修改日期: 2026-07-26
 
 使用示例:
     >>> state = {"discussion_positions": {"p01": "我怀疑p03"}}
@@ -14,10 +14,16 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from werewolf_agent.agents.json_repair import (
+    extract_balanced_json_objects,
+    repair_json_text,
+)
 
 
 _SAFE_FAILURE_CODES = frozenset({
@@ -54,6 +60,66 @@ class DiscussionSummaryGenerationError(RuntimeError):
         )
         super().__init__(safe_code)
         self.failure_code = safe_code
+
+
+def parse_discussion_summary_text(raw_text: str) -> DiscussionSummary:
+    """修复并严格解析包含 DiscussionSummary 的模型文本。"""
+
+    repaired = repair_json_text(raw_text)
+    if _contains_object_in_array(repaired):
+        return DiscussionSummary.model_validate([])
+    if repaired.lstrip().startswith("["):
+        payload = json.loads(repaired)
+        return DiscussionSummary.model_validate(payload)
+    candidates = extract_balanced_json_objects(repaired)
+    if not candidates:
+        payload = json.loads(repaired)
+        return DiscussionSummary.model_validate(payload)
+
+    validated: list[DiscussionSummary] = []
+    validation_error: ValidationError | None = None
+    for candidate in candidates:
+        payload = json.loads(candidate)
+        try:
+            validated.append(DiscussionSummary.model_validate(payload))
+        except ValidationError as exc:
+            validation_error = validation_error or exc
+
+    if len(validated) == 1:
+        return validated[0]
+    if len(validated) > 1:
+        raise ValueError(
+            "ambiguous_discussion_summary: multiple objects validated"
+        )
+    if validation_error is not None:
+        raise validation_error
+    raise ValueError("no_discussion_summary_object")
+
+
+def _contains_object_in_array(text: str) -> bool:
+    """识别字符串外数组容器中的对象，避免提取其内部摘要。"""
+
+    array_depth = 0
+    in_string = False
+    escape = False
+    for char in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "[":
+            array_depth += 1
+        elif char == "]" and array_depth:
+            array_depth -= 1
+        elif char == "{" and array_depth:
+            return True
+    return False
 
 
 def discussion_summary_tool() -> dict[str, Any]:
@@ -165,4 +231,5 @@ __all__ = [
     "discussion_summary_for_player",
     "discussion_summary_text",
     "discussion_summary_tool",
+    "parse_discussion_summary_text",
 ]

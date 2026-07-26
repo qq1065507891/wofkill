@@ -934,7 +934,7 @@ class TestSeerClaimContractExtraction:
         badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
         assert len(badge_facts) >= 1
         # The badge flow order should be in metadata
-        assert badge_facts[0].metadata.get("badge_flow_order") is not None
+        assert badge_facts[0].metadata.get("badge_flow_order") == ["p05", "p07"]
 
     def test_gold_claim_extracted(self):
         """金水 (gold claim) should be extracted."""
@@ -972,6 +972,564 @@ class TestSeerClaimContractExtraction:
             c for c in claims
             if c.fact_type == "claimed_role" and c.value == "seer"
         ]
+
+    def test_long_third_party_seer_recap_does_not_create_speaker_check(self):
+        """长转述前缀中的查验结果不能归因给当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text=(
+                "p01陈思远，你跳预言家说验了p02金水，但你警徽流里含了我p06。"
+                "我想问，你首夜验人的逻辑是什么？"
+            ),
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+        ]
+        assert not [
+            c for c in claims
+            if c.fact_type == "claimed_suspect"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+        ]
+        assert not [
+            c for c in claims
+            if c.fact_type == "badge_flow_claim" and c.source_player == "p06"
+        ]
+        assert not [
+            c for c in claims
+            if c.fact_type == "claimed_good"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+        ]
+
+    def test_cross_clause_third_party_seer_recap_does_not_create_speaker_check(self):
+        """第三方编号与查验结果跨逗号时仍不能归因给当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in (
+            "我是预言家，p01说，昨晚验了p02金水。",
+            "我是预言家，p01说，昨晚验了p02查杀。",
+            "我是预言家，p02报p01查杀，我认为不可信。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+
+            assert not [
+                c for c in claims
+                if c.fact_type == "seer_check_claim"
+                and c.source_player == "p06"
+            ]
+            assert not [
+                c for c in claims
+                if c.fact_type == "claimed_suspect"
+                and c.source_player == "p06"
+            ]
+            assert not [
+                c for c in claims
+                if c.fact_type == "claimed_good" and c.source_player == "p06"
+            ]
+
+    def test_mixed_third_party_and_self_check_keeps_self_claim(self):
+        """前置第三方查杀不能屏蔽同段后续自己的金水查验。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p03金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+        assert not any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            for c in claims
+        )
+
+    def test_mixed_gold_reuses_actual_target_occurrence(self):
+        """前置同名第三方目标不能遮蔽后续自身金水查验。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p02金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_gold_sender_reuses_actual_target_occurrence(self):
+        """给目标发金水时应按实际命中位置归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我给p03发金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_mixed_gold_forms_are_all_scanned(self):
+        """同一发言中的第三方和自身两种金水形式都应分别归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说p02金水，我给p03发金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
+    def test_unrelated_long_announcement_does_not_block_self_check(self):
+        """无关的长公告动作不能把后续自身查验误判为第三方。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01在群里发了一段很长的公告然后我验了p02金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_announcement_before_self_gold_sender_does_not_filter_target(self):
+        """公告中的“发”不能把后续自身“我给”误判为第三方。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01在群里发了一段公告然后我给p02发金水。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_adjacent_self_gold_claims_are_not_reported_as_third_party(self):
+        """连续自述的金水结果不能因前一个目标编号而被误归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p08",
+            text="我是预言家 查杀p01 p02是狼人 p03是金水 给p04发金水",
+            day=1,
+        )
+
+        assert {
+            c.target_player
+            for c in claims
+            if c.fact_type == "seer_check_claim"
+            and c.source_player == "p08"
+            and c.value == "good"
+        } >= {"p03", "p04"}
+
+    def test_colon_seer_reports_filter_claims(self):
+        """说/报后的中英文冒号不应阻断第三方归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in (
+            "我是预言家，p01说：p02金水。",
+            "我是预言家，p01报：p02查杀。",
+            "我是预言家，p01说：“p02金水”。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+            assert not [
+                c for c in claims
+                if c.source_player == "p06"
+                and c.target_player == "p02"
+                and c.fact_type in {"claimed_good", "seer_check_claim", "claimed_suspect"}
+            ]
+
+    def test_completed_report_verbs_filter_claims(self):
+        """报了/说了完成体后的目标仍应归因给第三方。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in (
+            "我是预言家，p01报了p02查杀。",
+            "我是预言家，p01说了p02金水。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+            assert not [
+                c for c in claims
+                if c.source_player == "p06"
+                and c.target_player == "p02"
+                and c.fact_type in {"claimed_good", "seer_check_claim", "claimed_suspect"}
+            ]
+
+    def test_cross_comma_quoted_first_person_without_quotes_is_third_party(self):
+        """p01说，后的无引号第一人称查验仍属于 p01 的转述。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说，我验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"claimed_good", "seer_check_claim"}
+        ]
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p03金水。",
+            day=1,
+        )
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_third_party_check_verbs_filter_targets_before_self_check(self):
+        """第三方完整“验了/查了”动词后的目标不能归因给当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01验了p02金水，我验了p03金水。",
+            day=1,
+        )
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"claimed_good", "seer_check_claim"}
+        ]
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01查了p02查杀。",
+            day=1,
+        )
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.target_player == "p02"
+            and c.fact_type in {"claimed_suspect", "seer_check_claim"}
+        ]
+
+    def test_unpronounced_gold_sender_after_description_is_self_claim(self):
+        """前置描述后无主语“给目标发金水”仍归因给当前自称预言家。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in (
+            "我是预言家，p01报p02查杀，给p03发金水。",
+            "我是预言家，p01在群里发公告然后给p03发金水。",
+        ):
+            claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+            assert any(
+                c.fact_type == "seer_check_claim"
+                and c.source_player == "p06"
+                and c.target_player == "p03"
+                and c.value == "good"
+                for c in claims
+            )
+
+    def test_third_party_attribution_context_is_bounded(self, monkeypatch):
+        """无标点重复声明时，归因扫描窗口不应随文本长度增长。"""
+        from werewolf_agent.cognition import world_state
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        observed_prefix_lengths = []
+        original = world_state._contains_third_party_report_marker
+
+        def observe(prefix):
+            observed_prefix_lengths.append(len(prefix))
+            return original(prefix)
+
+        monkeypatch.setattr(
+            world_state, "_contains_third_party_report_marker", observe
+        )
+        text = "我是预言家 " + " ".join("p01是金水" for _ in range(200))
+        _infer_claims_from_text(speaker="p06", text=text, day=1)
+
+        assert observed_prefix_lengths
+        assert max(observed_prefix_lengths) <= world_state._THIRD_PARTY_CONTEXT_WINDOW
+
+    def test_long_third_party_name_filters_gold_claim(self):
+        """超长第三方姓名仍应在当前句内正确归因。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        text = (
+            "我是预言家，p01这是一个非常非常非常非常非常非常非常非常非常长的名字"
+            "说验了p02金水。"
+        )
+        claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+            and c.target_player == "p02"
+        ]
+
+    def test_long_third_party_name_filters_suspect_claim(self):
+        """超长第三方姓名后的查杀不能成为当前玩家的怀疑事实。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        text = (
+            "我是预言家，p01这是一个非常非常非常非常非常非常非常非常非常长的名字"
+            "报p02查杀。"
+        )
+        claims = _infer_claims_from_text(speaker="p06", text=text, day=1)
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_suspect"}
+            and c.target_player == "p02"
+        ]
+
+    def test_mixed_third_party_and_self_wolf_check_keeps_self_claim(self):
+        """混合第三方查杀后，当前玩家的查杀查验仍应保留。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我验了p03查杀。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "wolf"
+            for c in claims
+        )
+
+    def test_mixed_third_party_and_self_explicit_good_keeps_self_claim(self):
+        """混合第三方查杀后，显式“查验是好人”仍应保留。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01报p02查杀，我查验p03是好人。",
+            day=1,
+        )
+
+        assert any(
+            c.fact_type == "seer_check_claim"
+            and c.source_player == "p06"
+            and c.target_player == "p03"
+            and c.value == "good"
+            for c in claims
+        )
+
+    def test_cross_clause_quoted_self_check_is_third_party(self):
+        """跨逗号引语中的第一人称查验不能归因给当前玩家。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说，“我验了p02金水”。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
+    def test_third_party_comment_with_self_pronoun_does_not_claim_check(self):
+        """“我不信他验了”中的我不是查验主语。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，我不信p01说他验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
+    def test_reported_first_person_check_is_not_speaker_claim(self):
+        """第三方直接转述“我验了”仍不属于当前发言者。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我是预言家，p01说我验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
+    def test_reported_first_person_check_after_doubt_is_not_speaker_claim(self):
+        """“我不信p01说我验了”中的验人仍是被引述内容。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p06",
+            text="我不信p01说我验了p02金水。",
+            day=1,
+        )
+
+        assert not [
+            c for c in claims
+            if c.source_player == "p06"
+            and c.fact_type in {"seer_check_claim", "claimed_good"}
+        ]
+
+    def test_multiline_badge_flow_preserves_order(self):
+        """多行警徽流应提取首个目标并保留完整顺序。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p03",
+            text="警徽流：\n- N2我计划验p02赵猛\n- N3我计划验p11郑铭",
+            day=1,
+        )
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p02"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p11"]
+
+    def test_inline_night_badge_flow_extracts_target(self):
+        """真实日志的同一行 N2 验人计划应形成警徽流事实。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p01",
+            text="我是预言家，昨晚验了p02是好人。警徽流：N2验p04。",
+            day=1,
+        )
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p04"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p04"]
+
+    def test_badge_flow_accepts_chinese_separators(self):
+        """紧凑警徽流支持中文逗号和顿号并保留顺序。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        cases = (
+            ("警徽流：p05，p07", ["p05", "p07"]),
+            ("警徽流：p05、p07", ["p05", "p07"]),
+            ("警徽流：先p05后p07再p09", ["p05", "p07", "p09"]),
+        )
+        for text, expected_order in cases:
+            claims = _infer_claims_from_text(speaker="p03", text=text, day=1)
+            badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+            assert len(badge_facts) == 1
+            assert badge_facts[0].metadata["badge_flow_order"] == expected_order
+
+    def test_real_log_seer_result_and_ordered_badge_flow(self):
+        """真实日志句式应提取好人查验和先验/后验警徽流。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p03",
+            text=(
+                "我是预言家，昨晚我验了p02，结果是好人。"
+                "我的警徽流：先验p08，后验p06。"
+            ),
+            day=1,
+        )
+
+        good_checks = [
+            c for c in claims
+            if c.fact_type == "seer_check_claim"
+            and c.target_player == "p02"
+            and c.value == "good"
+        ]
+        assert len(good_checks) == 1
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p08"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p08", "p06"]
+
+    def test_badge_flow_requires_player_token_boundaries(self):
+        """紧凑警徽流拒绝前缀 token，并支持 ASCII/中文分隔后的目标。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        for text in ("警徽流：p020 p11", "警徽流：p02x p11"):
+            claims = _infer_claims_from_text(speaker="p03", text=text, day=1)
+            assert not [c for c in claims if c.fact_type == "badge_flow_claim"]
+
+        valid_cases = (
+            ("警徽流：p05， p07", ["p05", "p07"]),
+            ("警徽流：p05, p07", ["p05", "p07"]),
+        )
+        for text, expected_order in valid_cases:
+            claims = _infer_claims_from_text(speaker="p03", text=text, day=1)
+            badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+            assert len(badge_facts) == 1
+            assert badge_facts[0].metadata["badge_flow_order"] == expected_order
 
 
 class TestSeerClaimCommitment:

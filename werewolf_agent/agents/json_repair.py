@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-26
 
 使用示例:
     >>> from werewolf_agent.agents.json_repair import repair_json_text
@@ -47,8 +47,7 @@ def repair_json_text(raw: str) -> str:
     """修复 LLM 输出里常见的 JSON 语法瑕疵。"""
     text = raw.strip()
     text = text.replace("﻿", "").replace("​", "")
-    text = re.sub(r"//[^\n]*", "", text)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = _strip_json_comments(text)
     text = re.sub(r"\bNaN\b", "null", text)
     text = re.sub(r"\bInfinity\b|\binf\b", "null", text, flags=re.IGNORECASE)
 
@@ -67,8 +66,97 @@ def repair_json_text(raw: str) -> str:
     return text
 
 
+def _strip_json_comments(text: str) -> str:
+    """仅移除 JSON 字符串之外的单行和块注释。"""
+
+    result: list[str] = []
+    in_string = False
+    in_url = False
+    escape = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_url:
+            if char.isspace() or char in '{}[],"\'':
+                in_url = False
+            else:
+                result.append(char)
+                index += 1
+                continue
+        if in_string:
+            result.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+        if char == "/" and _is_url_scheme_prefix(text, index):
+            in_url = True
+            result.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < len(text):
+            next_char = text[index + 1]
+            if next_char == "/":
+                index += 2
+                while index < len(text) and text[index] != "\n":
+                    index += 1
+                continue
+            if next_char == "*":
+                index += 2
+                while index + 1 < len(text):
+                    if text[index] == "*" and text[index + 1] == "/":
+                        index += 2
+                        break
+                    if text[index] == "\n":
+                        result.append("\n")
+                    index += 1
+                continue
+
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def _is_url_scheme_prefix(text: str, index: int) -> bool:
+    """判断当前位置是否为 scheme:// URL 的首个斜杠。"""
+
+    prefix = text[max(0, index - 64):index + 1]
+    return re.search(r"[A-Za-z][A-Za-z0-9+.-]*:/$", prefix) is not None
+
+
 def extract_json_object_candidates(text: str) -> list[str]:
     """从混合文本中提取看起来像玩家动作的平衡 JSON 对象。"""
+    candidates = extract_balanced_json_objects(text)
+
+    action_candidates = [
+        candidate for candidate in candidates
+        if _looks_like_action_candidate(candidate)
+    ]
+    if not action_candidates:
+        if not candidates:
+            return []
+        raise ValueError(
+            "no_action_type_found: extract_json_object_candidates found "
+            f"{len(candidates)} balanced JSON object(s) but none carried an "
+            f"action_type discriminator (first-key form, or "
+            f"action_type field). Refusing to fall back to non-action JSON."
+        )
+    return action_candidates
+
+
+def extract_balanced_json_objects(text: str) -> list[str]:
+    """按出现顺序提取字符串外的平衡 JSON 对象。"""
+
     candidates: list[str] = []
     start: int | None = None
     depth = 0
@@ -98,21 +186,7 @@ def extract_json_object_candidates(text: str) -> list[str]:
             if depth == 0 and start is not None:
                 candidates.append(text[start:idx + 1])
                 start = None
-
-    action_candidates = [
-        candidate for candidate in candidates
-        if _looks_like_action_candidate(candidate)
-    ]
-    if not action_candidates:
-        if not candidates:
-            return []
-        raise ValueError(
-            "no_action_type_found: extract_json_object_candidates found "
-            f"{len(candidates)} balanced JSON object(s) but none carried an "
-            f"action_type discriminator (first-key form, or "
-            f"action_type field). Refusing to fall back to non-action JSON."
-        )
-    return action_candidates
+    return candidates
 
 
 def _looks_like_action_candidate(candidate: str) -> bool:

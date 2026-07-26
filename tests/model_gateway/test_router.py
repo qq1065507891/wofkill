@@ -3,7 +3,7 @@
 验证 ModelRouter 的配置解析、provider 路由、重试与 fallback 记录。
 
 作者: Project contributors
-修改日期: 2026-07-23
+修改日期: 2026-07-26
 """
 
 import pytest
@@ -181,6 +181,72 @@ class TestModelRouterConstruction:
 
 
 class TestResolveConfig:
+    def test_glm_provider_normalization_disables_reasoning_capability(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+        from werewolf_agent.model_gateway.router_config import _route_config
+
+        model_profiles = {
+            "glm_profile": {
+                "provider": " GLM ",
+                "model": "glm-model",
+                "reasoning": {"level": "high"},
+            },
+        }
+        router = ModelRouter(
+            model_profiles=model_profiles,
+            llm_profiles={
+                "profile": {
+                    "default": {
+                        "provider": " glm ",
+                        "model_profile": "glm_profile",
+                    },
+                },
+            },
+            player_assignments={"p01": "profile"},
+        )
+
+        router._validate_config()
+        config, _ = router.resolve_config("p01", "speech")
+        startup_config = _route_config(
+            {"provider": " glm ", "model_profile": "glm_profile"},
+            model_profiles,
+        )
+
+        assert config.reasoning_capability == "none"
+        assert startup_config.reasoning_capability == "none"
+
+    def test_normalized_route_provider_resolves_and_generates(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = _StaticTextProvider("ok", " OPENAI ")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "openai",
+                    "model": "model",
+                    "reasoning": {"level": "high"},
+                    "retry_count": 0,
+                },
+            },
+            llm_profiles={
+                "profile": {
+                    "default": {
+                        "provider": " OPENAI ",
+                        "model_profile": "primary",
+                    },
+                },
+            },
+            player_assignments={"p01": "profile"},
+        )
+        router.register_provider(provider)
+
+        config, _ = router.resolve_config("p01", "speech")
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert config.provider == "openai"
+        assert provider.calls == 1
+        assert result.text == "ok"
+
     def test_resolves_config_for_known_player(self) -> None:
         router = _make_router()
         config, fallback = router.resolve_config(agent_id="p01", task_type="speech")
@@ -1593,6 +1659,106 @@ class TestRetryHelpers:
 
 
 class TestFromYamlValidation:
+    def test_whitespace_glm_profile_is_not_reasoning_capable(self) -> None:
+        from werewolf_agent.model_gateway.reasoning_policy import (
+            validate_player_reasoning_profiles,
+        )
+
+        with pytest.raises(ValueError, match="required"):
+            validate_player_reasoning_profiles(
+                model_profiles={
+                    "glm_profile": {
+                        "provider": " GLM ",
+                        "model": "glm-model",
+                        "reasoning": {"level": "high"},
+                    },
+                },
+                llm_profiles={
+                    "profile": {
+                        "default": {
+                            "provider": " glm ",
+                            "model_profile": "glm_profile",
+                        },
+                    },
+                },
+                player_assignments={"p01": "profile"},
+            )
+
+    def test_from_yaml_rejects_whitespace_glm_player_profile(self, tmp_path) -> None:
+        import yaml
+
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "glm_profile.yaml"
+        yaml_path.write_text(
+            yaml.safe_dump(
+                {
+                    "model_profiles": {
+                        "glm_profile": {
+                            "provider": " GLM ",
+                            "model": "glm-model",
+                            "reasoning": {"level": "high"},
+                        },
+                    },
+                    "llm_profiles": {
+                        "profile": {
+                            "default": {
+                                "provider": " glm ",
+                                "model_profile": "glm_profile",
+                            },
+                        },
+                    },
+                    "players": {"p01": {"llm_profile": "profile"}},
+                },
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="required"):
+            ModelRouter.from_yaml(yaml_path)
+
+    def test_route_provider_comparison_is_normalized(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "openai", "model": "primary-model"},
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "OPENAI",
+                        "model_profile": "primary",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+
+        router._validate_config()
+
+    def test_route_provider_must_match_referenced_model_profile(self) -> None:
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "openai", "model": "primary-model"},
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "minimax",
+                        "model_profile": "primary",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+
+        with pytest.raises(ProviderConfigError, match="provider"):
+            router._validate_config()
+
     @pytest.mark.parametrize(
         ("profile", "expected_context"),
         [

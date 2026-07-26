@@ -2,7 +2,7 @@
 """锁定 ``config/models.yaml`` 中 MiniMax 与 Ark 模型的路由契约。
 
 作者: Project contributors
-修改日期: 2026-07-23
+修改日期: 2026-07-26
 """
 
 from __future__ import annotations
@@ -36,10 +36,10 @@ def model_router() -> ModelRouter:
 
 
 def test_minimax_default_default_provider_is_openai(yaml_config: dict) -> None:
-    """默认 MiniMax 流量固定走 Ark DeepSeek V4 Pro。"""
+    """默认 MiniMax 流量走 speech 采样 profile。"""
     cfg = yaml_config["llm_profiles"]["minimax_default"]["default"]
     assert cfg["provider"] == "openai"
-    assert cfg["model_profile"] == "ark_deepseek_v4_pro"
+    assert cfg["model_profile"] == "ark_deepseek_v4_pro_speech"
 
 
 def test_ark_deepseek_default_uses_deepseek_v4_pro(yaml_config: dict) -> None:
@@ -51,16 +51,24 @@ def test_ark_deepseek_default_uses_deepseek_v4_pro(yaml_config: dict) -> None:
     }
 
 
-@pytest.mark.parametrize("task_type", ["speech", "deception", "night_action"])
+@pytest.mark.parametrize(
+    ("task_type", "model_profile"),
+    [
+        ("speech", "ark_deepseek_v4_pro_speech"),
+        ("deception", "ark_deepseek_v4_pro_deception"),
+        ("night_action", "ark_deepseek_v4_pro_vote"),
+    ],
+)
 def test_minimax_default_tasks_use_deepseek_v4_pro(
     yaml_config: dict,
     task_type: str,
+    model_profile: str,
 ) -> None:
-    """MiniMax 默认档的主要玩家任务固定走 DeepSeek V4 Pro。"""
+    """MiniMax 默认档按任务使用独立 DeepSeek 采样 profile。"""
     cfg = yaml_config["llm_profiles"]["minimax_default"]["tasks"][task_type]
     assert cfg == {
         "provider": "openai",
-        "model_profile": "ark_deepseek_v4_pro",
+        "model_profile": model_profile,
     }
 
 
@@ -104,11 +112,11 @@ def test_judge_tasks_keep_minimax_m27_route(
     model_router: ModelRouter,
     task_type: str,
 ) -> None:
-    """五个 judge 任务继续使用原生 MiniMax M2.7。"""
+    """五个 judge 任务使用原生 MiniMax M2.7 的低温 profile。"""
     route = yaml_config["llm_profiles"]["minimax_default"]["tasks"][task_type]
     assert route == {
         "provider": "minimax",
-        "model_profile": "minimax_m27_default",
+        "model_profile": "minimax_m27_judge",
     }
     resolved, _ = model_router.resolve_config("judge", task_type)
     assert resolved.provider == "minimax"
@@ -200,7 +208,8 @@ def test_native_minimax_profiles_target_api_minimaxi_v1(yaml_config: dict) -> No
 
 def test_native_minimax_fallback_uses_anthropic_compatible_minimax(yaml_config: dict) -> None:
     """v1.1.4 cross-provider rule still holds for the new profiles:
-    fallback uses ``provider: minimax`` (Anthropic-compatible native) so
+    fallback uses ``provider: minimax`` (Anthropic-compatible native) and
+    the dedicated thinking profile so
     an ``api.minimaxi.com/v1`` outage does not silently flip back to the
     same endpoint via a same-provider fallback.
     """
@@ -209,7 +218,7 @@ def test_native_minimax_fallback_uses_anthropic_compatible_minimax(yaml_config: 
         assert fb["provider"] == "minimax", (
             f"{key} fallback drifted to provider={fb['provider']!r}"
         )
-        assert fb["model_profile"] == "minimax_m27_default", (
+        assert fb["model_profile"] == "minimax_m27_thinking", (
             f"{key} fallback model_profile drifted: {fb['model_profile']!r}"
         )
 

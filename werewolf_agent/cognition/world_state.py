@@ -3,7 +3,7 @@
 功能描述：每个事实是带已知模式的冻结 dataclass。事实列表是所有下游认知模块
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-15
+修改日期：2026-07-26
 使用示例：内部模块，无对外接口
 """
 
@@ -296,7 +296,7 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
     self_seer_context = _has_self_seer_context(text)
     seer_spans: list[tuple[int, int]] = []
     for match in re.finditer(r"(?:查验|验了?|验人)\s*(p\d{2})\s*(?:是|为)?\s*(狼人|查杀|狼|wolf)", text):
-        if self_seer_context and not _is_third_party_seer_report(text, match.start()):
+        if self_seer_context and not _is_third_party_seer_report(text, match.start(1)):
             facts.append(StructuredFact(
                 fact_type="seer_check_claim",
                 source_player=speaker,
@@ -307,9 +307,26 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
             ))
             seer_spans.append(match.span())
 
+    for match in re.finditer(
+        r"(?:查验|验了?|验人)\s*(p\d{2})\s*(?:[,，、]\s*)?"
+        r"(?:结果\s*)?(?:是|为)\s*(好人|金水|good)",
+        text,
+    ):
+        if self_seer_context and not _is_third_party_seer_report(text, match.start(1)):
+            facts.append(StructuredFact(
+                fact_type="seer_check_claim",
+                source_player=speaker,
+                target_player=match.group(1),
+                value="good",
+                day=day,
+                metadata={"claim_type": "seer_good_check"},
+            ))
+
     for match in re.finditer(r"(查验|验了|验人)?\s*(p\d{2})\s*(是|为)?\s*(狼人|查杀)", text):
         # 跳过已被 seer_check_claim 覆盖的区间
         if any(match.start() >= s and match.end() <= e for s, e in seer_spans):
+            continue
+        if _is_third_party_seer_report(text, match.start(2)):
             continue
         facts.append(StructuredFact(
             fact_type="claimed_suspect",
@@ -320,40 +337,51 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
         ))
     # --- H-7: 右侧分支 p\d{2} 也放入捕获组 ---
     for match in re.finditer(r"(保|金水|好人)\s*(p\d{2})|(p\d{2})\s*(是|为)?\s*(金水|好人)", text):
-        target = next((group for group in match.groups() if group and re.fullmatch(r"p\d{2}", group)), None)
-        if target:
-            facts.append(StructuredFact(
-                fact_type="claimed_good",
-                source_player=speaker,
-                target_player=target,
-                value="good",
-                day=day,
-            ))
-
-    # Badge flow: 警徽流p05 p07
-    badge_match = re.findall(r"警徽流\s*(p\d{2}(?:\s*p\d{2})*)", text)
-    if badge_match:
-        for bf_str in badge_match:
-            targets = re.findall(r"p\d{2}", bf_str)
-            if targets:
+        target_group = next(
+            (index for index, group in enumerate(match.groups(), 1)
+             if group and re.fullmatch(r"p\d{2}", group)),
+            None,
+        )
+        if target_group is not None:
+            target = match.group(target_group)
+            if target and not _is_third_party_seer_report(text, match.start(target_group)):
                 facts.append(StructuredFact(
-                    fact_type="badge_flow_claim",
+                    fact_type="claimed_good",
                     source_player=speaker,
-                    target_player=targets[0],
+                    target_player=target,
+                    value="good",
                     day=day,
-                    night=0,
-                    phase="",
-                    value="badge_flow",
-                    metadata={"badge_flow_order": targets},
                 ))
 
+    # Badge flow: 支持紧凑格式和逐行列出的 N2/N3 验人计划。
+    for targets in _extract_badge_flow_targets(text):
+        facts.append(StructuredFact(
+            fact_type="badge_flow_claim",
+            source_player=speaker,
+            target_player=targets[0],
+            day=day,
+            night=0,
+            phase="",
+            value="badge_flow",
+            metadata={"badge_flow_order": targets},
+        ))
+
     # Gold claim: p05是金水, 给p05发金水
-    gold_match = re.findall(r"(p\d{2})\s*(?:是金水|金水)", text)
-    if not gold_match:
-        gold_match = re.findall(r"给\s*(p\d{2})\s*(?:发)?金水", text)
-    for target in gold_match:
-        match_start = text.find(target)
-        if self_seer_context and not _is_third_party_seer_report(text, match_start):
+    gold_matches = [
+        *re.finditer(r"(p\d{2})\s*(?:是金水|金水)", text),
+        *re.finditer(r"给\s*(p\d{2})\s*(?:发)?金水", text),
+    ]
+    gold_matches.sort(key=lambda match: match.start(1))
+    seen_gold_targets: set[int] = set()
+    for match in gold_matches:
+        target = match.group(1)
+        target_start = match.start(1)
+        if target_start in seen_gold_targets:
+            continue
+        seen_gold_targets.add(target_start)
+        if self_seer_context and not _is_third_party_seer_report(
+            text, target_start
+        ):
             facts.append(StructuredFact(
                 fact_type="seer_check_claim",
                 source_player=speaker,
@@ -389,11 +417,151 @@ def _has_self_seer_context(text: str) -> bool:
     )
 
 
-def _is_third_party_seer_report(text: str, span_start: int) -> bool:
-    if span_start < 0:
+def _is_third_party_seer_report(text: str, target_start: int) -> bool:
+    """判断目标查验是否属于第三方转述，调用方统一传目标起点。"""
+    if target_start < 0:
         return False
-    prefix = re.sub(r"\s+", "", text[max(0, span_start - 16):span_start])
-    return bool(re.search(r"p\d{2}.{0,8}(?:报|说|称|讲|表示|给|发|验|查)$", prefix))
+    # 只截取目标前的有限窗口，避免无标点长发言中每个目标都重复扫描全文。
+    context_start = max(0, target_start - _THIRD_PARTY_CONTEXT_WINDOW)
+    context = text[context_start:target_start]
+    boundary_offset = max(
+        context.rfind(mark)
+        for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
+    )
+    if boundary_offset >= 0:
+        boundary = context_start + boundary_offset
+        prefix = context[boundary_offset + 1:]
+    else:
+        boundary = context_start - 1
+        prefix = context
+    prefix = re.sub(r"\s+", "", prefix)
+    direct_self = re.search(
+        r"(?:我(?:昨晚|今晚|夜里|首夜|刚刚)?(?:查验|查了?|验了?|验人|给)|给)$",
+        prefix,
+    )
+    marker_in_clause = _contains_third_party_report_marker(prefix)
+    if direct_self:
+        # 同一子句已有“p01说/报”是被转述的第一人称；独立的“我验了”保留。
+        if marker_in_clause:
+            return True
+        # 跨逗号引语的开头带引号时，前一子句的说话者仍然负责归因。
+        if prefix.startswith(("“", '"', "「", "『")):
+            return _previous_clause_has_marker(text, boundary)
+        # 无引号的“p01说，我验了...”同样是 p01 的第一人称转述；
+        # 带完整结果的“p01报p02查杀，我验了...”则保留当前玩家自述。
+        return _previous_clause_has_marker(text, boundary, terminal_only=True)
+    # 有明确玩家编号的“p02报/说/验了...”是转述；“你跳预言家说验了..."
+    # 也属于对他人查验的描述，即使编号出现在前一个姓名子句中。
+    if marker_in_clause:
+        return True
+
+    # “p01说，昨晚验了p02”中编号和查验动词跨逗号，检查紧邻的前一子句。
+    return _previous_clause_has_marker(text, boundary)
+
+
+def _previous_clause_has_marker(
+    text: str, boundary: int, *, terminal_only: bool = False
+) -> bool:
+    if boundary < 0 or text[boundary] not in "，,":
+        return False
+    context_start = max(0, boundary - _THIRD_PARTY_CONTEXT_WINDOW)
+    context = text[context_start:boundary]
+    previous_offset = max(
+        context.rfind(mark)
+        for mark in ("。", "！", "？", "!", "?", "；", ";", "\n", "，", ",")
+    )
+    previous = re.sub(r"\s+", "", context[previous_offset + 1:])
+    if terminal_only:
+        return bool(_THIRD_PARTY_TERMINAL_MARKER_RE.search(previous))
+    return _contains_third_party_report_marker(previous)
+
+
+_THIRD_PARTY_MARKER_WINDOW = 120
+_THIRD_PARTY_CONTEXT_WINDOW = 180
+_THIRD_PARTY_REPORT_MARKER_RE = re.compile(
+    rf"(?:"
+    rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:"
+    r"(?:报|说|称|讲|表示)了?(?=[:：]*[“\"「『]?(?:我|他|她|验|查|p\d{2}))"
+    r")"
+    rf"|(?:p\d{{2}}|你)(?:给|发)(?=(?:p\d{{2}}|我|他|她|金水|查杀|好人))"
+    rf"|(?:p\d{{2}}|你)(?:验了?|查(?:了|验)?)(?=(?:p\d{{2}}|我))"
+    rf")"
+)
+_THIRD_PARTY_TERMINAL_MARKER_RE = re.compile(
+    rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:报|说|称|讲|表示)了?$"
+)
+
+
+def _contains_third_party_report_marker(prefix: str) -> bool:
+    if not prefix:
+        return False
+    compact_prefix = re.sub(r"\s+", "", prefix)
+    # 追加占位目标即可识别
+    # “p01说p02/给p02”这种 marker 在目标起点前结束的紧凑写法，
+    # 同时避免把目标之后的下一个“给/发”倒灌到当前目标。
+    marker_match = _THIRD_PARTY_REPORT_MARKER_RE.search(compact_prefix + "p00")
+    # 目标自身的 pXX 不能被当成报告者；报告者必须位于 target 起点之前。
+    if marker_match and marker_match.start() < len(compact_prefix):
+        return True
+    return bool(_THIRD_PARTY_TERMINAL_MARKER_RE.search(compact_prefix))
+
+
+def _extract_badge_flow_targets(text: str) -> list[list[str]]:
+    """提取警徽流目标，限制在标记后的紧凑文本或连续计划行内。"""
+    flows: list[list[str]] = []
+    for marker in re.finditer(r"警徽流", text):
+        tail = text[marker.end():]
+        lines = tail.splitlines()
+        if not lines:
+            continue
+
+        compact_match = re.match(
+            r"^[\s:：]*(p\d{2}(?![A-Za-z0-9_])"
+            r"(?:(?:\s+|[，、,]\s*)p\d{2}(?![A-Za-z0-9_]))*)",
+            lines[0],
+        )
+        targets = (
+            re.findall(r"p\d{2}(?![A-Za-z0-9_])", compact_match.group(1))
+            if compact_match else []
+        )
+        if not targets:
+            ordered_match = re.match(
+                r"^[\s:：]*先\s*(?:验|查)?\s*(p\d{2}(?![A-Za-z0-9_]))"
+                r"\s*[，、,]?\s*后\s*(?:验|查)?\s*(p\d{2}(?![A-Za-z0-9_]))"
+                r"(?:\s*[，、,]?\s*再\s*(?:验|查)?\s*(p\d{2}(?![A-Za-z0-9_])))?"
+                r"(?=$|[\s，、。！？；])",
+                lines[0],
+            )
+            if ordered_match:
+                targets = [group for group in ordered_match.groups() if group]
+        if not targets:
+            inline_plan_match = re.match(
+                r"^[\s:：]*N\d+\s*[:：]?\s*(?:我\s*)?(?:计划\s*)?"
+                r"(?:验|查)\s*p\d{2}(?![A-Za-z0-9_])"
+                r"(?:(?:\s+|[，、,；;]\s*)N\d+\s*[:：]?\s*"
+                r"(?:我\s*)?(?:计划\s*)?(?:验|查)\s*"
+                r"p\d{2}(?![A-Za-z0-9_]))*",
+                lines[0],
+            )
+            if inline_plan_match:
+                targets = re.findall(
+                    r"p\d{2}(?![A-Za-z0-9_])", inline_plan_match.group(0)
+                )
+        if not targets:
+            for line in lines[1:]:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # 只接受明显的 N2/N3 验人计划行，避免吞掉后续普通发言中的玩家编号。
+                if not re.match(
+                    r"[-*]?\s*(?:N\d+\s*[:：]?\s*)?(?:我\s*)?(?:计划\s*)?(?:验|查)",
+                    stripped,
+                ):
+                    break
+                targets.extend(re.findall(r"p\d{2}(?![A-Za-z0-9_])", stripped))
+        if targets:
+            flows.append(targets)
+    return flows
 
 
 def _extract_vote(event: GameEvent, state: GameState) -> list[StructuredFact]:

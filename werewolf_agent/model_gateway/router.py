@@ -3,7 +3,7 @@
     功能描述：模型路由器网关 facade，负责配置解析、provider 路由、fallback 和用量追踪协调。
     作者：Mike
     创建日期：2025-01-15
-    修改日期：2026-07-23
+    修改日期：2026-07-26
     使用示例：内部模块，无对外接口
 """
 
@@ -57,6 +57,7 @@ from werewolf_agent.model_gateway.reasoning_policy import (
     validate_player_reasoning_profiles,
 )
 from werewolf_agent.model_gateway.router_config import (
+    _canonical_provider_name,
     _configured_provider_names,
     _validate_config,
 )
@@ -144,7 +145,12 @@ class ModelRouter:
         self._model_profiles = model_profiles
         self._llm_profiles = llm_profiles
         self._player_assignments = player_assignments
-        self._providers: dict[str, LLMProvider] = providers or {}
+        self._providers: dict[str, LLMProvider] = {}
+        for provider_key, provider in (providers or {}).items():
+            canonical_key = _canonical_provider_name(provider_key)
+            # 保留显式 canonical key，避免大小写别名覆盖已注册 provider。
+            if canonical_key not in self._providers or provider_key == canonical_key:
+                self._providers[canonical_key] = provider
         self._usage_log: list[UsageRecord] = []
         self._usage_lock = threading.Lock()
         self._allow_test_model_capability = allow_test_model_capability
@@ -222,7 +228,7 @@ class ModelRouter:
         )
 
     def register_provider(self, provider: LLMProvider) -> None:
-        self._providers[provider.name] = provider
+        self._providers[_canonical_provider_name(provider.name)] = provider
 
     def register_env_providers(self) -> None:
         """Register configured providers that have API keys in env/.env.

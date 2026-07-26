@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-25
-修改日期: 2026-07-25
+修改日期: 2026-07-26
 
 使用示例:
     >>> python -m pytest tests/agents/test_discussion_summary.py -q
@@ -17,8 +17,10 @@ from pydantic import ValidationError
 
 from werewolf_agent.agents.discussion_summary import (
     DiscussionSummary,
+    DiscussionSummaryGenerationError,
     discussion_summary_for_player,
     discussion_summary_text,
+    parse_discussion_summary_text,
 )
 from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.schemas import AgentContext, TaskType
@@ -271,3 +273,137 @@ def test_text_json_provider_request_contains_exact_narrow_schema() -> None:
         assert f'"{field}"' in prompt
     for generic_field in ("action_type", "speech", "reason", "private_intent"):
         assert f'"{generic_field}"' not in prompt
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        '```json\n{"summary":"怀疑p03"}\n```',
+        '\ufeff前置说明：\n{"summary":"怀疑p03"}\n以上是摘要。',
+    ],
+)
+def test_parse_discussion_summary_text_accepts_fenced_bom_and_mixed_prose(
+    raw_text: str,
+) -> None:
+    assert parse_discussion_summary_text(raw_text) == DiscussionSummary(
+        summary="怀疑p03",
+    )
+
+
+def test_parse_discussion_summary_text_preserves_urls_in_summary() -> None:
+    assert parse_discussion_summary_text(
+        '{"summary":"查看 https://example.com/a"}'
+    ).summary == "查看 https://example.com/a"
+
+
+def test_parse_discussion_summary_text_accepts_mixed_prose_url() -> None:
+    assert parse_discussion_summary_text(
+        'See https://example.com before {"summary":"ok"}'
+    ) == DiscussionSummary(summary="ok")
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        '{"summary":"ok","unknown":true}',
+        '{"suspected_players":[]}',
+        '{"summary":"ok","suspected_players":"p03"}',
+        '[{"summary":"ok"}]',
+        '```json\n[{"summary":"ok"}]\n```',
+        '前置说明：[{"summary":"ok"}]\n以上是结果。',
+    ],
+)
+def test_parse_discussion_summary_text_rejects_invalid_schema(raw_text: str) -> None:
+    with pytest.raises(ValidationError):
+        parse_discussion_summary_text(raw_text)
+
+
+def test_parse_discussion_summary_text_rejects_ambiguous_multiple_valid_objects() -> None:
+    with pytest.raises(ValueError, match="ambiguous"):
+        parse_discussion_summary_text(
+            '{"summary":"第一个"} 中间 {"summary":"第二个"}'
+        )
+
+
+class _SummaryTextProvider:
+    name = "summary-text"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def generate(
+        self,
+        prompt,
+        config,
+        system_prompt=None,
+        tools=None,
+        tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        return GenerateResult(
+            text=self.text,
+            provider=self.name,
+            model=config.model,
+        )
+
+
+def _summary_agent_for_text(text: str) -> PlayerAgent:
+    provider = _SummaryTextProvider(text)
+    router = ModelRouter(
+        model_profiles={
+            "summary_model": {
+                "model": "summary-model",
+                "structured_output": {"mode": "text_json"},
+                "reasoning": {"level": "medium"},
+                "retry_count": 0,
+            },
+        },
+        llm_profiles={
+            "player": {
+                "tasks": {
+                    "discussion_summary": {
+                        "provider": provider.name,
+                        "model_profile": "summary_model",
+                    },
+                },
+            },
+        },
+        player_assignments={"p01": "player"},
+        providers={provider.name: provider},
+    )
+    return PlayerAgent(agent_id="p01", model_router=router)
+
+
+def _summary_context() -> AgentContext:
+    return AgentContext(
+        agent_id="p01",
+        task_type=TaskType.DISCUSSION_SUMMARY,
+        strategy_directive={"transcript_text": "[p02]: 我怀疑p03。"},
+    )
+
+
+def test_player_summary_uses_repaired_text_parser() -> None:
+    summary = _summary_agent_for_text(
+        '```json\n{"summary":"怀疑p03"}\n```'
+    ).summarize_discussion(_summary_context())
+
+    assert summary.summary == "怀疑p03"
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "failure_code"),
+    [
+        ("not json", "invalid_json"),
+        ('{"summary":"ok","unknown":true}', "schema_validation_failed"),
+        ('{"suspected_players":"p03"}', "schema_validation_failed"),
+        ('{"summary":"one"} {"summary":"two"}', "invalid_json"),
+    ],
+)
+def test_player_summary_maps_parser_failures_to_safe_codes(
+    raw_text: str,
+    failure_code: str,
+) -> None:
+    with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
+        _summary_agent_for_text(raw_text).summarize_discussion(_summary_context())
+
+    assert exc_info.value.failure_code == failure_code
