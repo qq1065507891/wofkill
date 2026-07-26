@@ -181,6 +181,40 @@ class TestModelRouterConstruction:
 
 
 class TestResolveConfig:
+    def test_glm_provider_normalization_disables_reasoning_capability(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+        from werewolf_agent.model_gateway.router_config import _route_config
+
+        model_profiles = {
+            "glm_profile": {
+                "provider": " GLM ",
+                "model": "glm-model",
+                "reasoning": {"level": "high"},
+            },
+        }
+        router = ModelRouter(
+            model_profiles=model_profiles,
+            llm_profiles={
+                "profile": {
+                    "default": {
+                        "provider": " glm ",
+                        "model_profile": "glm_profile",
+                    },
+                },
+            },
+            player_assignments={"p01": "profile"},
+        )
+
+        router._validate_config()
+        config, _ = router.resolve_config("p01", "speech")
+        startup_config = _route_config(
+            {"provider": " glm ", "model_profile": "glm_profile"},
+            model_profiles,
+        )
+
+        assert config.reasoning_capability == "none"
+        assert startup_config.reasoning_capability == "none"
+
     def test_normalized_route_provider_resolves_and_generates(self) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
 

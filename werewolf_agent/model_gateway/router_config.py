@@ -201,7 +201,7 @@ def _route_config(
     reasoning = profile.get("reasoning", "none")
     if isinstance(reasoning, dict):
         reasoning = reasoning.get("level", "none")
-    if str(profile.get("provider", "")).lower() == "glm":
+    if _canonical_provider_name(profile.get("provider", "")) == "glm":
         reasoning = "none"
     return ModelConfig(
         provider=_canonical_provider_name(route.get("provider", "mock")),

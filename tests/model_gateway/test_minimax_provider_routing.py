@@ -208,7 +208,8 @@ def test_native_minimax_profiles_target_api_minimaxi_v1(yaml_config: dict) -> No
 
 def test_native_minimax_fallback_uses_anthropic_compatible_minimax(yaml_config: dict) -> None:
     """v1.1.4 cross-provider rule still holds for the new profiles:
-    fallback uses ``provider: minimax`` (Anthropic-compatible native) so
+    fallback uses ``provider: minimax`` (Anthropic-compatible native) and
+    the dedicated thinking profile so
     an ``api.minimaxi.com/v1`` outage does not silently flip back to the
     same endpoint via a same-provider fallback.
     """
@@ -217,7 +218,7 @@ def test_native_minimax_fallback_uses_anthropic_compatible_minimax(yaml_config: 
         assert fb["provider"] == "minimax", (
             f"{key} fallback drifted to provider={fb['provider']!r}"
         )
-        assert fb["model_profile"] == "minimax_m27_default", (
+        assert fb["model_profile"] == "minimax_m27_thinking", (
             f"{key} fallback model_profile drifted: {fb['model_profile']!r}"
         )
 

@@ -254,7 +254,7 @@ llm_profiles:
       model_profile: minimax_native_m3
     fallback:
       provider: minimax
-      model_profile: minimax_m27_default
+      model_profile: minimax_m27_thinking
 
   minimax_native_m2_7:
     default:
@@ -262,7 +262,7 @@ llm_profiles:
       model_profile: minimax_native_m2_7
     fallback:
       provider: minimax
-      model_profile: minimax_m27_default
+      model_profile: minimax_m27_thinking
 
   # --- MiniMax profiles ---
   # ``minimax_default`` 的 default、speech、deception、night_action
