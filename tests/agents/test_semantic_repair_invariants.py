@@ -86,6 +86,27 @@ def test_completed_action_classifier_rejects_ascii_suffix_or_suggestion(
     assert classify_public_claims(text, speaker="p07") == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我建议p07开枪带走p01",
+        "建议开枪带走p01",
+        "计划开枪带走p01",
+        "准备开枪带走p01",
+        "xp07已经开枪p01",
+    ],
+)
+def test_completed_action_classifier_rejects_suggestion_and_actor_prefix(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert not any(
+        claim.support_kind in {"hunter_shot", "witch_antidote"}
+        for claim in classify_public_claims(text, speaker="p08")
+    )
+
+
 def test_completed_action_classifier_keeps_negation_and_inference_semantics() -> None:
     from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
 
@@ -155,6 +176,28 @@ def test_action_claim_audit_rejects_mismatched_engine_evidence(
                 "target": "p01",
             }],
             "confirmed_actions": [confirmed_action],
+        },
+    )
+
+    assert len(claims) == 1
+    assert verified == set()
+
+
+def test_action_claim_audit_honors_explicit_first_night_day() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "p07首夜用解药救了p01",
+        [],
+        public_evidence={
+            "confirmed_actions": [{
+                "day": 2,
+                "actor": "p07",
+                "action": "witch_antidote",
+                "target": "p01",
+            }],
         },
     )
 

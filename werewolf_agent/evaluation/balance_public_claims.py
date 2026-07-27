@@ -97,6 +97,7 @@ class ClassifiedPublicClaim:
     support_kind: str | None = None
     speaker_attribution: str | None = None
     negated: bool = False
+    day: int | None = None
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,8 @@ def classify_public_claims(
             )
         )
     for match in _PUBLIC_ACTION_CLAIM_RE.finditer(text):
+        if not _completed_action_match_is_valid(text, match):
+            continue
         action_text = match.group("action")
         actor = match.group("actor")
         found.append(
@@ -225,6 +228,7 @@ def classify_public_claims(
                 ),
                 speaker_attribution=speaker if actor == "我" else actor,
                 negated=_completed_action_claim_is_negated(text, match),
+                day=1 if "首夜" in match.group(0) else None,
             )
         )
     return _resolve_overlapping_claims(found)
@@ -471,6 +475,21 @@ def _completed_action_claim_is_negated(text: str, match: re.Match[str]) -> bool:
     )
 
 
+def _completed_action_match_is_valid(text: str, match: re.Match[str]) -> bool:
+    """排除建议性措辞，并阻止 ASCII 单词粘连到玩家标识。"""
+    actor = match.group("actor")
+    if actor:
+        actor_start = match.start("actor")
+        if actor_start and re.match(r"[A-Za-z0-9_]", text[actor_start - 1]):
+            return False
+    action_prefix = text[match.start():match.start("action")]
+    if re.search(r"(?:建议|计划|准备|打算|想要|考虑|提议)", action_prefix):
+        return False
+    if actor is None and re.search(r"[A-Za-z0-9_]p\d{2}", action_prefix):
+        return False
+    return True
+
+
 def _completed_action_claim_is_supported(
     claim: ClassifiedPublicClaim,
     public_evidence: Mapping[str, Any] | None,
@@ -505,6 +524,8 @@ def _completed_action_claim_days(
     public_evidence: Mapping[str, Any],
 ) -> tuple[Any, ...]:
     """从同一玩家声明绑定显式日次，但不把声明当成执行证据。"""
+    if claim.day is not None:
+        return (claim.day,)
     action_claims = public_evidence.get("action_claims", ())
     if not isinstance(action_claims, (list, tuple)):
         return (0,)
