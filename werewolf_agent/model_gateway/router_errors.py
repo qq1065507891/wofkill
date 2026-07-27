@@ -76,6 +76,8 @@ def _record_success_usage(
         reasoning_level=reasoning_level,
         reasoning_status=reasoning_status,
         reasoning_tokens=reasoning_tokens,
+        effective_temperature=result.effective_temperature,
+        temperature_override_reason=result.temperature_override_reason,
         attempts=result.attempts,
     )
     _append_usage(usage_log, usage_lock, usage)

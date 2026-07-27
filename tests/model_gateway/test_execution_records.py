@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
@@ -88,6 +89,36 @@ def test_generate_result_defaults_to_no_failure_disposition() -> None:
     assert FailureDisposition.TRANSPORT_EXHAUSTED.value == "transport_exhausted"
     with pytest.raises((FrozenInstanceError, AttributeError)):
         result.reasoning_status = "drifted"  # type: ignore[misc]
+
+
+def test_success_usage_copies_effective_temperature_audit_fields() -> None:
+    from werewolf_agent.model_gateway.router_errors import _record_success_usage
+
+    result = GenerateResult(
+        text="ok",
+        provider="minimax",
+        model="MiniMax-M3",
+        usage=UsageRecord(
+            agent_id="",
+            task_type="",
+            provider="minimax",
+            model="MiniMax-M3",
+            prompt_tokens=1,
+        ),
+        effective_temperature=1.0,
+        temperature_override_reason="thinking_requires_temperature_1",
+    )
+    usage_log: list[UsageRecord] = []
+    _record_success_usage(
+        usage_log=usage_log,
+        usage_lock=threading.Lock(),
+        agent_id="p01",
+        task_type="speech",
+        result=result,
+        structured_output_mode="text_json",
+    )
+    assert usage_log[-1].effective_temperature == 1.0
+    assert usage_log[-1].temperature_override_reason == "thinking_requires_temperature_1"
 
 
 def test_execution_record_preserves_skipped_provider_marker_across_mapping() -> None:

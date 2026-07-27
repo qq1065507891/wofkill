@@ -97,6 +97,8 @@ class UsageRecord:
     reasoning_level: str = "none"
     reasoning_status: str = "not_requested"
     reasoning_tokens: int = 0
+    effective_temperature: float | None = None
+    temperature_override_reason: str | None = None
     # 2026-07-21 R2: Anthropic prompt cache 命中统计.
     # cache_creation_input_tokens = 首次写入 prefix 的 token (走 1.25x 计费).
     # cache_read_input_tokens = 复用 cache 的 token (走 0.1x 计费).
