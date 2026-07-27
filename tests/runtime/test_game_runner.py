@@ -1985,10 +1985,6 @@ class TestGameRunnerMemoryLifecycle:
         assert all(event.payload["entries"][0]["row_found"] is True for event in audits)
 
     def test_new_game_runner_reads_previous_reflection_v2_into_cross_game_hints(self) -> None:
-        from werewolf_agent.memory.schemas import (
-            ReflectionEntryV2,
-            ReflectionQualityStatus,
-        )
         from werewolf_agent.runtime.context_cross_game_memory import (
             build_cross_game_memory_hints,
         )
@@ -2003,42 +1999,37 @@ class TestGameRunnerMemoryLifecycle:
             repository=repo,
             memory_coordinator=coordinator,
         ))
-        runner1._state = GameState(
-            game_id=runner1.game_id,
-            phase="finished",
-            winning_faction="good",
-            players={"p01": PlayerState(id="p01", role="seer")},
+        runner1._state = replace(
+            self._verified_reflection_state(
+                runner1.game_id,
+                player_ids=("p01", "p02"),
+                lesson_text=(
+                    "对跳时应先核验公开票型、验人时间线和警徽流承接，"
+                    "再结合可复核证据给出站边结论。"
+                ),
+            ),
+            players={
+                "p01": PlayerState(id="p01", role="seer"),
+                "p02": PlayerState(id="p02", role="werewolf"),
+            },
         )
-        runner1._cognition_state_manager.memory_store.reflections.store_v2(
-            ReflectionEntryV2(
-                entry_id="reflection_g_reflection_previous_p01",
-                game_id=runner1.game_id,
-                player_id="p01",
-                role="seer",
-                faction="good",
-                faction_won=True,
-                quality_score=0.85,
-                quality_status=ReflectionQualityStatus.APPROVED,
-                situation_signature={
-                    "role": "seer",
-                    "faction": "good",
-                    "outcome": "win",
-                    "phase_focus": ["speech"],
-                    "game_patterns": ["evidence_review"],
-                },
-                actionable_advice=["先核验公开证据，再给站边结论。"],
-                prompt_card={
-                    "theme": "证据优先",
-                    "lesson": "先核验公开证据，再给站边结论。",
-                    "trigger_signals": ["出现对跳"],
-                    "recommended_action": "先核验公开证据，再给站边结论。",
-                    "misuse_risk": "不要把历史经验直接映射到本局玩家身份。",
-                    "fact_basis": "verified_event_claims",
-                    "auto_verified": True,
-                },
-            )
+        matrix = runner1._cognition_state_manager.memory_store.init_matrix(
+            "p01",
+            ["p01", "p02"],
+            ["seer", "werewolf", "villager"],
         )
+        mistaken_read = matrix.get("p02")
+        assert mistaken_read is not None
+        mistaken_read.role_probabilities = {"villager": 0.9, "werewolf": 0.1}
+        mistaken_read.faction_read = "good"
         runner1._save_memory_snapshot()
+
+        audit = next(
+            event for event in reversed(runner1.state.events)
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is True
+        assert audit.payload["persisted_entry_count"] == 2
 
         runner2 = GameRunner(GameRunnerConfig(
             game_id="g_reflection_next",
@@ -2059,6 +2050,7 @@ class TestGameRunnerMemoryLifecycle:
         game_id: str,
         *,
         player_ids: tuple[str, ...] = ("p01",),
+        lesson_text: str = "对跳时应先核验公开票型",
     ) -> GameState:
         return GameState(
             game_id=game_id,
@@ -2083,7 +2075,7 @@ class TestGameRunnerMemoryLifecycle:
                     ],
                     "verified_lessons": [{
                         "lesson_id": "l1" if player_id == "p01" else f"lesson-{player_id}",
-                        "abstraction": "对跳时应先核验公开票型",
+                        "abstraction": lesson_text,
                     }],
                     "rejected_fact_count": 1,
                     "rejected_lesson_count": 0,
