@@ -3,7 +3,7 @@
 功能描述：每个事实是带已知模式的冻结 dataclass。事实列表是所有下游认知模块
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-26
+修改日期：2026-07-27
 使用示例：内部模块，无对外接口
 """
 
@@ -490,6 +490,12 @@ _THIRD_PARTY_REPORT_MARKER_RE = re.compile(
 _THIRD_PARTY_TERMINAL_MARKER_RE = re.compile(
     rf"(?:p\d{{2}}|你).{{0,{_THIRD_PARTY_MARKER_WINDOW}}}(?:报|说|称|讲|表示)了?$"
 )
+_BADGE_FLOW_PLAN_LINE_RE = re.compile(
+    r"^\s*[-*]?\s*"
+    r"(?:第[一二三四五六七八九十0-9]+夜\s*)?N\d+\s*"
+    r"[,:：，]?\s*(?:我\s*)?(?:计划\s*)?"
+    r"(?:查验|验|查)\s*(p\d{2})(?![A-Za-z0-9_])"
+)
 
 
 def _contains_third_party_report_marker(prefix: str) -> bool:
@@ -535,30 +541,17 @@ def _extract_badge_flow_targets(text: str) -> list[list[str]]:
             if ordered_match:
                 targets = [group for group in ordered_match.groups() if group]
         if not targets:
-            inline_plan_match = re.match(
-                r"^[\s:：]*N\d+\s*[:：]?\s*(?:我\s*)?(?:计划\s*)?"
-                r"(?:验|查)\s*p\d{2}(?![A-Za-z0-9_])"
-                r"(?:(?:\s+|[，、,；;]\s*)N\d+\s*[:：]?\s*"
-                r"(?:我\s*)?(?:计划\s*)?(?:验|查)\s*"
-                r"p\d{2}(?![A-Za-z0-9_]))*",
-                lines[0],
-            )
-            if inline_plan_match:
-                targets = re.findall(
-                    r"p\d{2}(?![A-Za-z0-9_])", inline_plan_match.group(0)
-                )
-        if not targets:
-            for line in lines[1:]:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                # 只接受明显的 N2/N3 验人计划行，避免吞掉后续普通发言中的玩家编号。
-                if not re.match(
-                    r"[-*]?\s*(?:N\d+\s*[:：]?\s*)?(?:我\s*)?(?:计划\s*)?(?:验|查)",
-                    stripped,
-                ):
+            plan_lines = list(lines)
+            plan_lines[0] = plan_lines[0].lstrip(" \t:：")
+            if not plan_lines[0]:
+                plan_lines = plan_lines[1:]
+            for line in plan_lines:
+                if not line.strip():
                     break
-                targets.extend(re.findall(r"p\d{2}(?![A-Za-z0-9_])", stripped))
+                plan_match = _BADGE_FLOW_PLAN_LINE_RE.match(line)
+                if plan_match is None:
+                    break
+                targets.append(plan_match.group(1))
         if targets:
             flows.append(targets)
     return flows
@@ -623,10 +616,45 @@ _EXTRACTORS: dict[str, Any] = {
     "sheriff_no_election": _extract_sheriff_no_election,
 }
 
+_LAST_WORDS_EVENT_TYPES = frozenset({
+    "exile_last_words",
+    "night_death_last_words",
+})
+
+_CLAIM_FACT_TYPES = frozenset({
+    "claimed_role",
+    "claimed_good",
+    "claimed_suspect",
+    "seer_check_claim",
+    "badge_flow_claim",
+})
+
+
+def _fact_provenance(fact: StructuredFact, event: GameEvent) -> dict[str, str]:
+    """按事实类型和来源事件标记声明权威性与证据种类。"""
+    is_claim = fact.fact_type in _CLAIM_FACT_TYPES or fact.fact_type.startswith("claimed_")
+    return {
+        "authority": "player_claim" if is_claim else "engine",
+        "support_kind": (
+            "last_words"
+            if event.type in {"exile_last_words", "night_death_last_words"}
+            else "public_speech"
+            if event.type in {"speech", "sheriff_speech", "sheriff_pk_speech"}
+            else "executed_action"
+        ),
+    }
+
 
 def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
     """Extract structured facts from a single GameEvent."""
     extractor = _EXTRACTORS.get(event.type)
+    if (
+        extractor is None
+        and event.type in _LAST_WORDS_EVENT_TYPES
+        and "speaker" in event.payload
+        and "text" in event.payload
+    ):
+        extractor = _extract_speech
     if extractor is None:
         return [_attach_event_metadata(StructuredFact(
             fact_type=event.type,
@@ -652,6 +680,7 @@ def _attach_event_metadata(
 ) -> StructuredFact:
     """把来源事件和 visibility 写入事实 metadata，供可见性策略使用。"""
     metadata = dict(fact.metadata)
+    metadata.update(_fact_provenance(fact, event))
     metadata.setdefault("source_event", event.type)
     visibility = event_visibility(event)
     metadata.setdefault("visibility", visibility.value)

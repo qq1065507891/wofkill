@@ -171,6 +171,87 @@ class TestStructuredWorldState:
         assert facts[1].fact_type == "claimed_role"
         assert facts[2].fact_type == "claimed_suspect"
 
+    def test_public_speech_claim_keeps_claim_provenance_and_event_metadata(self):
+        """公开发言声明应标记为玩家声明，并保留事件来源与可见性。"""
+        state = _make_state()
+        speech_event = GameEvent(
+            type="speech",
+            payload={
+                "speaker": "p08",
+                "text": "我是预言家",
+                "day_number": 1,
+            },
+        )
+
+        speech_fact = next(
+            fact for fact in extract_facts(speech_event, state)
+            if fact.fact_type == "claimed_role"
+        )
+
+        assert speech_fact.metadata["authority"] == "player_claim"
+        assert speech_fact.metadata["support_kind"] == "public_speech"
+        assert speech_fact.metadata["source_event"] == "speech"
+        assert speech_fact.metadata["visibility"] == "public"
+
+    def test_seer_check_keeps_engine_provenance_and_event_metadata(self):
+        """已执行的预言家查验应标记为引擎事实，并保留事件元数据。"""
+        state = _make_state()
+        seer_event = GameEvent(
+            type="seer_check",
+            payload={
+                "target_id": "p01",
+                "alignment": "werewolf",
+                "night_number": 1,
+            },
+        )
+
+        engine_fact = extract_facts(seer_event, state)[0]
+
+        assert engine_fact.metadata["authority"] == "engine"
+        assert engine_fact.metadata["support_kind"] == "executed_action"
+        assert engine_fact.metadata["source_event"] == "seer_check"
+        assert engine_fact.metadata["visibility"] == "public"
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["exile_last_words", "night_death_last_words"],
+    )
+    def test_last_words_claims_use_speech_extraction(self, event_type):
+        """包含发言者和文本的遗言事件应提取声明并标记遗言来源。"""
+        state = _make_state()
+        event = GameEvent(
+            type=event_type,
+            payload={
+                "speaker": "p08",
+                "text": "我是预言家",
+                "day_number": 1,
+            },
+        )
+
+        claimed_role = next(
+            fact for fact in extract_facts(event, state)
+            if fact.fact_type == "claimed_role"
+        )
+
+        assert claimed_role.metadata["authority"] == "player_claim"
+        assert claimed_role.metadata["support_kind"] == "last_words"
+        assert claimed_role.metadata["source_event"] == event_type
+        assert claimed_role.metadata["visibility"] == "public"
+
+    def test_last_words_prompt_event_remains_generic(self):
+        """仅用于邀请玩家发言的旧遗言事件不能伪装成真实发言。"""
+        state = _make_state()
+        event = GameEvent(
+            type="night_death_last_words",
+            payload={"players": ["p08"]},
+        )
+
+        facts = extract_facts(event, state)
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "night_death_last_words"
+        assert facts[0].source_player is None
+
     def test_extract_vote(self):
         state = _make_state()
         event = GameEvent(
