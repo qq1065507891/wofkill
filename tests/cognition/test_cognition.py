@@ -193,6 +193,32 @@ class TestStructuredWorldState:
         assert speech_fact.metadata["source_event"] == "speech"
         assert speech_fact.metadata["visibility"] == "public"
 
+    @pytest.mark.parametrize(
+        "event_type",
+        ["sheriff_pk_speech", "tie_pk_speech"],
+    )
+    def test_pk_speech_claim_keeps_public_claim_provenance(self, event_type):
+        """真实 PK 发言事件应提取角色声明并保留公开声明来源。"""
+        state = _make_state()
+        event = GameEvent(
+            type=event_type,
+            payload={
+                "speaker": "p08",
+                "text": "我是预言家",
+                "day_number": 1,
+            },
+        )
+
+        claimed_role = next(
+            fact for fact in extract_facts(event, state)
+            if fact.fact_type == "claimed_role"
+        )
+
+        assert claimed_role.metadata["authority"] == "player_claim"
+        assert claimed_role.metadata["support_kind"] == "public_speech"
+        assert claimed_role.metadata["source_event"] == event_type
+        assert claimed_role.metadata["visibility"] == "public"
+
     def test_seer_check_keeps_engine_provenance_and_event_metadata(self):
         """已执行的预言家查验应标记为引擎事实，并保留事件元数据。"""
         state = _make_state()
@@ -244,6 +270,20 @@ class TestStructuredWorldState:
         event = GameEvent(
             type="night_death_last_words",
             payload={"players": ["p08"]},
+        )
+
+        facts = extract_facts(event, state)
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "night_death_last_words"
+        assert facts[0].source_player is None
+
+    def test_last_words_with_none_text_remains_generic(self):
+        """不可用遗言文本应降级为通用事件，不能进入发言解析。"""
+        state = _make_state()
+        event = GameEvent(
+            type="night_death_last_words",
+            payload={"speaker": "p08", "text": None},
         )
 
         facts = extract_facts(event, state)

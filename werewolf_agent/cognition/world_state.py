@@ -611,6 +611,8 @@ _EXTRACTORS: dict[str, Any] = {
     "wolf_no_kill_timeout": _extract_wolf_no_kill,
     "speech": _extract_speech,
     "sheriff_speech": _extract_speech,
+    "sheriff_pk_speech": _extract_speech,
+    "tie_pk_speech": _extract_speech,
     "vote": _extract_vote,
     "seer_check": _extract_seer_check,
     "sheriff_no_election": _extract_sheriff_no_election,
@@ -639,7 +641,12 @@ def _fact_provenance(fact: StructuredFact, event: GameEvent) -> dict[str, str]:
             "last_words"
             if event.type in {"exile_last_words", "night_death_last_words"}
             else "public_speech"
-            if event.type in {"speech", "sheriff_speech", "sheriff_pk_speech"}
+            if event.type in {
+                "speech",
+                "sheriff_speech",
+                "sheriff_pk_speech",
+                "tie_pk_speech",
+            }
             else "executed_action"
         ),
     }
@@ -651,8 +658,9 @@ def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
     if (
         extractor is None
         and event.type in _LAST_WORDS_EVENT_TYPES
-        and "speaker" in event.payload
-        and "text" in event.payload
+        and isinstance(event.payload.get("speaker"), str)
+        and bool(event.payload["speaker"].strip())
+        and isinstance(event.payload.get("text"), str)
     ):
         extractor = _extract_speech
     if extractor is None:
