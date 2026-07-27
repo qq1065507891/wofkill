@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-15
+修改日期: 2026-07-27
 使用示例: 内部模块，无对外接口
 """
 
@@ -107,7 +107,7 @@ def build_visible_player_state(
         "sheriff_id": _effective_sheriff_id(game_state),
         "badge_state": _effective_badge_state(game_state),
         "sheriff_candidates": list(game_state.sheriff_candidates),
-        "public_ledger": _compact_public_ledger(build_public_ledger(game_state)),
+        "public_ledger": build_public_ledger(game_state),
     }
 
     # P3-1: role-specific private fields.  All produce role-gated
@@ -172,12 +172,6 @@ def _effective_badge_state(game_state: GameState) -> str | None:
     if _effective_sheriff_id(game_state) is None:
         return None
     return game_state.sheriff_badge_state
-
-
-def _compact_public_ledger(
-    ledger: dict[str, list[dict[str, Any]]],
-) -> dict[str, list[dict[str, Any]]]:
-    return {key: value for key, value in ledger.items() if value}
 
 
 def build_post_game_summary(

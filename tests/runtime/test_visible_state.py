@@ -3,7 +3,7 @@
 验证玩家可见状态、公开摘要和 JSON-safe 赛后摘要。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-27
 """
 
 from werewolf_agent.agents.schemas import TaskType
@@ -122,6 +122,52 @@ def test_visible_state_includes_public_ledger() -> None:
 
     assert visible["public_ledger"]["role_claims"][0]["speaker"] == "p03"
     assert visible["public_ledger"]["seer_check_claims"][0]["target"] == "p08"
+
+
+def test_visible_state_keeps_public_ledger_shape_without_private_action_audit() -> None:
+    gs = GameState(
+        players={"p05": PlayerState(id="p05", role="witch")},
+        events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p05",
+                "day_number": 1,
+                "text": "昨晚解药救了p04。",
+            }),
+            GameEvent(type="witch_antidote_used", payload={
+                "target_id": "p04",
+                "visibility": "witch_private",
+            }),
+            GameEvent(type="hunter_shot_selected", payload={
+                "actor_id": "p07",
+                "target_id": "p01",
+                "visibility": "moderator_only",
+            }),
+        ],
+    )
+
+    visible = build_visible_player_state(gs)
+    engine = RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
+    context = build_agent_context(engine, gs, "p05", TaskType.SPEECH)
+    context_ledger = context.visible_world_state["public_ledger"]
+
+    assert set(visible["public_ledger"]) == {
+        "role_claims",
+        "seer_check_claims",
+        "badge_flow_claims",
+        "vote_records",
+        "last_words",
+        "badge_events",
+        "action_claims",
+        "confirmed_actions",
+        "claim_conflicts",
+    }
+    assert visible["public_ledger"]["confirmed_actions"] == []
+    assert visible["public_ledger"]["claim_conflicts"] == []
+    assert "moderator_only" not in str(visible)
+    assert "status" not in str(context_ledger)
+    assert "visibility" not in str(context_ledger)
+    assert "witch_antidote_used" not in str(visible)
+    assert "hunter_shot_selected" not in str(visible)
 
 
 def test_agent_context_shares_same_public_ledger_across_roles() -> None:
