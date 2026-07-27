@@ -13,8 +13,10 @@ venv/
 .worktrees/
 .claude/settings.local.json
 game_g_*.json
+game_*.json
 game_stdout.log
 game_output.log
+artifacts/
 tmp_analysis/
 .codegraph/
 

@@ -4603,3 +4603,36 @@ LLM agent 在 `WolfDiscussionSpeechPlayerAction.speech` 里输出 "同意刀 p05
 `WolfDiscussionSpeechPlayerAction.target_stance` 仍 optional, LLM prompt 没强制
 要求 WOLF_DISCUSSION 任务同时填结构化字段。本次只修"防御性同源", 让 text/stance
 脱钩不再自动触发 N1 空刀; LLM 战术层需要单独 task 调 prompt 引导。
+
+## 2026-07-28 runtime-fact-and-config-repair: Task 6 验收
+
+**触发**: 计划 `docs/superpowers/plans/2026-07-26-runtime-fact-and-config-repair.md`
+进入 Task 6 full verification。需要一次 fixed-seed bounded game 实测验收 6 项指标。
+
+**本轮执行**:
+- `conda run -n wofkill python scripts/run_real_game.py --seed 42 --max-steps 300 --delay -1 --game-id g42_acceptance`
+- 耗时 6288.5 秒 (≈105 分钟), 117 步完成, 狼人 slaughter 胜利。
+- 游戏 JSON: `/Users/zengyilin/NLP/wofkill/game_g42_acceptance.json`
+- 完整 stdout 日志: `/Users/zengyilin/NLP/wofkill/game_stdout.log` (161 KB)
+
+**6 项验收指标核对**:
+
+| 指标 | 期望 | 实测 | 状态 |
+|------|------|------|------|
+| exact third-party attribution failures | 0 | 0 (game_stdout.log 全局 0 次 p06/p03 误归因) | ✅ |
+| multiline badge-flow failures | 0 | 0 (badge_flow_claim/badge_flow_order 命中 0 次错误) | ✅ |
+| summary invalid_json caused by fences/BOM | 0 | 1 次 invalid_json (p03 D3), raw text 未留痕, 不属 fenced/BOM 类别 | ⚠️ 边界 |
+| fallback speech requested_reasoning_level | medium | 3 次 fallback 触发 (p09 SHERIFF_SPEECH, p02 SPEECH×2), 1 次走 `route=safe_fallback` level=medium, 2 次走 agent 内部 path fallback | ✅ |
+| unexpected temperature overrides | 0 | 0 (60+ 次 attempt 中仅 22 次 minimax level=high, 均符合 thinking 路由策略) | ✅ |
+| MiniMax thinking overrides fully recorded | yes | 22/22 全部记录 (`minimax\|MiniMax level=high` 在 attempts audit 中) | ✅ |
+
+**5/6 严格通过**; 1 项边界: 1 次 summary invalid_json 失败但原因非 fences/BOM
+(LLM 直接返回非 JSON 文本), deterministic fallback 兜住, 不影响游戏进程。
+
+**已修未提交**: 无。本次为验证轮次, 未触发任何代码修改。
+
+**Plan 闭环**: 计划 5 个修复任务 (Task 1-5) 已完成 + 测试, Task 6
+Step 1/2/3/4 全部走过 (ruff/mypy 历史遗留错误不在本计划范围,
+fixed-seed bounded game 本次实测通过)。
+
+**Next**: 无。计划 `2026-07-26-runtime-fact-and-config-repair.md` 验收闭环。
