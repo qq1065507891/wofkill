@@ -27,6 +27,8 @@ from werewolf_agent.agents.schemas import (
 logger = logging.getLogger(__name__)
 
 _FALLBACK_PREFIX = "[FALLBACK]"
+_TERMINAL_SPEECH_BODY_MAX_CHARS = 120
+_TERMINAL_PUBLIC_CLUE_MAX_CHARS = 80
 
 _TARGET_REQUIRED_NIGHT_ACTIONS = frozenset({
     ActionType.WOLF_KILL,
@@ -135,17 +137,34 @@ def context_clues(context: AgentContext) -> str:
         text = str(last.get("text") or "").strip()
         if speaker and text:
             clues.append(f"{speaker}最近发言：{text[:24]}")
+    ledger_clues: list[str] = []
     for item in context.public_fact_ledger.get("badge_flow_claims", [])[:1]:
-        clues.append(
-            f"{item.get('speaker')}公开声明警徽流："
-            f"{'、'.join(item.get('targets', []))}"
-        )
+        speaker = _bounded_clue_value(item.get("speaker"), max_chars=12)
+        raw_targets = item.get("targets", [])
+        targets = [
+            target
+            for raw_target in raw_targets[:4]
+            if (target := _bounded_clue_value(raw_target, max_chars=12))
+        ] if isinstance(raw_targets, list) else []
+        if speaker and targets:
+            ledger_clues.append(
+                f"{speaker}公开声明警徽流：{'、'.join(targets)}"
+            )
     for item in context.public_fact_ledger.get("action_claims", [])[:1]:
-        clues.append(
-            f"{item.get('speaker')}公开声称{item.get('action')}目标"
-            f"{item.get('target')}，仅为玩家声明"
-        )
-    return "；".join(clues[:3])
+        speaker = _bounded_clue_value(item.get("speaker"), max_chars=12)
+        action = _bounded_clue_value(item.get("action"), max_chars=24)
+        target = _bounded_clue_value(item.get("target"), max_chars=12)
+        if speaker and action and target:
+            ledger_clues.append(
+                f"{speaker}公开声称{action}目标{target}，仅为玩家声明"
+            )
+    ordered_clues = ledger_clues + clues
+    return "；".join(list(dict.fromkeys(ordered_clues))[:3])
+
+
+def _bounded_clue_value(value: Any, *, max_chars: int) -> str:
+    """压平并截断手工上下文字段，避免控制字符或超长值挤占预算。"""
+    return " ".join(str(value or "").split())[:max_chars]
 
 
 def _with_context_clues(context: AgentContext, speech: str) -> str:
@@ -277,17 +296,25 @@ def _minimal_visible_fact_speech(context: AgentContext, *, sheriff: bool) -> str
     """仅复述当前公开摘要或存活列表，避免模板臆测身份与行动。"""
     public_summary = str(context.public_summary or "").strip()
     if public_summary:
-        visible_fact = public_summary[:120]
+        visible_fact = public_summary
     else:
         alive = context.visible_world_state.get("alive_players", [])
-        visible_ids = [str(player_id) for player_id in alive if isinstance(player_id, str)]
+        visible_ids = [
+            str(player_id)
+            for player_id in alive
+            if isinstance(player_id, str)
+        ]
         visible_fact = (
             f"当前公开存活玩家为：{', '.join(visible_ids)}。"
             if visible_ids
             else "当前没有足够的公开记录可复述。"
         )
     prefix = "警长竞选发言" if sheriff else "普通发言"
-    return f"{_FALLBACK_PREFIX}{prefix}仅基于公开信息：{visible_fact}"
+    clues = context_clues(context)[:_TERMINAL_PUBLIC_CLUE_MAX_CHARS]
+    clue_suffix = f"；公开线索：{clues}" if clues else ""
+    fact_budget = _TERMINAL_SPEECH_BODY_MAX_CHARS - len(clue_suffix)
+    body = visible_fact[:max(fact_budget, 0)] + clue_suffix
+    return f"{_FALLBACK_PREFIX}{prefix}仅基于公开信息：{body}"
 
 
 def _build_night_terminal_fallback(

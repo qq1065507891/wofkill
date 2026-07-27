@@ -3,7 +3,7 @@
 测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
 
 作者: Project contributors
-修改日期: 2026-07-24
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -2312,6 +2312,114 @@ class TestMandatoryVote:
         assert action.trace.final_action["target_id"] is None
         assert action.action_type == ActionType.SPEECH
         assert action.reason
+
+    def test_exhausted_public_speech_keeps_bounded_layered_ledger_clues(
+        self,
+        monkeypatch,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="公开摘要" * 100,
+            visible_world_state={
+                "sheriff_id": "p09",
+                "alive_players": ["p01", "p02", "p03", "p09", "p12"],
+                "private_memory": "PRIVATE_VISIBLE_SENTINEL",
+            },
+            salience_items=[
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "vote_resolved", "exiled": "p04"},
+            ],
+            recent_transcript=[{
+                "speaker": "p06",
+                "text": "最近公开发言" * 100,
+            }],
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": "p03",
+                    "targets": ["p02", "p12"],
+                    "moderator_note": "PRIVATE_MODERATOR_SENTINEL",
+                }],
+                "action_claims": [{
+                    "speaker": "p07",
+                    "action": "hunter_shot" + "超长" * 100,
+                    "target": "p02",
+                    "audit": "PRIVATE_HUNTER_SENTINEL",
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert "p03公开声明警徽流：p02、p12" in action.speech
+        assert "仅为玩家声明" in action.speech
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]普通发言仅基于公开信息：") + 120
+        for private_marker in (
+            "PRIVATE_VISIBLE_SENTINEL",
+            "PRIVATE_MODERATOR_SENTINEL",
+            "PRIVATE_HUNTER_SENTINEL",
+        ):
+            assert private_marker not in action.speech
+        assert action.trace is not None
+        assert action.trace.fallback_kind == "ordinary_speech"
+
+    @pytest.mark.parametrize("task_type", [TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH])
+    def test_exhausted_sheriff_speech_keeps_public_ledger_clue(
+        self,
+        monkeypatch,
+        task_type: TaskType,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=task_type,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="警上公开摘要" * 100,
+            visible_world_state={
+                "alive_players": ["p01", "p02", "p03", "p09", "p12"],
+            },
+            salience_items=[
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "vote_resolved", "exiled": "p04"},
+            ],
+            recent_transcript=[{"speaker": "p06", "text": "警上发言" * 100}],
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": "p03",
+                    "targets": ["p02", "p12"],
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert "p03公开声明警徽流：p02、p12" in action.speech
+        assert action.speech.count("p08死亡(公开出局)") == 1
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]警长竞选发言仅基于公开信息：") + 120
+        assert action.trace is not None
+        assert action.trace.fallback_kind == "sheriff_speech"
 
 
 class TestSpeechQualityAndWolfAssignments:
