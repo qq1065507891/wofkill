@@ -577,6 +577,9 @@ def test_snapshot_preflight_failure_with_valid_lesson_is_persistence_failed() ->
         if event.type == "reflection_persistence_audit"
     )
     assert audit.payload["status"] == "persistence_failed"
+    assert audit.payload["persisted_entry_count"] == 0
+    assert audit.payload["repository_read_complete"] is True
+    assert audit.payload["snapshot_read_complete"] is False
     assert audit.payload["persistence_complete"] is False
 
 
@@ -677,6 +680,9 @@ def test_persistence_rejects_stale_decision_before_memory_or_repository_write(
         if event.type == "reflection_persistence_audit"
     )
     assert audit.payload["status"] == "persistence_failed"
+    assert audit.payload["persisted_entry_count"] == 0
+    assert audit.payload["repository_read_complete"] is False
+    assert audit.payload["snapshot_read_complete"] is False
     assert audit.payload["persistence_complete"] is False
     assert audit.payload["entries"] == [{
         "player_id": "p01",

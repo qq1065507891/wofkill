@@ -533,6 +533,9 @@ class GameRunnerMemoryMixin:
             payload={
                 "status": "persistence_failed",
                 "expected_entry_count": len(failures),
+                "persisted_entry_count": 0,
+                "repository_read_complete": False,
+                "snapshot_read_complete": False,
                 "persistence_complete": False,
                 "rollback_complete": True,
                 "entries": failures,
