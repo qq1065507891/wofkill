@@ -72,13 +72,18 @@ def test_build_visible_player_state_contains_shared_timeline_and_public_fields()
             "p02": PlayerState(id="p02", role="werewolf", alive=False),
         },
         events=[
-            GameEvent(type="judge_broadcast", payload={"phase": "death_announce", "message": "昨夜死亡: p02", "visibility": "public"}),
+            GameEvent(type="judge_broadcast", payload={
+                "phase": "death_announce",
+                "day_number": 1,
+                "message": "昨夜死亡: p02",
+                "visibility": "public",
+            }),
         ],
         deaths=[Death(
             player_id="p02",
             reason="wolf_kill",
             timing="night",
-            resolution_batch="n1",
+            resolution_batch="night_1",
         )],
         sheriff_id="p01",
         sheriff_badge_state="active",
@@ -91,6 +96,34 @@ def test_build_visible_player_state_contains_shared_timeline_and_public_fields()
     assert state["alive_players"] == ["p01"]
     assert state["dead_players"] == [{"id": "p02", "reason": "wolf_kill"}]
     assert state["sheriff_id"] == "p01"
+
+
+def test_visible_state_hides_new_night_death_until_matching_day_announcement() -> None:
+    gs = GameState(
+        game_id="cross_day_death_visibility",
+        phase="day",
+        day_number=2,
+        night_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=False),
+            "p03": PlayerState(id="p03", role="seer", alive=False),
+        },
+        events=[GameEvent(type="judge_broadcast", payload={
+            "phase": "death_announce",
+            "day_number": 1,
+            "message": "首夜死亡: p02",
+            "visibility": "public",
+        })],
+        deaths=[
+            Death("p02", "wolf_kill", "night", "night_1"),
+            Death("p03", "wolf_kill", "night", "night_2"),
+        ],
+    )
+
+    state = build_visible_player_state(gs)
+
+    assert state["dead_players"] == [{"id": "p02", "reason": "wolf_kill"}]
 
 
 def test_build_public_summary_uses_same_timeline_note() -> None:
@@ -394,11 +427,14 @@ def test_visible_state_preserves_death_reasons() -> None:
             "p03": PlayerState(id="p03", role="seer", alive=False),
         },
         events=[
-            GameEvent(type="judge_broadcast", payload={"phase": "death_announce"}),
+            GameEvent(type="judge_broadcast", payload={
+                "phase": "death_announce",
+                "day_number": 1,
+            }),
         ],
         deaths=[
-            Death(player_id="p02", reason="wolf_kill", timing="night", resolution_batch="n1"),
-            Death(player_id="p03", reason="witch_poison", timing="night", resolution_batch="n1"),
+            Death(player_id="p02", reason="wolf_kill", timing="night", resolution_batch="night_1"),
+            Death(player_id="p03", reason="witch_poison", timing="night", resolution_batch="night_1"),
         ],
     )
 

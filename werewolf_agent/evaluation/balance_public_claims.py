@@ -367,6 +367,7 @@ def sanitize_public_text(
         claim
         for claim in classify_public_claims(text)
         if claim.claim_type != PublicClaimType.CURRENT_PLAYER_INFERENCE
+        and claim.support_kind not in _COMPLETED_ACTION_SUPPORT_KINDS
         and not _claim_is_supported(claim, public_speeches)
     ]
     sanitized = text

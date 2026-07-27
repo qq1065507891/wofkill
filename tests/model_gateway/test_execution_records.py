@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -119,6 +120,39 @@ def test_success_usage_copies_effective_temperature_audit_fields() -> None:
     )
     assert usage_log[-1].effective_temperature == 1.0
     assert usage_log[-1].temperature_override_reason == "thinking_requires_temperature_1"
+
+
+def test_failed_usage_and_empty_result_preserve_temperature_audit_fields() -> None:
+    from werewolf_agent.model_gateway.router_errors import (
+        _empty_result,
+        _record_failure_usage,
+    )
+
+    usage_log: list[UsageRecord] = []
+    failure_usage = _record_failure_usage(
+        usage_log=usage_log,
+        usage_lock=threading.Lock(),
+        agent_id="p01",
+        task_type="speech",
+        provider="minimax",
+        model="MiniMax-M3",
+        fallback_reason="provider_error",
+        structured_output_mode="text_json",
+        effective_temperature=1.0,
+        temperature_override_reason="thinking_requires_temperature_1",
+    )
+    empty = _empty_result(
+        config_provider="minimax",
+        config_model="MiniMax-M3",
+        active_mode="text_json",
+        effective_temperature=1.0,
+        temperature_override_reason="thinking_requires_temperature_1",
+    )
+
+    assert failure_usage.effective_temperature == 1.0
+    assert failure_usage.temperature_override_reason == "thinking_requires_temperature_1"
+    assert empty.effective_temperature == 1.0
+    assert empty.temperature_override_reason == "thinking_requires_temperature_1"
 
 
 def test_execution_record_preserves_skipped_provider_marker_across_mapping() -> None:

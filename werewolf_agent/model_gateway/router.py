@@ -608,6 +608,16 @@ class ModelRouter:
                 "requested_unconfirmed" if config.reasoning_requested
                 else "not_requested"
             ),
+            effective_temperature=(
+                last_empty_result.effective_temperature
+                if last_empty_result and last_empty_result.effective_temperature is not None
+                else config.temperature
+            ),
+            temperature_override_reason=(
+                last_empty_result.temperature_override_reason
+                if last_empty_result
+                else None
+            ),
             attempts=tuple(attempts),
         )
         # R3-MG-2: surface the HTTP status / raw error from the most recent
@@ -620,6 +630,16 @@ class ModelRouter:
             primary_error=primary_error,
             fallback_error=fallback_error,
             last_empty_result=last_empty_result,
+            effective_temperature=(
+                last_empty_result.effective_temperature
+                if last_empty_result and last_empty_result.effective_temperature is not None
+                else config.temperature
+            ),
+            temperature_override_reason=(
+                last_empty_result.temperature_override_reason
+                if last_empty_result
+                else None
+            ),
             attempts=tuple(attempts),
             failure_disposition=failure_disposition,
         )

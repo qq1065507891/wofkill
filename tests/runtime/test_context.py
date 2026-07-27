@@ -3850,7 +3850,10 @@ def _finished_gs_for_reflection() -> GameState:
             "day_number": 1,
             "votes": [{"voter": "p01", "target": "p05"}],
             "exiled": "p05"}),
-        GameEvent(type="judge_broadcast", payload={"phase": "death_announce"}),
+        GameEvent(type="judge_broadcast", payload={
+            "phase": "death_announce",
+            "day_number": 2,
+        }),
     ]
     return GameState(
         game_id="reflection_post_game",

@@ -463,6 +463,12 @@ def test_public_evidence_snapshots_match_and_exclude_private_role_claims() -> No
     )
 
 
+def test_sanitize_preserves_completed_action_as_player_claim() -> None:
+    text = "我是猎人，现在开枪带走p01。"
+
+    assert sanitize_public_text(text, []) == (text, 0)
+
+
 def test_public_speech_history_respects_legacy_mapping_visibility() -> None:
     events = [
         {
