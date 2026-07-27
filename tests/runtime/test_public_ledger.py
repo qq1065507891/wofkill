@@ -25,6 +25,9 @@ from werewolf_agent.runtime.public_ledger import (
     build_public_claim_text_ledger,
     build_public_ledger,
 )
+from werewolf_agent.runtime.skill_opportunity_events import (
+    build_public_skill_resolution,
+)
 
 
 def test_public_ledger_extracts_role_claims_check_claims_and_badge_flow() -> None:
@@ -248,6 +251,41 @@ def test_mismatching_action_evidence_from_another_day_is_not_a_conflict() -> Non
     ])
 
     assert build_public_ledger(gs)["claim_conflicts"] == []
+
+
+def test_production_resolution_builder_preserves_action_claim_day_boundary() -> None:
+    resolution = build_public_skill_resolution(
+        "hunter_shot_resolved",
+        actor_id="p07",
+        target_id="p02",
+        public_result="target_died",
+        day_number=2,
+    )
+    gs = GameState(events=[
+        GameEvent(type="speech", payload={
+            "speaker": "p07",
+            "day_number": 1,
+            "text": "开枪p01。",
+        }),
+        GameEvent(type="speech", payload={
+            "speaker": "p07",
+            "day_number": 2,
+            "text": "开枪p02，带走p03。",
+        }),
+        resolution,
+    ])
+
+    ledger = build_public_ledger(gs)
+    audit = public_ledger_module.build_claim_action_audit(gs)
+
+    assert resolution.payload["day_number"] == 2
+    assert [item["status"] for item in audit] == [
+        "unconfirmed",
+        "confirmed",
+        "conflicts_with_engine",
+    ]
+    assert len(ledger["claim_conflicts"]) == 1
+    assert ledger["claim_conflicts"][0]["claimed_target"] == "p03"
 
 
 def test_private_action_evidence_is_moderator_only_and_audits_claims() -> None:

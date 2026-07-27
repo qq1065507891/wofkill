@@ -3,7 +3,7 @@
 验证猎人死亡触发、开枪结算与终局路由顺序。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -650,6 +650,11 @@ class TestHunterShotOrdering:
             and event.payload["hunter_id"] == "hunter"
             for event in new_state.events
         )
+        resolved = next(
+            event for event in new_state.events
+            if event.type == "hunter_shot_resolved"
+        )
+        assert resolved.payload["day_number"] == 3
 
 
 class TestHunterShotResolution:
@@ -863,6 +868,8 @@ class TestHunterShotPublicEvent:
         new_gs = result.get("game_state", gs)
         event_types = [e.type for e in new_gs.events]
         assert "hunter_shot_public" in event_types, f"Missing hunter_shot_public event. Got: {event_types}"
+        resolved = next(e for e in new_gs.events if e.type == "hunter_shot_resolved")
+        assert resolved.payload["day_number"] == 1
 
     def test_hunter_opportunity_selected_and_resolved_are_audited_without_private_reason(self) -> None:
         from werewolf_agent.core.event_visibility import EventVisibility

@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-23
+修改日期: 2026-07-27
 使用示例: 内部模块，无对外接口
 """
 
@@ -204,6 +204,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 actor_id=death.player_id,
                 target_id=target,
                 public_result="target_died",
+                day_number=gs.day_number,
             )])
         else:
             outcome_type = "hunter_shot_declined" if target is None else "hunter_shot_blocked"
@@ -259,6 +260,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 actor_id=death.player_id,
                 target_id=None,
                 public_result=("declined" if target is None else "blocked"),
+                day_number=gs.day_number,
             )])
         break
 
@@ -417,6 +419,7 @@ def resolve_self_destruct_node(state: RuntimeState) -> dict[str, Any]:
             "self_destruct_resolved",
             actor_id=wolf_id,
             public_result=("wolf_died" if events else "blocked"),
+            day_number=gs.day_number,
         )])
     return {"game_state": gs, "self_destruct_wolf_id": None}
 

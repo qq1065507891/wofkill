@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-18
+修改日期: 2026-07-27
 
 使用示例:
     >>> build_private_skill_event("seer_check_opportunity", actor_id="p01")
@@ -249,6 +250,7 @@ def build_public_skill_resolution(
     actor_id: str,
     target_id: str | None = None,
     public_result: str,
+    day_number: int | None = None,
     **_private_details: Any,
 ) -> GameEvent:
     """构造不携带私有理由或身份真值的公开结算事件。"""
@@ -259,6 +261,8 @@ def build_public_skill_resolution(
         "target_id": target_id,
         "public_result": public_result,
     }
+    if day_number is not None:
+        payload["day_number"] = day_number
     if not is_safe_public_skill_resolution_payload(payload):
         raise ValueError("unsafe_public_skill_resolution_payload")
     return GameEvent(

@@ -2,7 +2,7 @@
 """Runtime audit events for module exposure, call monitoring, and prompt injection.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-25
+    修改日期: 2026-07-27
     使用示例: 内部模块，无对外接口
 """
 
@@ -173,6 +173,7 @@ _PUBLIC_SKILL_RESOLUTION_KEYS = frozenset({
     "actor_id",
     "target_id",
     "public_result",
+    "day_number",
 })
 
 
@@ -183,11 +184,16 @@ def is_safe_public_skill_resolution_payload(payload: Mapping[str, Any]) -> bool:
     actor_id = payload.get("actor_id")
     target_id = payload.get("target_id")
     public_result = payload.get("public_result")
+    day_number = payload.get("day_number")
     return (
         isinstance(actor_id, str)
         and (target_id is None or isinstance(target_id, str))
         and isinstance(public_result, str)
         and bool(public_result)
+        and (
+            "day_number" not in payload
+            or (type(day_number) is int and day_number >= 0)
+        )
     )
 
 
