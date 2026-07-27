@@ -1794,6 +1794,8 @@ class TestGenerateWithMockProvider:
 
     def test_fallback_transport_failure_preserves_minimax_temperature_audit(self) -> None:
         """请求发送失败时也必须审计 MiniMax thinking 的强制温度。"""
+        from dataclasses import replace
+
         from werewolf_agent.model_gateway.providers.minimax import MiniMaxProvider
         from werewolf_agent.model_gateway.router import ModelRouter
 
@@ -1801,7 +1803,19 @@ class TestGenerateWithMockProvider:
             def post(self, *args, **kwargs):
                 raise RuntimeError("minimax unavailable")
 
-        primary = _SequenceProvider([RuntimeError("primary unavailable")], "primary")
+        class _AuditedPrimaryEmptyProvider(_EmptyTextProvider):
+            def generate(
+                self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+            ):
+                return replace(
+                    super().generate(
+                        prompt, config, system_prompt, tools, tool_choice,
+                    ),
+                    effective_temperature=0.4,
+                    temperature_override_reason="primary_temperature",
+                )
+
+        primary = _AuditedPrimaryEmptyProvider("primary")
         fallback = MiniMaxProvider(
             api_key="test-key",
             http_client=_FailingHttpClient(),
@@ -1852,6 +1866,71 @@ class TestGenerateWithMockProvider:
         assert result.temperature_override_reason == "thinking_requires_temperature_1"
         assert usage.effective_temperature == 1.0
         assert usage.temperature_override_reason == "thinking_requires_temperature_1"
+
+    def test_final_fallback_attempt_wins_over_prior_empty_temperature_audit(self) -> None:
+        """后续 fallback 失败时不得沿用更早候选的空响应温度。"""
+        from dataclasses import replace
+
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        class _AuditedEmptyProvider(_EmptyTextProvider):
+            def generate(
+                self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+            ):
+                return replace(
+                    super().generate(
+                        prompt, config, system_prompt, tools, tool_choice,
+                    ),
+                    effective_temperature=1.0,
+                    temperature_override_reason="first_candidate_override",
+                )
+
+        primary = _SequenceProvider([RuntimeError("primary unavailable")], "primary")
+        first = _AuditedEmptyProvider("first")
+        second = _SequenceProvider([RuntimeError("second unavailable")], "second")
+        router = ModelRouter(
+            model_profiles={
+                "primary_model": {
+                    "provider": "primary", "model": "primary-model",
+                    "temperature": 0.4, "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+                "first_model": {
+                    "provider": "first", "model": "first-model",
+                    "temperature": 0.2, "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+                "second_model": {
+                    "provider": "second", "model": "second-model",
+                    "temperature": 0.3, "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "primary", "model_profile": "primary_model",
+                    },
+                    "fallback": [
+                        {"provider": "first", "model_profile": "first_model"},
+                        {"provider": "second", "model_profile": "second_model"},
+                    ],
+                },
+            },
+            player_assignments={"p01": "default"},
+            providers={"primary": primary, "first": first, "second": second},
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            agent_id="p01", task_type="speech", prompt="hello", jitter_seconds=(0, 0),
+        )
+        usage = router.get_usage_log()[-1]
+
+        assert result.effective_temperature == 0.3
+        assert result.temperature_override_reason is None
+        assert usage.effective_temperature == 0.3
+        assert usage.temperature_override_reason is None
 
     def test_probe_tool_call_support_detects_mock(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})

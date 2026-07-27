@@ -590,7 +590,7 @@ class ModelRouter:
             return chain_outcome.result
         route_failure = chain_outcome.route_failure
         fallback_error = chain_outcome.error
-        if chain_outcome.last_empty_result is not None:
+        if chain_outcome.sampling_audit is not None:
             last_empty_result = chain_outcome.last_empty_result
         if isinstance(fallback_error, StructuredOutputUnsupportedError):
             route_failure = "structured_output_unsupported"
@@ -771,6 +771,7 @@ class ModelRouter:
                     break
                 provider_calls += 1
                 final_sampling_audit = sampling_audit
+                last_empty_result = None
                 route_kind = (
                     RouteKind.PROVIDER_FALLBACK
                     if retry_index == 0 else RouteKind.RETRY
