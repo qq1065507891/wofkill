@@ -75,6 +75,7 @@ _PUBLIC_ACTION_CLAIM_RE = re.compile(
 )
 _ACTION_MODAL_PREFIX_RE = re.compile(
     r"(?:声称要|要|应该|希望|可以|建议|计划|准备|打算|可能|拟|考虑|提议)"
+    r"(?:p\d{2})?"
 )
 _COMPLETED_ACTION_SUPPORT_KINDS = frozenset({"hunter_shot", "witch_antidote"})
 
@@ -486,7 +487,8 @@ def _completed_action_match_is_valid(text: str, match: re.Match[str]) -> bool:
         if actor_start and re.match(r"[A-Za-z0-9_]", text[actor_start - 1]):
             return False
     action_prefix = text[match.start():match.start("action")]
-    if _ACTION_MODAL_PREFIX_RE.search(action_prefix):
+    modal_prefix = action_prefix[len(actor):] if actor else action_prefix
+    if _ACTION_MODAL_PREFIX_RE.fullmatch(modal_prefix.strip()):
         return False
     if actor is None and re.search(r"[A-Za-z0-9_]p\d{2}", action_prefix):
         return False

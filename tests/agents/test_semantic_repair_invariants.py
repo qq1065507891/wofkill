@@ -134,6 +134,8 @@ def test_completed_action_classifier_rejects_bounded_modal_planning_prefixes(
 @pytest.mark.parametrize(
     ("text", "speaker", "expected_actor", "support_kind"),
     [
+        ("p07主要已经开枪p01", "p08", "p07", "hunter_shot"),
+        ("p07重要说明已经开枪p01", "p08", "p07", "hunter_shot"),
         ("p07已经开枪带走p01", "p08", "p07", "hunter_shot"),
         ("p07开枪带走p01", "p08", "p07", "hunter_shot"),
         ("我已经开枪带走p01", "p08", "p08", "hunter_shot"),
