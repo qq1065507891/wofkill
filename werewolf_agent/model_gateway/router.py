@@ -3,7 +3,7 @@
     功能描述：模型路由器网关 facade，负责配置解析、provider 路由、fallback 和用量追踪协调。
     作者：Mike
     创建日期：2025-01-15
-    修改日期：2026-07-26
+    修改日期：2026-07-27
     使用示例：内部模块，无对外接口
 """
 
@@ -302,6 +302,7 @@ class ModelRouter:
         jitter_seconds: tuple[float, float] = (0.0, 0.8),
         generation_attempt_context: GenerationAttemptContext | None = None,
         final_prompt_observer: FinalPromptObserver | None = None,
+        max_provider_calls: int | None = None,
     ) -> GenerateResult:
         """Generate via routed provider with fallback.
 
@@ -310,6 +311,8 @@ class ModelRouter:
         ``(0, 0.8)`` to spread concurrent requests. Pass ``(0, 0)`` in
         tests to avoid 5-15s of cumulative wait across 12 players.
         """
+        if max_provider_calls is not None and max_provider_calls < 1:
+            raise ValueError("max_provider_calls must be positive when provided")
         config, fallback_provider = self.resolve_config(agent_id, task_type)
         entropy = uuid.uuid4().hex[:16]
         run_scope = (
@@ -374,7 +377,13 @@ class ModelRouter:
             int(getattr(config, "retry_count", 4) or 0),
         )
         attempt = 0
-        while provider is not None:
+        while (
+            provider is not None
+            and (
+                max_provider_calls is None
+                or primary_attempts < max_provider_calls
+            )
+        ):
             primary_attempts += 1
             # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
             # On the first attempt only — retries already have backoff.
@@ -550,6 +559,11 @@ class ModelRouter:
             attempts=attempts,
             generation_attempt_context=generation_attempt_context,
             final_prompt_observer=final_prompt_observer,
+            max_provider_calls=(
+                None
+                if max_provider_calls is None
+                else max(0, max_provider_calls - primary_attempts)
+            ),
         )
         if chain_result is not None:
             return chain_result
@@ -559,6 +573,7 @@ class ModelRouter:
 
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
+        failure_exception = fallback_error or primary_error
         terminal_root = (
             primary_skip_root or RootCause.POLICY_REJECTION
         )
@@ -585,8 +600,8 @@ class ModelRouter:
             fallback_provider=fallback_provider,
             retry_count=primary_attempts - 1,
             failure_category=(
-                _root_cause(fallback_error or primary_error).value
-                if fallback_error or primary_error else None
+                _root_cause(failure_exception).value
+                if failure_exception else None
             ),
             reasoning_level=config.reasoning_level,
             reasoning_status=(
@@ -649,6 +664,7 @@ class ModelRouter:
         attempts: list[AttemptExecutionRecord],
         generation_attempt_context: GenerationAttemptContext | None,
         final_prompt_observer: FinalPromptObserver | None,
+        max_provider_calls: int | None,
     ) -> tuple[GenerateResult | None, str | None, Exception | None]:
         """按配置顺序尝试所有能力合格的 fallback 候选。"""
         profile_id = self._player_assignments.get(agent_id, "")
@@ -664,7 +680,13 @@ class ModelRouter:
         current_route = primary_config
         provider_route_attempted = False
         final_fallback_error: Exception | None = None
+        provider_calls = 0
         for config in plan.routes:
+            if (
+                max_provider_calls is not None
+                and provider_calls >= max_provider_calls
+            ):
+                break
             # 热更新或共享映射污染不能绕过执行前的最后一道门禁。
             if not route_switch_is_valid(current_route, config):
                 return None, FALLBACK_ROUTE_UNAVAILABLE, final_fallback_error
@@ -689,6 +711,12 @@ class ModelRouter:
             )
             retry_index = 0
             while True:
+                if (
+                    max_provider_calls is not None
+                    and provider_calls >= max_provider_calls
+                ):
+                    break
+                provider_calls += 1
                 route_kind = (
                     RouteKind.PROVIDER_FALLBACK
                     if retry_index == 0 else RouteKind.RETRY

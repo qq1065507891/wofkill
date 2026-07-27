@@ -369,6 +369,7 @@ def _summary_agent_for_provider(
     provider: _SummaryTextProvider,
     *,
     structured_output_mode: str = "text_json",
+    retry_count: int = 0,
 ) -> PlayerAgent:
     router = ModelRouter(
         model_profiles={
@@ -376,7 +377,7 @@ def _summary_agent_for_provider(
                 "model": "summary-model",
                 "structured_output": {"mode": structured_output_mode},
                 "reasoning": {"level": "medium"},
-                "retry_count": 0,
+                "retry_count": retry_count,
             },
         },
         llm_profiles={
@@ -470,7 +471,10 @@ def test_player_summary_audit_classifies_parser_failure_stage(
     provider = _SummaryTextProvider([raw_text, raw_text])
 
     with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
-        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+        _summary_agent_for_provider(
+            provider,
+            retry_count=9,
+        ).summarize_discussion(_summary_context())
 
     assert len(provider.requests) == 2
     assert exc_info.value.audit["failure_code"] == failure_code
@@ -544,17 +548,93 @@ def test_player_summary_second_parse_failure_stops_after_two_calls() -> None:
     provider = _SummaryTextProvider(["not json", "still not json"])
 
     with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
-        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+        _summary_agent_for_provider(
+            provider,
+            retry_count=9,
+        ).summarize_discussion(_summary_context())
 
     assert len(provider.requests) == 2
     assert exc_info.value.failure_code == "invalid_json"
+
+
+def test_player_summary_missing_native_tool_call_repairs_once_then_stops() -> None:
+    provider = _SummaryTextProvider([
+        '{"summary":"first text fallback"}',
+        '{"summary":"second text fallback"}',
+    ])
+
+    with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
+        _summary_agent_for_provider(
+            provider,
+            structured_output_mode="native_tool",
+            retry_count=9,
+        ).summarize_discussion(_summary_context())
+
+    assert len(provider.requests) == 2
+    assert exc_info.value.audit == {
+        "failure_code": "missing_tool_call",
+        "structured_output_mode": "native_tool",
+        "tool_call_required": True,
+        "tool_call_received": False,
+        "response_shape": "json_object",
+        "json_candidate_count": 1,
+        "failure_stage": "protocol",
+    }
+
+
+def test_player_summary_supports_legacy_provider_signature_through_router() -> None:
+    class _LegacyProvider:
+        name = "legacy-summary"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, prompt, config, system_prompt=None):
+            self.calls += 1
+            return GenerateResult(
+                text='{"summary":"legacy provider ok"}',
+                provider=self.name,
+                model=config.model,
+            )
+
+    provider = _LegacyProvider()
+    router = ModelRouter(
+        model_profiles={
+            "summary_model": {
+                "model": "summary-model",
+                "structured_output": {"mode": "text_json"},
+                "reasoning": {"level": "medium"},
+                "retry_count": 0,
+            },
+        },
+        llm_profiles={
+            "player": {
+                "tasks": {
+                    "discussion_summary": {
+                        "provider": provider.name,
+                        "model_profile": "summary_model",
+                    },
+                },
+            },
+        },
+        player_assignments={"p01": "player"},
+        providers={provider.name: provider},
+    )
+
+    summary = PlayerAgent("p01", router).summarize_discussion(_summary_context())
+
+    assert summary.summary == "legacy provider ok"
+    assert provider.calls == 1
 
 
 def test_player_summary_empty_response_is_not_repaired() -> None:
     provider = _SummaryTextProvider("")
 
     with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
-        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+        _summary_agent_for_provider(
+            provider,
+            retry_count=9,
+        ).summarize_discussion(_summary_context())
 
     assert len(provider.requests) == 1
     assert exc_info.value.audit == {
@@ -568,14 +648,21 @@ def test_player_summary_empty_response_is_not_repaired() -> None:
     }
 
 
-def test_player_summary_provider_failure_is_not_repaired() -> None:
+def test_player_summary_provider_failure_is_not_repaired(monkeypatch) -> None:
     provider = _SummaryTextProvider(
         "unused",
-        failure=RuntimeError("PRIVATE_PROVIDER_FAILURE"),
+        failure=TimeoutError("PRIVATE_PROVIDER_FAILURE"),
+    )
+    monkeypatch.setattr(
+        "werewolf_agent.model_gateway.router.time.sleep",
+        lambda _seconds: None,
     )
 
     with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
-        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+        _summary_agent_for_provider(
+            provider,
+            retry_count=9,
+        ).summarize_discussion(_summary_context())
 
     assert len(provider.requests) == 1
     assert exc_info.value.failure_code == "model_generation_failed"

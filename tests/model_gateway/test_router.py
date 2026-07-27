@@ -3,7 +3,7 @@
 验证 ModelRouter 的配置解析、provider 路由、重试与 fallback 记录。
 
 作者: Project contributors
-修改日期: 2026-07-26
+修改日期: 2026-07-27
 """
 
 import pytest
@@ -945,6 +945,105 @@ class TestGenerateWithMockProvider:
         assert sleeps == []
         assert [item.ordinal for item in result.attempts] == [1, 2]
         assert result.attempts[0].root_cause.value == "provider_error"
+
+    def test_provider_call_budget_stops_primary_retry_and_fallback(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([_HttpError(503)] * 3, "primary")
+        fallback = _SequenceProvider(["fallback ok"], "fallback")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary",
+                    "model": "p",
+                    "retry_count": 9,
+                    "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback",
+                    "model": "f",
+                    "retry_count": 9,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {
+                    "provider": "primary",
+                    "model_profile": "primary",
+                },
+                "fallback": {
+                    "provider": "fallback",
+                    "model_profile": "fallback",
+                },
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "fallback": fallback},
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            "p01",
+            "discussion_summary",
+            "hello",
+            jitter_seconds=(0, 0),
+            max_provider_calls=1,
+        )
+
+        assert result.text == ""
+        assert primary.calls == 1
+        assert fallback.calls == 0
+
+    def test_provider_call_budget_counts_fallback_after_skipped_primary(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        first = _SequenceProvider([_HttpError(503)] * 3, "first")
+        second = _SequenceProvider(["second ok"], "second")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "missing",
+                    "model": "p",
+                    "reasoning": {"level": "high"},
+                },
+                "first": {
+                    "provider": "first",
+                    "model": "f1",
+                    "retry_count": 9,
+                    "reasoning": {"level": "high"},
+                },
+                "second": {
+                    "provider": "second",
+                    "model": "f2",
+                    "retry_count": 9,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {
+                    "provider": "missing",
+                    "model_profile": "primary",
+                },
+                "fallback": [
+                    {"provider": "first", "model_profile": "first"},
+                    {"provider": "second", "model_profile": "second"},
+                ],
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"first": first, "second": second},
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            "p01",
+            "discussion_summary",
+            "hello",
+            jitter_seconds=(0, 0),
+            max_provider_calls=1,
+        )
+
+        assert result.text == ""
+        assert first.calls == 1
+        assert second.calls == 0
 
     def test_fallback_rate_limit_budget_is_independent_and_capped_at_three(self, monkeypatch) -> None:
         from werewolf_agent.model_gateway import router as router_module

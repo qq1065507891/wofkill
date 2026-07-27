@@ -246,6 +246,7 @@ class PlayerAgent:
                     },
                     structured_output_mode=resolved_mode,
                     generation_attempt_context=attempt_context,
+                    max_provider_calls=1,
                 )
             except Exception:
                 pass
