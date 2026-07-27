@@ -2348,7 +2348,7 @@ class TestMandatoryVote:
                 }],
                 "action_claims": [{
                     "speaker": "p07",
-                    "action": "hunter_shot" + "超长" * 100,
+                    "action": "hunter_shot",
                     "target": "p02",
                     "audit": "PRIVATE_HUNTER_SENTINEL",
                 }],
@@ -2412,6 +2412,57 @@ class TestMandatoryVote:
             assert "仅为玩家声明" in action.speech
         assert "XXXXXXXX" not in action.speech
         assert "YYYYYYYY" not in action.speech
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]普通发言仅基于公开信息：") + 120
+
+    @pytest.mark.parametrize(
+        ("action_code", "badge_speaker", "badge_target", "action_target"),
+        [
+            ("已执行hunter_shot", "p１２", "p02", "p02"),
+            ("unknown_action", "p１２", "p02", "p02"),
+            ("hunter_shot", "p03", "p１２", "p１２"),
+        ],
+    )
+    def test_exhausted_public_speech_omits_tainted_ledger_clues(
+        self,
+        monkeypatch,
+        action_code: str,
+        badge_speaker: str,
+        badge_target: str,
+        action_target: str,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="公开摘要" * 100,
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": badge_speaker,
+                    "targets": [badge_target],
+                }],
+                "action_claims": [{
+                    "speaker": "p07",
+                    "action": action_code,
+                    "target": action_target,
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert "p１２" not in action.speech
+        assert "公开声明警徽流" not in action.speech
+        assert "公开声称" not in action.speech
         assert "已执行" not in action.speech
         assert len(action.speech) <= len("[FALLBACK]普通发言仅基于公开信息：") + 120
 

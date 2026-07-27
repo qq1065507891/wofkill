@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 _FALLBACK_PREFIX = "[FALLBACK]"
 _TERMINAL_SPEECH_BODY_MAX_CHARS = 120
 _TERMINAL_PUBLIC_CLUE_MAX_CHARS = 80
+_PUBLIC_ACTION_CLUE_LABELS = {
+    "hunter_shot": "hunter_shot",
+    "witch_antidote": "witch_antidote",
+}
 
 _TARGET_REQUIRED_NIGHT_ACTIONS = frozenset({
     ActionType.WOLF_KILL,
@@ -152,7 +156,8 @@ def context_clues(context: AgentContext) -> str:
             )
     for item in context.public_fact_ledger.get("action_claims", [])[:1]:
         speaker = _player_id_clue_value(item.get("speaker"))
-        action = _bounded_clue_value(item.get("action"), max_chars=24)
+        action_code = " ".join(str(item.get("action") or "").split())
+        action = _PUBLIC_ACTION_CLUE_LABELS.get(action_code, "")
         target = _player_id_clue_value(item.get("target"))
         if speaker and action and target:
             ledger_clues.append(
@@ -162,16 +167,14 @@ def context_clues(context: AgentContext) -> str:
     return "；".join(list(dict.fromkeys(ordered_clues))[:3])
 
 
-def _bounded_clue_value(value: Any, *, max_chars: int) -> str:
-    """压平并截断手工上下文字段，避免控制字符或超长值挤占预算。"""
-    normalized = " ".join(str(value or "").split())
-    return normalized.replace("；", "，").replace(";", "，")[:max_chars]
-
-
 def _player_id_clue_value(value: Any) -> str:
     """只接受完整 pNN 标识，避免截断后产生看似可信的玩家 ID。"""
     normalized = " ".join(str(value or "").split())
-    if len(normalized) == 3 and normalized.startswith("p") and normalized[1:].isdigit():
+    if (
+        len(normalized) == 3
+        and normalized.startswith("p")
+        and all("0" <= digit <= "9" for digit in normalized[1:])
+    ):
         return normalized
     return ""
 
