@@ -265,7 +265,7 @@ def test_text_json_provider_request_contains_exact_narrow_schema() -> None:
     request = provider.requests[0]
     prompt = str(request["prompt"])
     assert summary.vote_target == "p02"
-    assert request["mode"] == "text_json"
+    assert request["mode"] == "json_object"
     assert request["tool_choice"] is None
     assert '"additionalProperties": false' in prompt
     assert '"required": ["summary"]' in prompt
@@ -443,7 +443,7 @@ def test_player_summary_invalid_json_exposes_only_sanitized_audit_shape() -> Non
     assert error.failure_code == "invalid_json"
     assert error.audit == {
         "failure_code": "invalid_json",
-        "structured_output_mode": "text_json",
+        "structured_output_mode": "json_object",
         "tool_call_required": False,
         "tool_call_received": False,
         "response_shape": "text",
@@ -536,7 +536,7 @@ def test_player_summary_repairs_once_with_shared_attempt_context(monkeypatch) ->
         AttemptOutcome.FAILURE,
         AttemptOutcome.SUCCESS,
     ]
-    assert provider.requests[1]["mode"] == "text_json"
+    assert provider.requests[1]["mode"] == "json_object"
     assert str(provider.requests[1]["prompt"]).endswith(
         "\n只输出一个符合 submit_discussion_summary Schema 的 JSON 对象；"
         "不要输出解释、数组或多个对象。"
@@ -639,7 +639,7 @@ def test_player_summary_empty_response_is_not_repaired() -> None:
     assert len(provider.requests) == 1
     assert exc_info.value.audit == {
         "failure_code": "empty_response",
-        "structured_output_mode": "text_json",
+        "structured_output_mode": "json_object",
         "tool_call_required": False,
         "tool_call_received": False,
         "response_shape": "empty",
