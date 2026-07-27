@@ -219,6 +219,52 @@ class TestStructuredWorldState:
         assert claimed_role.metadata["source_event"] == event_type
         assert claimed_role.metadata["visibility"] == "public"
 
+    def test_empty_tie_pk_speech_event_remains_generic(self):
+        """无玩家发言时的空 PK 事件应保留为通用事件。"""
+        facts = extract_facts(GameEvent(type="tie_pk_speech", payload={}), _make_state())
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "tie_pk_speech"
+        assert facts[0].source_player is None
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["sheriff_pk_speech", "tie_pk_speech"],
+    )
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"speaker": "", "text": "我是预言家"},
+            {"speaker": 8, "text": "我是预言家"},
+            {"speaker": "p08", "text": None},
+        ],
+    )
+    def test_malformed_pk_speech_event_remains_generic(self, event_type, payload):
+        """PK 发言缺少可用说话者或文本时应安全降级为通用事件。"""
+        facts = extract_facts(GameEvent(type=event_type, payload=payload), _make_state())
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == event_type
+        assert facts[0].source_player is None
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["sheriff_pk_speech", "tie_pk_speech"],
+    )
+    def test_pk_speech_with_empty_text_remains_speech(self, event_type):
+        """有效说话者的空字符串发言仍应按真实 PK 发言处理。"""
+        event = GameEvent(
+            type=event_type,
+            payload={"speaker": "p08", "text": ""},
+        )
+
+        facts = extract_facts(event, _make_state())
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "speech"
+        assert facts[0].source_player == "p08"
+        assert facts[0].metadata["support_kind"] == "public_speech"
+
     def test_seer_check_keeps_engine_provenance_and_event_metadata(self):
         """已执行的预言家查验应标记为引擎事实，并保留事件元数据。"""
         state = _make_state()

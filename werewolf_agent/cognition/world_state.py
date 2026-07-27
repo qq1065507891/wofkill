@@ -611,8 +611,6 @@ _EXTRACTORS: dict[str, Any] = {
     "wolf_no_kill_timeout": _extract_wolf_no_kill,
     "speech": _extract_speech,
     "sheriff_speech": _extract_speech,
-    "sheriff_pk_speech": _extract_speech,
-    "tie_pk_speech": _extract_speech,
     "vote": _extract_vote,
     "seer_check": _extract_seer_check,
     "sheriff_no_election": _extract_sheriff_no_election,
@@ -621,6 +619,10 @@ _EXTRACTORS: dict[str, Any] = {
 _LAST_WORDS_EVENT_TYPES = frozenset({
     "exile_last_words",
     "night_death_last_words",
+})
+_CONDITIONAL_SPEECH_EVENT_TYPES = _LAST_WORDS_EVENT_TYPES | frozenset({
+    "sheriff_pk_speech",
+    "tie_pk_speech",
 })
 
 _CLAIM_FACT_TYPES = frozenset({
@@ -652,15 +654,24 @@ def _fact_provenance(fact: StructuredFact, event: GameEvent) -> dict[str, str]:
     }
 
 
+def _has_usable_speech_payload(event: GameEvent) -> bool:
+    """判断条件式公开发言事件是否包含可安全解析的说话者和文本。"""
+    speaker = event.payload.get("speaker")
+    text = event.payload.get("text")
+    return (
+        isinstance(speaker, str)
+        and bool(speaker.strip())
+        and isinstance(text, str)
+    )
+
+
 def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
     """Extract structured facts from a single GameEvent."""
     extractor = _EXTRACTORS.get(event.type)
     if (
         extractor is None
-        and event.type in _LAST_WORDS_EVENT_TYPES
-        and isinstance(event.payload.get("speaker"), str)
-        and bool(event.payload["speaker"].strip())
-        and isinstance(event.payload.get("text"), str)
+        and event.type in _CONDITIONAL_SPEECH_EVENT_TYPES
+        and _has_usable_speech_payload(event)
     ):
         extractor = _extract_speech
     if extractor is None:
