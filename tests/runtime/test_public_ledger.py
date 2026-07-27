@@ -104,6 +104,7 @@ def test_public_ledger_extracts_night_death_last_words_player_claim() -> None:
             "day_number": 1,
             "text": "我是猎人，现在开枪带走p01。",
         },
+        visibility="public",
     )])
 
     ledger = build_public_ledger(gs)
