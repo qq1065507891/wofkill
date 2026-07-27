@@ -2375,6 +2375,46 @@ class TestMandatoryVote:
         assert action.trace is not None
         assert action.trace.fallback_kind == "ordinary_speech"
 
+    def test_exhausted_public_speech_never_truncates_action_claim_label(
+        self,
+        monkeypatch,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="公开摘要" * 100,
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": "p03" + "Y" * 100,
+                    "targets": ["p02", "p12", "p04", "p05"],
+                }],
+                "action_claims": [{
+                    "speaker": "p07",
+                    "action": "hunter_shot" + "超长" * 100,
+                    "target": "p02" + "X" * 100,
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        if "公开声称" in action.speech:
+            assert "仅为玩家声明" in action.speech
+        assert "XXXXXXXX" not in action.speech
+        assert "YYYYYYYY" not in action.speech
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]普通发言仅基于公开信息：") + 120
+
     @pytest.mark.parametrize("task_type", [TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH])
     def test_exhausted_sheriff_speech_keeps_public_ledger_clue(
         self,

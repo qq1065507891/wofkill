@@ -139,21 +139,21 @@ def context_clues(context: AgentContext) -> str:
             clues.append(f"{speaker}最近发言：{text[:24]}")
     ledger_clues: list[str] = []
     for item in context.public_fact_ledger.get("badge_flow_claims", [])[:1]:
-        speaker = _bounded_clue_value(item.get("speaker"), max_chars=12)
+        speaker = _player_id_clue_value(item.get("speaker"))
         raw_targets = item.get("targets", [])
         targets = [
             target
             for raw_target in raw_targets[:4]
-            if (target := _bounded_clue_value(raw_target, max_chars=12))
+            if (target := _player_id_clue_value(raw_target))
         ] if isinstance(raw_targets, list) else []
         if speaker and targets:
             ledger_clues.append(
                 f"{speaker}公开声明警徽流：{'、'.join(targets)}"
             )
     for item in context.public_fact_ledger.get("action_claims", [])[:1]:
-        speaker = _bounded_clue_value(item.get("speaker"), max_chars=12)
+        speaker = _player_id_clue_value(item.get("speaker"))
         action = _bounded_clue_value(item.get("action"), max_chars=24)
-        target = _bounded_clue_value(item.get("target"), max_chars=12)
+        target = _player_id_clue_value(item.get("target"))
         if speaker and action and target:
             ledger_clues.append(
                 f"{speaker}公开声称{action}目标{target}，仅为玩家声明"
@@ -164,7 +164,31 @@ def context_clues(context: AgentContext) -> str:
 
 def _bounded_clue_value(value: Any, *, max_chars: int) -> str:
     """压平并截断手工上下文字段，避免控制字符或超长值挤占预算。"""
-    return " ".join(str(value or "").split())[:max_chars]
+    normalized = " ".join(str(value or "").split())
+    return normalized.replace("；", "，").replace(";", "，")[:max_chars]
+
+
+def _player_id_clue_value(value: Any) -> str:
+    """只接受完整 pNN 标识，避免截断后产生看似可信的玩家 ID。"""
+    normalized = " ".join(str(value or "").split())
+    if len(normalized) == 3 and normalized.startswith("p") and normalized[1:].isdigit():
+        return normalized
+    return ""
+
+
+def _fit_complete_clues(clues: str, *, max_chars: int) -> str:
+    """按完整线索边界装入预算，绝不截断声明的权限标签。"""
+    selected: list[str] = []
+    used = 0
+    for clue in clues.split("；"):
+        if not clue:
+            continue
+        added = len(clue) + (1 if selected else 0)
+        if used + added > max_chars:
+            continue
+        selected.append(clue)
+        used += added
+    return "；".join(selected)
 
 
 def _with_context_clues(context: AgentContext, speech: str) -> str:
@@ -310,7 +334,10 @@ def _minimal_visible_fact_speech(context: AgentContext, *, sheriff: bool) -> str
             else "当前没有足够的公开记录可复述。"
         )
     prefix = "警长竞选发言" if sheriff else "普通发言"
-    clues = context_clues(context)[:_TERMINAL_PUBLIC_CLUE_MAX_CHARS]
+    clues = _fit_complete_clues(
+        context_clues(context),
+        max_chars=_TERMINAL_PUBLIC_CLUE_MAX_CHARS,
+    )
     clue_suffix = f"；公开线索：{clues}" if clues else ""
     fact_budget = _TERMINAL_SPEECH_BODY_MAX_CHARS - len(clue_suffix)
     body = visible_fact[:max(fact_budget, 0)] + clue_suffix
