@@ -3738,7 +3738,7 @@ def test_runtime_state_declares_v2_discussion_mapping_shape() -> None:
 
     assert hints["discussion_positions_version"] is int
     assert hints["discussion_positions"] == dict[str, dict[str, Any]]
-    assert hints["discussion_summary_audit_records"] == list[dict[str, str]]
+    assert hints["discussion_summary_audit_records"] == list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
