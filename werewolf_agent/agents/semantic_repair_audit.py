@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-构造发言语义修复 V2 校验与运行时审计结果。
+构造发言语义修复 V2 校验，并用引擎证据核验已执行行动声明。
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-24
+修改日期: 2026-07-27
 
 使用示例:
     >>> validate_semantic_repair(context, source, final).accepted
@@ -46,16 +46,19 @@ _FALLBACK_KINDS = frozenset({
 })
 _REJECTION_REASON_ORDER = (
     "unsupported_public_claim",
+    "executed_action_without_engine_evidence",
     "speaker_attribution_changed",
     "negation_changed",
 )
 _REJECTION_MESSAGES = {
     "unsupported_public_claim": "输出包含缺少公开证据支持的事实声明",
+    "executed_action_without_engine_evidence": "已执行行动声明缺少引擎执行证据",
     "speaker_attribution_changed": "已有声明的说话人归属发生变化",
     "negation_changed": "已有声明的否定关系发生变化",
 }
 _CORRECTION_HINTS = {
     "unsupported_public_claim": "删除或改写缺少公开证据支持的事实声明",
+    "executed_action_without_engine_evidence": "删除已执行措辞，除非有一致的引擎执行证据",
     "speaker_attribution_changed": "恢复公开记录中的说话人归属，或删除该声明",
     "negation_changed": "恢复公开记录中的否定关系，或删除该声明",
 }
@@ -115,6 +118,7 @@ _REPORTING_ATTRIBUTION_FRAGMENT_REF = re.compile(
     r"^p\d{2}(?:(?!p\d{2})[^，。；;！？]){0,10}"
     r"(?:声称|说|表示|宣称)$"
 )
+_COMPLETED_ACTION_SUPPORT_KINDS = frozenset({"hunter_shot", "witch_antidote"})
 
 
 @dataclass(frozen=True)
@@ -154,10 +158,16 @@ def build_semantic_repair_audit(
     """比较首次可修复失败与最终输出，生成不含原始发言的审计字段。"""
     public_speeches = _public_speeches(context)
     source_claims, verified_claims = public_claim_audit_keys(
-        source.speech, public_speeches
+        source.speech,
+        public_speeches,
+        speaker=context.agent_id,
+        public_evidence=context.public_fact_ledger,
     )
     final_claims, legacy_final_verified_claims = public_claim_audit_keys(
-        final.speech, public_speeches
+        final.speech,
+        public_speeches,
+        speaker=context.agent_id,
+        public_evidence=context.public_fact_ledger,
     )
     speaker_attribution_preserved = _speaker_attribution_preserved(
         source_claims, final_claims
@@ -176,8 +186,13 @@ def build_semantic_repair_audit(
         public_speeches,
     )
     unsupported_final_claims = final_claims - v2_verified_claims
+    unsupported_executed_action_count = sum(
+        claim.support_kind in _COMPLETED_ACTION_SUPPORT_KINDS and not claim.negated
+        for claim in unsupported_final_claims
+    )
     reason_codes = _semantic_repair_reason_codes(
         unsupported_public_claim_count=len(unsupported_final_claims),
+        unsupported_executed_action_count=unsupported_executed_action_count,
         speaker_attribution_preserved=speaker_attribution_preserved,
         negation_preserved=negation_preserved,
     )
@@ -203,6 +218,7 @@ def build_semantic_repair_audit(
         "negation_preserved": negation_preserved,
         "introduced_claim_count": len(introduced_claims),
         "unsupported_public_claim_count": len(unsupported_final_claims),
+        "unsupported_executed_action_count": unsupported_executed_action_count,
         "verified_claim_count": len(verified_claims),
         "retained_verified_claim_count": retained_count,
         "rejection_reason_codes": list(reason_codes),
@@ -384,12 +400,16 @@ def _negation_preserved(
 def _semantic_repair_reason_codes(
     *,
     unsupported_public_claim_count: int,
+    unsupported_executed_action_count: int,
     speaker_attribution_preserved: bool,
     negation_preserved: bool,
 ) -> tuple[str, ...]:
     """按固定优先级返回全部适用且不重复的拒绝原因。"""
     reasons = {
         "unsupported_public_claim": unsupported_public_claim_count > 0,
+        "executed_action_without_engine_evidence": (
+            unsupported_executed_action_count > 0
+        ),
         "speaker_attribution_changed": not speaker_attribution_preserved,
         "negation_changed": not negation_preserved,
     }
@@ -419,7 +439,10 @@ def _polarity_aware_verified_claims(
         claim for claim in final_claims
         if (
             claim in legacy_verified_claims
-            if claim.claim_type == "system_fact"
+            if (
+                claim.claim_type == "system_fact"
+                or claim.support_kind in _COMPLETED_ACTION_SUPPORT_KINDS
+            )
             else _has_same_polarity_public_evidence(claim, public_speeches)
         )
     }

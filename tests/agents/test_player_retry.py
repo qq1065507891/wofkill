@@ -79,12 +79,14 @@ def test_repair_constraint_state_semantic_order_and_fact_policy_are_monotonic() 
 
     state.record_semantic_rejection((
         "negation_changed",
+        "executed_action_without_engine_evidence",
         "unsupported_public_claim",
         "negation_changed",
     ))
     assert state.semantic_repair_started is True
     assert state.semantic_reason_codes == (
         "unsupported_public_claim",
+        "executed_action_without_engine_evidence",
         "negation_changed",
     )
     assert state.fact_policy == "verified_claims_only"
@@ -92,6 +94,7 @@ def test_repair_constraint_state_semantic_order_and_fact_policy_are_monotonic() 
     state.record_semantic_rejection(("speaker_attribution_changed",))
     assert state.semantic_reason_codes == (
         "unsupported_public_claim",
+        "executed_action_without_engine_evidence",
         "speaker_attribution_changed",
         "negation_changed",
     )
