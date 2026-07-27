@@ -69,13 +69,18 @@ _CURRENT_PLAYER_INFERENCE_REF = re.compile(
     r"(?:我认为|我怀疑|我推测)(p\d{2})[^，。；;]{0,12}(?:是狼人|更可疑|有问题|像狼)?"
 )
 _PUBLIC_ACTION_CLAIM_RE = re.compile(
-    r"(?P<actor>我|p\d{2})?[^，。；;]{0,12}"
+    r"(?<![A-Za-z0-9_])(?P<actor>我|p\d{2})?"
+    r"(?:(?!p\d{2})[^，。；;]){0,12}"
     r"(?P<action>已经开枪|开枪带走|首夜用解药救了|用解药救了)"
     r"\s*(?P<target>p\d{2})(?![A-Za-z0-9_])"
 )
 _ACTION_MODAL_PREFIX_RE = re.compile(
     r"(?:声称要|要|应该|希望|可以|建议|计划|准备|打算|可能|拟|考虑|提议)"
     r"(?:p\d{2})?"
+)
+_ACTION_EXTERNAL_NONFACTUAL_PREFIX_RE = re.compile(
+    r"(?:据我(?:判断|分析)|我(?:判断|分析|认为|怀疑|推测)|看来|看起来|估计|"
+    r"(?:我)?(?:希望|建议|计划|准备|打算|可能|拟|考虑|提议|要|应该|可以))$"
 )
 _COMPLETED_ACTION_SUPPORT_KINDS = frozenset({"hunter_shot", "witch_antidote"})
 
@@ -114,14 +119,17 @@ class PublicClaimAuditKey:
     support_kind: str
     speaker_attribution: str
     negated: bool
+    day: int | None = None
 
     @property
-    def content_identity(self) -> tuple[str, str, str, str]:
+    def content_identity(self) -> tuple[str, str, str, str, int | None]:
         """返回不含说话者和否定关系的声明内容身份。"""
-        return self.claim_type, self.target, self.role, self.support_kind
+        return self.claim_type, self.target, self.role, self.support_kind, self.day
 
     @property
-    def attribution_agnostic_identity(self) -> tuple[str, str, str, str, bool]:
+    def attribution_agnostic_identity(
+        self,
+    ) -> tuple[str, str, str, str, int | None, bool]:
         """返回用于判定合法补归因的声明身份。"""
         return (*self.content_identity, self.negated)
 
@@ -339,6 +347,11 @@ def public_claim_audit_key(claim: ClassifiedPublicClaim) -> PublicClaimAuditKey:
         support_kind=claim.support_kind or "",
         speaker_attribution=claim.speaker_attribution or "",
         negated=claim.negated,
+        day=(
+            claim.day
+            if claim.support_kind in _COMPLETED_ACTION_SUPPORT_KINDS
+            else None
+        ),
     )
 
 
@@ -490,9 +503,12 @@ def _completed_action_match_is_valid(text: str, match: re.Match[str]) -> bool:
     modal_prefix = action_prefix[len(actor):] if actor else action_prefix
     if _ACTION_MODAL_PREFIX_RE.fullmatch(modal_prefix.strip()):
         return False
-    if actor is None and re.search(r"[A-Za-z0-9_]p\d{2}", action_prefix):
+    clause_prefix = re.split(r"[，。；;！？]", text[:match.start()])[-1].strip()
+    if _ACTION_EXTERNAL_NONFACTUAL_PREFIX_RE.search(clause_prefix[-12:]):
         return False
-    return True
+    return not (
+        actor is None and re.search(r"[A-Za-z0-9_]p\d{2}", action_prefix)
+    )
 
 
 def _completed_action_claim_is_supported(
