@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
-修改日期: 2026-07-20
+修改日期: 2026-07-27
 
 兼容边界：legacy 可见性的空字符串按未设置处理，必须回退 payload。
 """
@@ -14,15 +14,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from werewolf_agent.core.event_visibility import EventVisibility
-from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.evaluation.balance_public_claims import (
     public_claim_audit_keys,
     public_speech_history,
     sanitize_public_text,
 )
+from werewolf_agent.runtime import public_ledger as public_ledger_module
 from werewolf_agent.runtime.public_ledger import (
     build_public_claim_text_ledger,
     build_public_ledger,
+)
+from werewolf_agent.runtime.skill_opportunity_events import (
+    build_public_skill_resolution,
 )
 
 
@@ -94,6 +98,248 @@ def test_public_ledger_extracts_vote_records_and_last_words() -> None:
     assert ledger["last_words"] == [
         {"day": 2, "speaker": "p08", "text": "我不是狼，重点看p03。", "source_event": "exile_last_words"}
     ]
+
+
+def test_public_ledger_extracts_night_death_last_words_player_claim() -> None:
+    gs = GameState(game_id="g42_action_claim", events=[GameEvent(
+        type="night_death_last_words",
+        payload={
+            "speaker": "p07",
+            "day_number": 1,
+            "text": "我是猎人，现在开枪带走p01。",
+        },
+        visibility="public",
+    )])
+
+    ledger = build_public_ledger(gs)
+
+    assert len(ledger["action_claims"]) == 1
+    assert ledger["action_claims"][0]["authority"] == "player_claim"
+    assert ledger["action_claims"][0]["target"] == "p01"
+    assert ledger["confirmed_actions"] == []
+    assert ledger["role_claims"] == []
+
+
+def test_public_ledger_preserves_stable_shape_for_empty_state() -> None:
+    ledger = build_public_ledger(GameState())
+
+    assert list(ledger) == [
+        "role_claims",
+        "seer_check_claims",
+        "badge_flow_claims",
+        "vote_records",
+        "last_words",
+        "badge_events",
+        "action_claims",
+        "confirmed_actions",
+        "claim_conflicts",
+    ]
+    assert all(items == [] for items in ledger.values())
+
+
+def test_public_ledger_parses_only_bounded_action_claims() -> None:
+    gs = GameState(events=[
+        GameEvent(type="speech", payload={
+            "speaker": "p05",
+            "day_number": 2,
+            "text": "昨晚用解药救了p04，守卫下轮守p03。开枪p02x不算。",
+        }),
+        GameEvent(type="night_death_last_words", payload={
+            "speaker": "p07",
+            "day_number": 2,
+            "text": "现在带走p01。",
+        }),
+    ])
+
+    ledger = build_public_ledger(gs)
+
+    assert ledger["action_claims"] == [
+        {
+            "day": 2,
+            "speaker": "p05",
+            "action": "witch_antidote",
+            "target": "p04",
+            "authority": "player_claim",
+            "support_kind": "public_speech",
+            "source_event": "speech",
+        },
+        {
+            "day": 2,
+            "speaker": "p07",
+            "action": "hunter_shot",
+            "target": "p01",
+            "authority": "player_claim",
+            "support_kind": "last_words",
+            "source_event": "night_death_last_words",
+        },
+    ]
+    assert "p03" not in str(ledger["action_claims"])
+    assert "p02" not in str(ledger["action_claims"])
+
+
+def test_public_hunter_resolution_confirms_engine_action_and_records_conflict() -> None:
+    gs = GameState(events=[
+        GameEvent(type="night_death_last_words", payload={
+            "speaker": "p07",
+            "day_number": 2,
+            "text": "开枪p01。",
+        }),
+        GameEvent(
+            type="hunter_shot_resolved",
+            payload={
+                "day_number": 2,
+                "actor_id": "p07",
+                "target_id": "p02",
+                "public_result": "target_died",
+            },
+            visibility=EventVisibility.PUBLIC,
+        ),
+    ])
+
+    ledger = build_public_ledger(gs)
+
+    assert ledger["confirmed_actions"] == [{
+        "day": 2,
+        "actor": "p07",
+        "action": "hunter_shot",
+        "target": "p02",
+        "authority": "engine",
+        "support_kind": "executed_action",
+        "source_event": "hunter_shot_resolved",
+    }]
+    assert len(ledger["claim_conflicts"]) == 1
+    assert ledger["claim_conflicts"][0]["speaker"] == "p07"
+    assert ledger["claim_conflicts"][0]["claimed_target"] == "p01"
+    assert ledger["claim_conflicts"][0]["engine_target"] == "p02"
+
+
+def test_action_evidence_from_another_day_does_not_confirm_claim() -> None:
+    gs = GameState(
+        players={"p07": PlayerState(id="p07", role="hunter")},
+        events=[
+            GameEvent(type="night_death_last_words", payload={
+                "speaker": "p07",
+                "day_number": 1,
+                "text": "开枪p01。",
+            }),
+            GameEvent(
+                type="hunter_shot_resolved",
+                payload={"day_number": 2, "actor_id": "p07", "target_id": "p01"},
+                visibility=EventVisibility.PUBLIC,
+            ),
+        ],
+    )
+
+    ledger = build_public_ledger(gs)
+
+    assert ledger["claim_conflicts"] == []
+    assert public_ledger_module.build_claim_action_audit(gs)[0]["status"] == "unconfirmed"
+
+
+def test_mismatching_action_evidence_from_another_day_is_not_a_conflict() -> None:
+    gs = GameState(events=[
+        GameEvent(type="speech", payload={
+            "speaker": "p07",
+            "day_number": 1,
+            "text": "开枪p01。",
+        }),
+        GameEvent(
+            type="hunter_shot_resolved",
+            payload={"day_number": 2, "actor_id": "p07", "target_id": "p02"},
+            visibility=EventVisibility.PUBLIC,
+        ),
+    ])
+
+    assert build_public_ledger(gs)["claim_conflicts"] == []
+
+
+def test_production_resolution_builder_preserves_action_claim_day_boundary() -> None:
+    resolution = build_public_skill_resolution(
+        "hunter_shot_resolved",
+        actor_id="p07",
+        target_id="p02",
+        public_result="target_died",
+        day_number=2,
+    )
+    gs = GameState(events=[
+        GameEvent(type="speech", payload={
+            "speaker": "p07",
+            "day_number": 1,
+            "text": "开枪p01。",
+        }),
+        GameEvent(type="speech", payload={
+            "speaker": "p07",
+            "day_number": 2,
+            "text": "开枪p02，带走p03。",
+        }),
+        resolution,
+    ])
+
+    ledger = build_public_ledger(gs)
+    audit = public_ledger_module.build_claim_action_audit(gs)
+
+    assert resolution.payload["day_number"] == 2
+    assert [item["status"] for item in audit] == [
+        "unconfirmed",
+        "confirmed",
+        "conflicts_with_engine",
+    ]
+    assert len(ledger["claim_conflicts"]) == 1
+    assert ledger["claim_conflicts"][0]["claimed_target"] == "p03"
+
+
+def test_private_action_evidence_is_moderator_only_and_audits_claims() -> None:
+    gs = GameState(
+        players={
+            "p05": PlayerState(id="p05", role="witch"),
+            "p07": PlayerState(id="p07", role="hunter"),
+        },
+        events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p05",
+                "day_number": 1,
+                "text": "昨晚解药救了p04。",
+            }),
+            GameEvent(type="night_death_last_words", payload={
+                "speaker": "p07",
+                "day_number": 1,
+                "text": "开枪p01。",
+            }),
+            GameEvent(
+                type="witch_antidote_used",
+                payload={"target_id": "p04", "day_number": 1},
+                visibility=EventVisibility.WITCH_PRIVATE,
+            ),
+            GameEvent(
+                type="hunter_shot_selected",
+                payload={"actor_id": "p07", "target_id": "p02", "day_number": 1},
+                visibility=EventVisibility.MODERATOR_ONLY,
+            ),
+        ],
+    )
+
+    ledger = build_public_ledger(gs)
+    audit = public_ledger_module.build_claim_action_audit(gs)
+
+    assert ledger["confirmed_actions"] == []
+    assert ledger["claim_conflicts"] == []
+    assert "witch_antidote_used" not in str(ledger)
+    assert "hunter_shot_selected" not in str(ledger)
+    assert [item["status"] for item in audit] == [
+        "confirmed",
+        "conflicts_with_engine",
+    ]
+    assert all(item["visibility"] == "moderator_only" for item in audit)
+
+
+def test_claim_action_audit_keeps_claim_without_engine_evidence_unconfirmed() -> None:
+    gs = GameState(events=[GameEvent(type="speech", payload={
+        "speaker": "p05",
+        "day_number": 1,
+        "text": "昨晚用解药救p04。",
+    })])
+
+    assert public_ledger_module.build_claim_action_audit(gs)[0]["status"] == "unconfirmed"
 
 
 def test_public_ledger_does_not_expose_real_seer_check() -> None:
@@ -215,6 +461,12 @@ def test_public_evidence_snapshots_match_and_exclude_private_role_claims() -> No
         "p05自认预言家，对p06的身份声明暂不采信，需继续核验。",
         1,
     )
+
+
+def test_sanitize_preserves_completed_action_as_player_claim() -> None:
+    text = "我是猎人，现在开枪带走p01。"
+
+    assert sanitize_public_text(text, []) == (text, 0)
 
 
 def test_public_speech_history_respects_legacy_mapping_visibility() -> None:

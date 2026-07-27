@@ -3,7 +3,7 @@
 测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
 
 作者: Project contributors
-修改日期: 2026-07-24
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -2313,6 +2313,205 @@ class TestMandatoryVote:
         assert action.action_type == ActionType.SPEECH
         assert action.reason
 
+    def test_exhausted_public_speech_keeps_bounded_layered_ledger_clues(
+        self,
+        monkeypatch,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="公开摘要" * 100,
+            visible_world_state={
+                "sheriff_id": "p09",
+                "alive_players": ["p01", "p02", "p03", "p09", "p12"],
+                "private_memory": "PRIVATE_VISIBLE_SENTINEL",
+            },
+            salience_items=[
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "vote_resolved", "exiled": "p04"},
+            ],
+            recent_transcript=[{
+                "speaker": "p06",
+                "text": "最近公开发言" * 100,
+            }],
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": "p03",
+                    "targets": ["p02", "p12"],
+                    "moderator_note": "PRIVATE_MODERATOR_SENTINEL",
+                }],
+                "action_claims": [{
+                    "speaker": "p07",
+                    "action": "hunter_shot",
+                    "target": "p02",
+                    "audit": "PRIVATE_HUNTER_SENTINEL",
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert "p03公开声明警徽流：p02、p12" in action.speech
+        assert "仅为玩家声明" in action.speech
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]普通发言仅基于公开信息：") + 120
+        for private_marker in (
+            "PRIVATE_VISIBLE_SENTINEL",
+            "PRIVATE_MODERATOR_SENTINEL",
+            "PRIVATE_HUNTER_SENTINEL",
+        ):
+            assert private_marker not in action.speech
+        assert action.trace is not None
+        assert action.trace.fallback_kind == "ordinary_speech"
+
+    def test_exhausted_public_speech_never_truncates_action_claim_label(
+        self,
+        monkeypatch,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="公开摘要" * 100,
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": "p03" + "Y" * 100,
+                    "targets": ["p02", "p12", "p04", "p05"],
+                }],
+                "action_claims": [{
+                    "speaker": "p07",
+                    "action": "hunter_shot" + "超长" * 100,
+                    "target": "p02" + "X" * 100,
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        if "公开声称" in action.speech:
+            assert "仅为玩家声明" in action.speech
+        assert "XXXXXXXX" not in action.speech
+        assert "YYYYYYYY" not in action.speech
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]普通发言仅基于公开信息：") + 120
+
+    @pytest.mark.parametrize(
+        ("action_code", "badge_speaker", "badge_target", "action_target"),
+        [
+            ("已执行hunter_shot", "p１２", "p02", "p02"),
+            ("unknown_action", "p１２", "p02", "p02"),
+            ("hunter_shot", "p03", "p１２", "p１２"),
+        ],
+    )
+    def test_exhausted_public_speech_omits_tainted_ledger_clues(
+        self,
+        monkeypatch,
+        action_code: str,
+        badge_speaker: str,
+        badge_target: str,
+        action_target: str,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="公开摘要" * 100,
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": badge_speaker,
+                    "targets": [badge_target],
+                }],
+                "action_claims": [{
+                    "speaker": "p07",
+                    "action": action_code,
+                    "target": action_target,
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert "p１２" not in action.speech
+        assert "公开声明警徽流" not in action.speech
+        assert "公开声称" not in action.speech
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]普通发言仅基于公开信息：") + 120
+
+    @pytest.mark.parametrize("task_type", [TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH])
+    def test_exhausted_sheriff_speech_keeps_public_ledger_clue(
+        self,
+        monkeypatch,
+        task_type: TaskType,
+    ) -> None:
+        agent = self._make_agent("")
+        context = AgentContext(
+            agent_id="p01",
+            task_type=task_type,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            public_summary="警上公开摘要" * 100,
+            visible_world_state={
+                "alive_players": ["p01", "p02", "p03", "p09", "p12"],
+            },
+            salience_items=[
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "death", "player_id": "p08", "reason": "公开出局"},
+                {"type": "vote_resolved", "exiled": "p04"},
+            ],
+            recent_transcript=[{"speaker": "p06", "text": "警上发言" * 100}],
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": "p03",
+                    "targets": ["p02", "p12"],
+                }],
+            },
+        )
+        monkeypatch.setattr(
+            "werewolf_agent.agents.player_action_flow.time.sleep",
+            lambda _delay: None,
+        )
+
+        action, _ = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert "p03公开声明警徽流：p02、p12" in action.speech
+        assert action.speech.count("p08死亡(公开出局)") == 1
+        assert "已执行" not in action.speech
+        assert len(action.speech) <= len("[FALLBACK]警长竞选发言仅基于公开信息：") + 120
+        assert action.trace is not None
+        assert action.trace.fallback_kind == "sheriff_speech"
+
 
 class TestSpeechQualityAndWolfAssignments:
     def test_werewolf_speech_prompt_uses_team_assignment(self) -> None:
@@ -4140,6 +4339,7 @@ def test_speech_quality_retry_records_real_semantic_repair_audit(monkeypatch) ->
         "repairable": True, "success": True, "target_preserved": True,
         "speaker_attribution_preserved": True, "negation_preserved": True,
         "introduced_claim_count": 0, "unsupported_public_claim_count": 0,
+        "unsupported_executed_action_count": 0,
         "verified_claim_count": 0, "retained_verified_claim_count": 0,
         "rejection_reason_codes": [], "generic_template_used": False,
         "fallback_kind": "no_fallback",
@@ -4558,6 +4758,7 @@ def test_semantic_repair_allows_supported_revision(monkeypatch) -> None:
         "negation_preserved": True,
         "introduced_claim_count": 0,
         "unsupported_public_claim_count": 0,
+        "unsupported_executed_action_count": 0,
         "verified_claim_count": 0,
         "retained_verified_claim_count": 0,
         "rejection_reason_codes": [],
@@ -5063,6 +5264,7 @@ def test_semantic_repair_accepts_supported_revision_with_v2_audit(monkeypatch) -
         "negation_preserved": True,
         "introduced_claim_count": 0,
         "unsupported_public_claim_count": 0,
+        "unsupported_executed_action_count": 0,
         "verified_claim_count": 1,
         "retained_verified_claim_count": 0,
         "rejection_reason_codes": [],

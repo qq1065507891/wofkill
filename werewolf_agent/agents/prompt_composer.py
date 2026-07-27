@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-13
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_composer import compose_system_prompt
@@ -45,6 +45,13 @@ def compose_user_prompt(builder: Any, retry: RetryInfo) -> str:
     parts.append((
         "_build_public_summary",
         builder._label_section("_build_public_summary", builder._build_public_summary()),
+    ))
+    parts.append((
+        "_build_public_fact_ledger",
+        builder._label_section(
+            "_build_public_fact_ledger",
+            builder._build_public_fact_ledger(),
+        ),
     ))
     parts.append((
         "_build_visible_state",

@@ -884,7 +884,12 @@ def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():
         reasoning_token_count=4, evidence_kind=EvidenceKind.TOKEN_COUNT,
     )
     summary = _reasoning_evidence_summary([
-        UsageRecord(agent_id="p01", task_type="reflection", provider="openai", model="reasoner", attempts=(attempt,)),
+        UsageRecord(
+            agent_id="p01", task_type="reflection", provider="openai", model="reasoner",
+            effective_temperature=1.0,
+            temperature_override_reason="thinking_requires_temperature_1",
+            attempts=(attempt,),
+        ),
     ])
 
     assert summary["requested_denominator"] == 1
@@ -893,9 +898,13 @@ def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():
     assert set(summary["attempts"][0]) == {
         "opaque_request_id", "ordinal", "provider", "model", "requested_level",
         "status", "reasoning_tokens", "evidence", "route", "root_cause", "outcome",
-        "provider_attempted",
+        "provider_attempted", "effective_temperature", "temperature_override_reason",
     }
     assert summary["attempts"][0]["provider_attempted"] is True
+    assert summary["attempts"][0]["effective_temperature"] == 1.0
+    assert summary["attempts"][0]["temperature_override_reason"] == "thinking_requires_temperature_1"
+    assert "prompt" not in summary["attempts"][0]
+    assert "raw_response" not in summary["attempts"][0]
 
 
 def test_reasoning_summary_keeps_terminal_boundary_in_requested_denominator() -> None:

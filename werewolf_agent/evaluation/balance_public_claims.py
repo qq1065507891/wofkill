@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-统计公开发言中缺少公开来源支撑的事实声明。
+统计并分类公开发言中需要公开来源支撑的事实声明。
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-20
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.evaluation.balance_public_claims import (
@@ -68,6 +68,25 @@ _NEGATING_PREFIXES = (
 _CURRENT_PLAYER_INFERENCE_REF = re.compile(
     r"(?:我认为|我怀疑|我推测)(p\d{2})[^，。；;]{0,12}(?:是狼人|更可疑|有问题|像狼)?"
 )
+_PUBLIC_ACTION_CLAIM_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?P<actor>我|p\d{2})?"
+    r"(?:(?!p\d{2})[^，。；;]){0,12}"
+    r"(?P<action>已经开枪|开枪带走|(?<!已经)开枪|(?<!开枪)带走|"
+    r"首夜用解药救了|用解药救了)"
+    r"\s*(?P<target>p\d{2})(?![A-Za-z0-9_])"
+)
+_ACTION_MODAL_PREFIX_RE = re.compile(
+    r"(?:声称(?:要|已经)|"
+    r"(?:要|应该|希望|可以|建议|计划|准备|打算|可能|拟|考虑|提议)(?:已经)?)"
+    r"(?:p\d{2})?"
+)
+_ACTION_EXTERNAL_NONFACTUAL_PREFIX_RE = re.compile(
+    r"(?:(?:据我(?:判断|分析)|我(?:判断|分析|认为|怀疑|推测)|"
+    r"看来|看起来|估计)(?:可能)?(?:已经)?|"
+    r"(?:我)?(?:希望|建议|计划|准备|打算|可能|拟|考虑|提议|要|应该|可以)"
+    r"(?:已经)?)$"
+)
+_COMPLETED_ACTION_SUPPORT_KINDS = frozenset({"hunter_shot", "witch_antidote"})
 
 
 class PublicClaimType(str, Enum):
@@ -91,6 +110,7 @@ class ClassifiedPublicClaim:
     support_kind: str | None = None
     speaker_attribution: str | None = None
     negated: bool = False
+    day: int | None = None
 
 
 @dataclass(frozen=True)
@@ -103,19 +123,26 @@ class PublicClaimAuditKey:
     support_kind: str
     speaker_attribution: str
     negated: bool
+    day: int | None = None
 
     @property
-    def content_identity(self) -> tuple[str, str, str, str]:
+    def content_identity(self) -> tuple[str, str, str, str, int | None]:
         """返回不含说话者和否定关系的声明内容身份。"""
-        return self.claim_type, self.target, self.role, self.support_kind
+        return self.claim_type, self.target, self.role, self.support_kind, self.day
 
     @property
-    def attribution_agnostic_identity(self) -> tuple[str, str, str, str, bool]:
+    def attribution_agnostic_identity(
+        self,
+    ) -> tuple[str, str, str, str, int | None, bool]:
         """返回用于判定合法补归因的声明身份。"""
         return (*self.content_identity, self.negated)
 
 
-def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
+def classify_public_claims(
+    text: str,
+    *,
+    speaker: str | None = None,
+) -> list[ClassifiedPublicClaim]:
     """按语义来源分类，不把玩家归因或当前推断提升为系统事实。"""
     found: list[ClassifiedPublicClaim] = []
     for match in _PUBLIC_ROLE_CLAIM_REF.finditer(text):
@@ -200,6 +227,26 @@ def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
                 target=match.group(1),
             )
         )
+    for match in _PUBLIC_ACTION_CLAIM_RE.finditer(text):
+        if not _completed_action_match_is_valid(text, match):
+            continue
+        action_text = match.group("action")
+        actor = match.group("actor")
+        found.append(
+            ClassifiedPublicClaim(
+                PublicClaimType.PLAYER_CLAIM,
+                match.group(0),
+                match.start(),
+                match.end(),
+                target=match.group("target"),
+                support_kind=(
+                    "witch_antidote" if "解药" in action_text else "hunter_shot"
+                ),
+                speaker_attribution=speaker if actor == "我" else actor,
+                negated=_completed_action_claim_is_negated(text, match),
+                day=1 if "首夜" in match.group(0) else None,
+            )
+        )
     return _resolve_overlapping_claims(found)
 _ROLE_MARKERS = {
     "狼人": ("我是狼人", "认狼", "自认狼人", "我们狼队"),
@@ -271,10 +318,13 @@ def unsupported_claims_in_text(
 def public_claim_audit_keys(
     text: str,
     public_speeches: list[tuple[str, str]],
+    *,
+    speaker: str | None = None,
+    public_evidence: Mapping[str, Any] | None = None,
 ) -> tuple[set[PublicClaimAuditKey], set[PublicClaimAuditKey]]:
     """返回事实 claim 的稳定键及其中有公开来源支撑的子集。"""
     claims = [
-        claim for claim in classify_public_claims(text)
+        claim for claim in classify_public_claims(text, speaker=speaker)
         if claim.claim_type != PublicClaimType.CURRENT_PLAYER_INFERENCE
     ]
     keyed = {
@@ -283,7 +333,11 @@ def public_claim_audit_keys(
     }
     verified = {
         key for key, claim in keyed.items()
-        if _claim_is_supported(claim, public_speeches)
+        if (
+            _completed_action_claim_is_supported(claim, public_evidence)
+            if claim.support_kind in _COMPLETED_ACTION_SUPPORT_KINDS
+            else _claim_is_supported(claim, public_speeches)
+        )
     }
     return set(keyed), verified
 
@@ -297,6 +351,11 @@ def public_claim_audit_key(claim: ClassifiedPublicClaim) -> PublicClaimAuditKey:
         support_kind=claim.support_kind or "",
         speaker_attribution=claim.speaker_attribution or "",
         negated=claim.negated,
+        day=(
+            claim.day
+            if claim.support_kind in _COMPLETED_ACTION_SUPPORT_KINDS
+            else None
+        ),
     )
 
 
@@ -309,6 +368,7 @@ def sanitize_public_text(
         claim
         for claim in classify_public_claims(text)
         if claim.claim_type != PublicClaimType.CURRENT_PLAYER_INFERENCE
+        and claim.support_kind not in _COMPLETED_ACTION_SUPPORT_KINDS
         and not _claim_is_supported(claim, public_speeches)
     ]
     sanitized = text
@@ -350,6 +410,7 @@ def _most_specific_claim(
         claims,
         key=lambda claim: (
             claim.end - claim.start,
+            claim.claim_type == PublicClaimType.CURRENT_PLAYER_INFERENCE,
             bool(claim.support_kind),
             bool(claim.role),
             -claim.start,
@@ -426,6 +487,88 @@ def _player_claim_is_negated(text: str, claim_start: int, claim_end: int) -> boo
             relation,
         )
     )
+
+
+def _completed_action_claim_is_negated(text: str, match: re.Match[str]) -> bool:
+    """识别行动谓语前的局部否定，不把否认执行当成已执行。"""
+    action_prefix = text[match.start():match.start("action")]
+    return public_claim_is_negated(text, match.start()) or bool(
+        re.search(r"(?:没有|并未|未曾|从未|不曾|没)[^，。；;]{0,4}$", action_prefix)
+    )
+
+
+def _completed_action_match_is_valid(text: str, match: re.Match[str]) -> bool:
+    """排除建议性措辞，并阻止 ASCII 单词粘连到玩家标识。"""
+    actor = match.group("actor")
+    if actor:
+        actor_start = match.start("actor")
+        if actor_start and re.match(r"[A-Za-z0-9_]", text[actor_start - 1]):
+            return False
+    action_prefix = text[match.start():match.start("action")]
+    modal_prefix = action_prefix[len(actor):] if actor else action_prefix
+    if _ACTION_MODAL_PREFIX_RE.fullmatch(modal_prefix.strip()):
+        return False
+    clause_prefix = re.split(r"[，。；;！？]", text[:match.start()])[-1].strip()
+    if _ACTION_EXTERNAL_NONFACTUAL_PREFIX_RE.search(clause_prefix[-12:]):
+        return False
+    return not (
+        actor is None and re.search(r"[A-Za-z0-9_]p\d{2}", action_prefix)
+    )
+
+
+def _completed_action_claim_is_supported(
+    claim: ClassifiedPublicClaim,
+    public_evidence: Mapping[str, Any] | None,
+) -> bool:
+    """仅接受 actor/action/target 完全一致的引擎确认行动。"""
+    if (
+        claim.negated
+        or not claim.speaker_attribution
+        or not claim.target
+        or not isinstance(public_evidence, Mapping)
+    ):
+        return False
+    claim_days = _completed_action_claim_days(claim, public_evidence)
+    confirmed_actions = public_evidence.get("confirmed_actions", ())
+    if not isinstance(confirmed_actions, (list, tuple)):
+        return False
+    return any(
+        isinstance(action, Mapping)
+        and action.get("actor") == claim.speaker_attribution
+        and action.get("action") == claim.support_kind
+        and action.get("target") == claim.target
+        and any(
+            _action_days_are_compatible(claim_day, action.get("day", 0))
+            for claim_day in claim_days
+        )
+        for action in confirmed_actions
+    )
+
+
+def _completed_action_claim_days(
+    claim: ClassifiedPublicClaim,
+    public_evidence: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    """从同一玩家声明绑定显式日次，但不把声明当成执行证据。"""
+    if claim.day is not None:
+        return (claim.day,)
+    action_claims = public_evidence.get("action_claims", ())
+    if not isinstance(action_claims, (list, tuple)):
+        return (0,)
+    days = tuple(
+        action.get("day", 0)
+        for action in action_claims
+        if isinstance(action, Mapping)
+        and action.get("speaker") == claim.speaker_attribution
+        and action.get("action") == claim.support_kind
+        and action.get("target") == claim.target
+    )
+    return days or (0,)
+
+
+def _action_days_are_compatible(claim_day: Any, action_day: Any) -> bool:
+    """与公开账本一致：显式日次必须相等，缺失或零值保留兼容。"""
+    return not claim_day or not action_day or claim_day == action_day
 
 
 def _public_event_parts(event: Any) -> tuple[Any, Mapping[str, Any]] | None:

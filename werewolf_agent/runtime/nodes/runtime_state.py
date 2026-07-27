@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-25
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.runtime_state import _new_engine
@@ -71,7 +71,7 @@ class RuntimeState(TypedDict, total=False):
     repository: Any
     discussion_positions_version: int
     discussion_positions: dict[str, dict[str, Any]]
-    discussion_summary_audit_records: list[dict[str, str]]
+    discussion_summary_audit_records: list[dict[str, Any]]
     judge_agent: Any
     judge_llm_enabled: bool
     judge_hitl: Any

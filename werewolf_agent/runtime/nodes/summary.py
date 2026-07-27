@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-25
+修改日期: 2026-07-27
 使用示例: 内部模块，无对外接口
 - ``summarize_positions`` — per-player LLM summarisation after free discussion
 - ``summarize_context`` — daily structured context summary for pruning
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -101,13 +102,18 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
     # 每个存活玩家独立整理当天讨论，失败时直接使用确定性摘要。
     engine: RuleEngine = state["engine"]
     positions: dict[str, dict[str, Any]] = {}
-    audit_records: list[dict[str, str]] = []
+    audit_records: list[dict[str, Any]] = []
     summarizers: list[str] = [pid for pid, p in gs.players.items() if p.alive]
     for i, pid in enumerate(summarizers):
         if i > 0:
             _sleep_between_agent_calls(state, default_ms=10000)
         summary: DiscussionSummary | None = None
         failure_code = "agent_unavailable"
+        failure_audit: dict[str, Any] = {
+            "response_shape": "unknown",
+            "failure_stage": "provider",
+        }
+        summary_context = None
         try:
             registry = state.get("agent_registry")
             if registry is not None:
@@ -132,11 +138,13 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
                     sd = context.strategy_directive or {}
                     sd.update(extra_directive)
                     context = context.model_copy(update={"strategy_directive": sd})
+                    summary_context = context
 
                     generated = agent.summarize_discussion(context)
                     summary = DiscussionSummary.model_validate(generated)
         except DiscussionSummaryGenerationError as exc:
             failure_code = exc.failure_code
+            failure_audit = exc.audit
             logger.debug(
                 "Discussion summary failed for %s with %s; using deterministic fallback",
                 pid,
@@ -151,12 +159,25 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
             )
 
         if summary is None:
-            summary = _build_deterministic_summary(pid, speeches)
+            ledger_refs = _structured_ledger_evidence_refs(
+                summary_context.public_fact_ledger
+                if summary_context is not None else {}
+            )
+            summary = _build_deterministic_summary(
+                pid,
+                speeches,
+                ledger_evidence_refs=ledger_refs,
+            )
             audit_records.append({
                 "player_id": pid,
                 "task": TaskType.DISCUSSION_SUMMARY.value,
                 "outcome": "deterministic_fallback",
                 "failure_code": failure_code,
+                **{
+                    key: value
+                    for key, value in failure_audit.items()
+                    if key != "failure_code"
+                },
             })
         positions[pid] = summary.model_dump()
 
@@ -171,6 +192,8 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
 def _build_deterministic_summary(
     player_id: str,
     speeches: list[GameEvent],
+    *,
+    ledger_evidence_refs: tuple[str, ...] = (),
 ) -> DiscussionSummary:
     """从公开发言稳定提取摘要字段，作为模型失败后的 V2 退路。"""
 
@@ -178,7 +201,7 @@ def _build_deterministic_summary(
     suspected_players: list[str] = []
     trusted_players: list[str] = []
     vote_targets: list[tuple[str, str]] = []
-    evidence_refs: list[str] = []
+    evidence_refs = list(ledger_evidence_refs)
     for ev in speeches:
         speaker = ev.payload.get("speaker", "?")
         text = str(ev.payload.get("text", "") or "")
@@ -224,6 +247,59 @@ def _build_deterministic_summary(
         vote_target=own_vote,
         evidence_refs=evidence_refs,
     )
+
+
+def _structured_ledger_evidence_refs(
+    ledger: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """按账本顺序提取显式公开证据引用，不从事实文本猜测引用。"""
+
+    evidence_refs: list[str] = []
+    for ledger_key, facts in ledger.items():
+        if not isinstance(facts, list):
+            continue
+        for fact in facts:
+            if not isinstance(fact, Mapping):
+                continue
+            values = fact.get("evidence_refs", ())
+            if isinstance(values, list):
+                candidates = values
+            else:
+                candidate = fact.get("evidence_ref")
+                candidates = [candidate] if candidate is not None else []
+            if not candidates and ledger_key == "badge_flow_claims":
+                speaker = str(fact.get("speaker") or "").strip()
+                targets = fact.get("targets", ())
+                if speaker and isinstance(targets, list):
+                    normalized_targets = [
+                        str(target).strip()
+                        for target in targets[:8]
+                        if str(target).strip()
+                    ]
+                    if normalized_targets:
+                        candidates = [
+                            "public_fact:badge_flow_claim:"
+                            f"{speaker}:{','.join(normalized_targets)}"
+                        ]
+            elif not candidates and ledger_key == "seer_check_claims":
+                speaker = str(fact.get("speaker") or "").strip()
+                target = str(fact.get("target") or "").strip()
+                result = str(fact.get("result") or "").strip()
+                if speaker and target and result:
+                    candidates = [
+                        f"public_fact:seer_check_claim:{speaker}:{target}:{result}"
+                    ]
+            for candidate in candidates:
+                if not isinstance(candidate, str):
+                    continue
+                normalized = candidate.strip()
+                if (
+                    normalized
+                    and len(normalized) <= 256
+                    and normalized not in evidence_refs
+                ):
+                    evidence_refs.append(normalized)
+    return tuple(evidence_refs[:100])
 
 
 # ---------------------------------------------------------------------------
@@ -452,15 +528,11 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
         ))
     gs = replace(gs, events=events)
 
-    persisted_count = sum(
-        1 for item in transactions if item.stage is ReflectionStage.PERSISTED
-    )
     logger.debug(
-        "  [复盘] 处理%d位：成功%d，未生成%d，持久化完成%d",
+        "  [复盘] 处理%d位：成功%d，未生成%d",
         len(reflection_entries),
         transaction_result.valid_entry_count,
         transaction_result.failure_count,
-        persisted_count,
     )
 
     return {"game_state": gs}

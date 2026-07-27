@@ -3,7 +3,7 @@
 验证 GameRunner 编排、终局边界与持久化行为。
 
 作者: Project contributors
-修改日期: 2026-07-18
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -15,6 +15,42 @@ from dataclasses import replace
 from werewolf_agent.core.models import GameState, PlayerState, GameEvent
 from werewolf_agent.runtime.graph import _new_engine
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+
+
+def test_reflection_log_reports_generated_and_verified_counts_without_persistence_claim(
+    monkeypatch, caplog,
+):
+    from werewolf_agent.runtime.nodes.summary import reflection
+
+    runner = GameRunner(GameRunnerConfig(seed=42))
+    runner._state = GameState(
+        game_id=runner.game_id,
+        phase="finished",
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+    monkeypatch.setattr(
+        "werewolf_agent.runtime.nodes.summary._dispatch_agent",
+        lambda *_args, **_kwargs: {
+            "reflection_verification": {
+                "status": "verified",
+                "decision_id": f"reflection:{runner.game_id}:p01",
+                "verified_fact_count": 1,
+                "verified_claim_ids": ["claim-p01"],
+                "verified_lessons": [{
+                    "lesson_id": "lesson-p01",
+                    "abstraction": "公开事实核验后再形成结论。",
+                }],
+                "rejected_fact_count": 0,
+                "rejected_lesson_count": 0,
+            },
+        },
+    )
+
+    with caplog.at_level("DEBUG", logger="werewolf_agent.runtime.nodes.summary"):
+        reflection({"game_state": runner.state, "agent_call_delay_ms": -1})
+
+    assert "[复盘] 处理1位：成功1，未生成0" in caplog.text
+    assert "持久化完成" not in caplog.text
 
 
 def test_terminal_state_is_committed_at_step_boundary() -> None:
@@ -1706,6 +1742,7 @@ class TestGameRunnerMemoryLifecycle:
             if event.type == "reflection_persistence_audit"
         )
         assert audit.payload["persistence_complete"] is False
+        assert audit.payload["repository_read_complete"] is False
         assert repo.load_all_reflections() == []
         assert runner._cognition_state_manager.memory_store.reflections.all_v2_entries() == []
         assert repo.load_memory_snapshot(runner.game_id) is None
@@ -1743,6 +1780,9 @@ class TestGameRunnerMemoryLifecycle:
         assert audit.payload == {
             "status": "no_valid_entries",
             "expected_entry_count": 0,
+            "persisted_entry_count": 0,
+            "repository_read_complete": True,
+            "snapshot_read_complete": False,
             "persistence_complete": False,
             "rollback_complete": True,
             "entries": [],
@@ -1867,6 +1907,8 @@ class TestGameRunnerMemoryLifecycle:
             if event.type == "reflection_persistence_audit"
         )
         assert audit.payload["persistence_complete"] is False
+        assert audit.payload["repository_read_complete"] is True
+        assert audit.payload["snapshot_read_complete"] is False
         assert repo.load_reflections_by_game(runner.game_id) == []
         assert repo.load_memory_snapshot(runner.game_id) is None
         assert repo.load_memory_snapshot("latest") is None
@@ -1937,13 +1979,78 @@ class TestGameRunnerMemoryLifecycle:
         assert len(repo.load_reflections_by_game(runner.game_id)) == 1
         assert len(audits) == 2
         assert all(event.payload["persistence_complete"] is True for event in audits)
+        assert all(event.payload["persisted_entry_count"] == 1 for event in audits)
+        assert all(event.payload["repository_read_complete"] is True for event in audits)
+        assert all(event.payload["snapshot_read_complete"] is True for event in audits)
         assert all(event.payload["entries"][0]["row_found"] is True for event in audits)
+
+    def test_new_game_runner_reads_previous_reflection_v2_into_cross_game_hints(self) -> None:
+        from werewolf_agent.runtime.context_cross_game_memory import (
+            build_cross_game_memory_hints,
+        )
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        runner1 = GameRunner(GameRunnerConfig(
+            game_id="g_reflection_previous",
+            seed=143,
+            repository=repo,
+            memory_coordinator=coordinator,
+        ))
+        runner1._state = replace(
+            self._verified_reflection_state(
+                runner1.game_id,
+                player_ids=("p01", "p02"),
+                lesson_text=(
+                    "对跳时应先核验公开票型、验人时间线和警徽流承接，"
+                    "再结合可复核证据给出站边结论。"
+                ),
+            ),
+            players={
+                "p01": PlayerState(id="p01", role="seer"),
+                "p02": PlayerState(id="p02", role="werewolf"),
+            },
+        )
+        matrix = runner1._cognition_state_manager.memory_store.init_matrix(
+            "p01",
+            ["p01", "p02"],
+            ["seer", "werewolf", "villager"],
+        )
+        mistaken_read = matrix.get("p02")
+        assert mistaken_read is not None
+        mistaken_read.role_probabilities = {"villager": 0.9, "werewolf": 0.1}
+        mistaken_read.faction_read = "good"
+        runner1._save_memory_snapshot()
+
+        audit = next(
+            event for event in reversed(runner1.state.events)
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is True
+        assert audit.payload["persisted_entry_count"] == 2
+
+        runner2 = GameRunner(GameRunnerConfig(
+            game_id="g_reflection_next",
+            seed=144,
+            repository=repo,
+            memory_coordinator=coordinator,
+        ))
+        hints = build_cross_game_memory_hints(
+            runner2.restored_memory,
+            player_id="p01",
+            current_role="seer",
+        )
+
+        assert hints.reflection_memory_hints
 
     @staticmethod
     def _verified_reflection_state(
         game_id: str,
         *,
         player_ids: tuple[str, ...] = ("p01",),
+        lesson_text: str = "对跳时应先核验公开票型",
     ) -> GameState:
         return GameState(
             game_id=game_id,
@@ -1968,7 +2075,7 @@ class TestGameRunnerMemoryLifecycle:
                     ],
                     "verified_lessons": [{
                         "lesson_id": "l1" if player_id == "p01" else f"lesson-{player_id}",
-                        "abstraction": "对跳时应先核验公开票型",
+                        "abstraction": lesson_text,
                     }],
                     "rejected_fact_count": 1,
                     "rejected_lesson_count": 0,

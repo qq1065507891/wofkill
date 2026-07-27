@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-18
-修改日期: 2026-07-23
+修改日期: 2026-07-27
 
 使用示例:
     >>> python -m pytest tests/integration/test_post_july14_repair_closure.py -q
@@ -702,6 +702,7 @@ def test_closure_public_skill_payload_has_zero_sensitive_fields() -> None:
     ]
 
     assert len(skill_events) == 1
+    assert skill_events[0].payload["day_number"] == 1
     assert is_safe_public_skill_resolution_payload(
         skill_events[0].payload
     ) is True

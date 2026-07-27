@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-25
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.runtime.context import build_agent_context
@@ -15,7 +15,7 @@
 # 将 GameState 转换为 PlayerAgent 可用的 AgentContext。
 # 作者: Mike
 # 创建日期: 2025-01-15
-# 修改日期: 2026-07-25
+# 修改日期: 2026-07-27
 # 使用示例: 内部模块，无对外接口
 # 从 agent_adapter.py 拆出，用于降低大型适配器的职责复杂度。
 # 本模块负责：
@@ -49,7 +49,10 @@ from werewolf_agent.runtime.context_public_summary import (
     build_recent_transcript,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.public_ledger import build_public_claim_text_ledger
+from werewolf_agent.runtime.public_ledger import (
+    build_public_claim_text_ledger,
+    build_public_ledger,
+)
 from werewolf_agent.skills.registry import SkillRegistry as SkillRegistry  # noqa: F401
 
 # Backward-compatible re-exports from runtime.directives package.
@@ -221,6 +224,7 @@ def build_agent_context(
 
     transcript = build_recent_transcript(gs)
     public_summary = build_public_summary(gs)
+    public_fact_ledger = build_public_ledger(gs)
 
     # ── 玩家自己的讨论摘要（私有策略记忆，不属于公开记录） ──
     summary_state: MutableMapping[str, Any] = (
@@ -543,6 +547,7 @@ def build_agent_context(
         public_summary=public_summary,
         internal_discussion_summary=internal_discussion_summary,
         public_claim_ledger=build_public_claim_text_ledger(gs),
+        public_fact_ledger=public_fact_ledger,
         visible_world_state=visible,
         private_memory_hints=private_memory_hints,
         private_memory_caveat=private_memory_caveat,

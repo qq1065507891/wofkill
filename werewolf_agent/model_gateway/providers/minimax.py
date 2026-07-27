@@ -4,7 +4,7 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-26
+修改日期：2026-07-27
 
 2026-07-15 新增：``config.base_url`` 覆盖 provider 实例默认 URL；``config.extra_body``
 合并进 payload。用于与 OpenAI 客户端版本的 native MiniMax 共存。
@@ -19,6 +19,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptAssembly,
+    FinalPromptObserver,
+    canonical_provider_payload,
+    notify_final_prompt_observer,
+)
 from werewolf_agent.model_gateway.providers.anthropic import (
     _anthropic_tool_name,
     _extract_anthropic_text,
@@ -27,14 +33,9 @@ from werewolf_agent.model_gateway.providers.anthropic import (
     _wrap_system_prompt_for_cache,
 )
 from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
-from werewolf_agent.model_gateway.final_prompt_observer import (
-    FinalPromptAssembly,
-    FinalPromptObserver,
-    canonical_provider_payload,
-    notify_final_prompt_observer,
-)
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
+from werewolf_agent.model_gateway.sampling_policy import resolve_sampling_audit
 from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
     resolve_structured_output_mode,
@@ -90,8 +91,9 @@ class MiniMaxProvider(_BaseHttpProvider):
         # handles all those cases. See anthropic.py for the
         # matching change and rationale.
 
-        effective_temperature = config.temperature
-        temperature_override_reason: str | None = None
+        sampling_audit = resolve_sampling_audit(config)
+        effective_temperature = sampling_audit.effective_temperature
+        temperature_override_reason = sampling_audit.override_reason
         payload: dict[str, Any] = {
             "model": config.model,
             "temperature": effective_temperature,
@@ -104,9 +106,6 @@ class MiniMaxProvider(_BaseHttpProvider):
             budget = 1024 if config.reasoning_level in {"medium", "high"} else 512
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
             payload["max_tokens"] = max(int(config.max_tokens or 0), budget + 1024)
-            effective_temperature = 1.0
-            temperature_override_reason = "thinking_requires_temperature_1"
-            payload["temperature"] = effective_temperature
         if system_prompt:
             payload["system"] = _wrap_system_prompt_for_cache(system_prompt)
         if tools and mode == StructuredOutputMode.NATIVE_TOOL:

@@ -3,7 +3,7 @@
     功能描述：模型路由器网关 facade，负责配置解析、provider 路由、fallback 和用量追踪协调。
     作者：Mike
     创建日期：2025-01-15
-    修改日期：2026-07-26
+    修改日期：2026-07-27
     使用示例：内部模块，无对外接口
 """
 
@@ -14,16 +14,12 @@ import random
 import threading
 import time
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from werewolf_agent.model_gateway.provider_call import (
-    _call_provider_generate,
-    _normalize_tool_metadata,
-)
 from werewolf_agent.model_gateway.execution_records import (
     AttemptExecutionRecord,
     AttemptOutcome,
@@ -34,12 +30,25 @@ from werewolf_agent.model_gateway.execution_records import (
     RootCause,
     RouteKind,
 )
-from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
 from werewolf_agent.model_gateway.fallback_policy import (
     FALLBACK_ROUTE_UNAVAILABLE,
     route_switch_is_valid,
 )
-from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver, bind_attempt
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptObserver,
+    bind_attempt,
+)
+from werewolf_agent.model_gateway.generation_attempt_context import (
+    GenerationAttemptContext,
+)
+from werewolf_agent.model_gateway.provider_call import (
+    _call_provider_generate,
+    _normalize_tool_metadata,
+)
+from werewolf_agent.model_gateway.reasoning_policy import (
+    reasoning_capability_satisfies,
+    validate_player_reasoning_profiles,
+)
 from werewolf_agent.model_gateway.retry_policy import (
     RetryBudget,
     RetryKind,
@@ -51,10 +60,6 @@ from werewolf_agent.model_gateway.retry_policy import (
     _retry_after_from_exception,
     retry_delay,
     retry_kind_for_exception,
-)
-from werewolf_agent.model_gateway.reasoning_policy import (
-    reasoning_capability_satisfies,
-    validate_player_reasoning_profiles,
 )
 from werewolf_agent.model_gateway.router_config import (
     _canonical_provider_name,
@@ -73,6 +78,10 @@ from werewolf_agent.model_gateway.router_selection import (
     _resolve_fallback_model,
     _resolve_fallback_routes,
 )
+from werewolf_agent.model_gateway.sampling_policy import (
+    SamplingAudit,
+    resolve_sampling_audit,
+)
 from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
     StructuredOutputPolicy,
@@ -90,6 +99,17 @@ from werewolf_agent.model_gateway.usage_records import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _FallbackChainOutcome:
+    """汇总备用链结果及最后一次真实 provider 尝试的审计信息。"""
+
+    result: GenerateResult | None = None
+    route_failure: str | None = None
+    error: Exception | None = None
+    sampling_audit: SamplingAudit | None = None
+    last_empty_result: GenerateResult | None = None
 
 
 __all__ = [
@@ -302,6 +322,7 @@ class ModelRouter:
         jitter_seconds: tuple[float, float] = (0.0, 0.8),
         generation_attempt_context: GenerationAttemptContext | None = None,
         final_prompt_observer: FinalPromptObserver | None = None,
+        max_provider_calls: int | None = None,
     ) -> GenerateResult:
         """Generate via routed provider with fallback.
 
@@ -310,6 +331,8 @@ class ModelRouter:
         ``(0, 0.8)`` to spread concurrent requests. Pass ``(0, 0)`` in
         tests to avoid 5-15s of cumulative wait across 12 players.
         """
+        if max_provider_calls is not None and max_provider_calls < 1:
+            raise ValueError("max_provider_calls must be positive when provided")
         config, fallback_provider = self.resolve_config(agent_id, task_type)
         entropy = uuid.uuid4().hex[:16]
         run_scope = (
@@ -335,6 +358,7 @@ class ModelRouter:
             allow_text_tool_fallback=config.allow_text_tool_fallback,
         )
         config = replace(config, structured_output_mode=active_mode.value)
+        primary_sampling_audit = resolve_sampling_audit(config)
 
         primary_capable = reasoning_capability_satisfies(
             config.reasoning_capability,
@@ -374,7 +398,13 @@ class ModelRouter:
             int(getattr(config, "retry_count", 4) or 0),
         )
         attempt = 0
-        while provider is not None:
+        while (
+            provider is not None
+            and (
+                max_provider_calls is None
+                or primary_attempts < max_provider_calls
+            )
+        ):
             primary_attempts += 1
             # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
             # On the first attempt only — retries already have backoff.
@@ -537,7 +567,7 @@ class ModelRouter:
                 break
 
         # Try fallback
-        chain_result, route_failure, fallback_error = self._generate_fallback_chain(
+        chain_outcome = self._generate_fallback_chain(
             agent_id=agent_id,
             task_type=task_type,
             prompt=prompt,
@@ -550,15 +580,39 @@ class ModelRouter:
             attempts=attempts,
             generation_attempt_context=generation_attempt_context,
             final_prompt_observer=final_prompt_observer,
+            max_provider_calls=(
+                None
+                if max_provider_calls is None
+                else max(0, max_provider_calls - primary_attempts)
+            ),
         )
-        if chain_result is not None:
-            return chain_result
+        if chain_outcome.result is not None:
+            return chain_outcome.result
+        route_failure = chain_outcome.route_failure
+        fallback_error = chain_outcome.error
+        if chain_outcome.sampling_audit is not None:
+            last_empty_result = chain_outcome.last_empty_result
         if isinstance(fallback_error, StructuredOutputUnsupportedError):
             route_failure = "structured_output_unsupported"
         fallback_provider = None
+        terminal_sampling_audit = (
+            chain_outcome.sampling_audit or primary_sampling_audit
+        )
+        effective_temperature = (
+            last_empty_result.effective_temperature
+            if last_empty_result and last_empty_result.effective_temperature is not None
+            else terminal_sampling_audit.effective_temperature
+        )
+        temperature_override_reason = (
+            last_empty_result.temperature_override_reason
+            if last_empty_result
+            and last_empty_result.temperature_override_reason is not None
+            else terminal_sampling_audit.override_reason
+        )
 
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
+        failure_exception = fallback_error or primary_error
         terminal_root = (
             primary_skip_root or RootCause.POLICY_REJECTION
         )
@@ -585,14 +639,16 @@ class ModelRouter:
             fallback_provider=fallback_provider,
             retry_count=primary_attempts - 1,
             failure_category=(
-                _root_cause(fallback_error or primary_error).value
-                if fallback_error or primary_error else None
+                _root_cause(failure_exception).value
+                if failure_exception else None
             ),
             reasoning_level=config.reasoning_level,
             reasoning_status=(
                 "requested_unconfirmed" if config.reasoning_requested
                 else "not_requested"
             ),
+            effective_temperature=effective_temperature,
+            temperature_override_reason=temperature_override_reason,
             attempts=tuple(attempts),
         )
         # R3-MG-2: surface the HTTP status / raw error from the most recent
@@ -605,6 +661,8 @@ class ModelRouter:
             primary_error=primary_error,
             fallback_error=fallback_error,
             last_empty_result=last_empty_result,
+            effective_temperature=effective_temperature,
+            temperature_override_reason=temperature_override_reason,
             attempts=tuple(attempts),
             failure_disposition=failure_disposition,
         )
@@ -649,7 +707,8 @@ class ModelRouter:
         attempts: list[AttemptExecutionRecord],
         generation_attempt_context: GenerationAttemptContext | None,
         final_prompt_observer: FinalPromptObserver | None,
-    ) -> tuple[GenerateResult | None, str | None, Exception | None]:
+        max_provider_calls: int | None,
+    ) -> _FallbackChainOutcome:
         """按配置顺序尝试所有能力合格的 fallback 候选。"""
         profile_id = self._player_assignments.get(agent_id, "")
         plan = _resolve_fallback_routes(
@@ -660,14 +719,29 @@ class ModelRouter:
             required_reasoning_level=primary_config.reasoning_level,
         )
         if not plan.routes:
-            return None, _fallback_route_failure_code(primary_error), None
+            return _FallbackChainOutcome(
+                route_failure=_fallback_route_failure_code(primary_error),
+            )
         current_route = primary_config
         provider_route_attempted = False
         final_fallback_error: Exception | None = None
+        final_sampling_audit: SamplingAudit | None = None
+        last_empty_result: GenerateResult | None = None
+        provider_calls = 0
         for config in plan.routes:
+            if (
+                max_provider_calls is not None
+                and provider_calls >= max_provider_calls
+            ):
+                break
             # 热更新或共享映射污染不能绕过执行前的最后一道门禁。
             if not route_switch_is_valid(current_route, config):
-                return None, FALLBACK_ROUTE_UNAVAILABLE, final_fallback_error
+                return _FallbackChainOutcome(
+                    route_failure=FALLBACK_ROUTE_UNAVAILABLE,
+                    error=final_fallback_error,
+                    sampling_audit=final_sampling_audit,
+                    last_empty_result=last_empty_result,
+                )
             provider = self._providers.get(config.provider)
             if provider is None:
                 continue
@@ -683,12 +757,21 @@ class ModelRouter:
                 allow_text_tool_fallback=config.allow_text_tool_fallback,
             )
             config = replace(config, structured_output_mode=mode.value)
+            sampling_audit = resolve_sampling_audit(config)
             retry_budget = RetryBudget(
                 RouteKind.PROVIDER_FALLBACK,
                 int(getattr(config, "retry_count", 4) or 0),
             )
             retry_index = 0
             while True:
+                if (
+                    max_provider_calls is not None
+                    and provider_calls >= max_provider_calls
+                ):
+                    break
+                provider_calls += 1
+                final_sampling_audit = sampling_audit
+                last_empty_result = None
                 route_kind = (
                     RouteKind.PROVIDER_FALLBACK
                     if retry_index == 0 else RouteKind.RETRY
@@ -734,6 +817,10 @@ class ModelRouter:
                             route_kind, AttemptOutcome.FAILURE,
                             RootCause.INVALID_OUTPUT,
                         ))
+                        last_empty_result = replace(
+                            result,
+                            attempts=tuple(attempts),
+                        )
                         break
                     attempts.append(_attempt_record(
                         request_id, len(attempts) + 1, config, result,
@@ -765,7 +852,7 @@ class ModelRouter:
                         reasoning_status=result.reasoning_status,
                         reasoning_tokens=result.reasoning_tokens,
                     )
-                    return result, None, None
+                    return _FallbackChainOutcome(result=result)
                 except Exception as exc:
                     final_fallback_error = exc
                     structured_tool_policy_rejection = (
@@ -817,10 +904,15 @@ class ModelRouter:
                         continue
                     break
             current_route = config
-        return (
-            None,
-            None if provider_route_attempted else _fallback_route_failure_code(primary_error),
-            final_fallback_error,
+        return _FallbackChainOutcome(
+            route_failure=(
+                None
+                if provider_route_attempted
+                else _fallback_route_failure_code(primary_error)
+            ),
+            error=final_fallback_error,
+            sampling_audit=final_sampling_audit,
+            last_empty_result=last_empty_result,
         )
 
     def _configured_provider_names(self) -> set[str]:
@@ -906,7 +998,9 @@ def _log_retry(
 
 
 def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
-    from werewolf_agent.model_gateway.retry_policy import _retry_delay_for_exception as _impl
+    from werewolf_agent.model_gateway.retry_policy import (
+        _retry_delay_for_exception as _impl,
+    )
 
     return _impl(exc, attempt, uniform=random.uniform)
 

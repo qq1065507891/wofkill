@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-09
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_user_context import PromptUserContextMixin
@@ -302,6 +302,25 @@ class PromptUserContextMixin:
         return "当前局公开事实:\n" + self._truncate_text(
             ctx.public_summary,
             _MAX_PUBLIC_SUMMARY_CHARS,
+        )
+
+    def _build_public_fact_ledger(self) -> str:
+        ledger = self.context.public_fact_ledger
+        if not ledger:
+            return ""
+        payload = {
+            "confirmed_public_facts": ledger.get("confirmed_actions", [])[:6],
+            "player_claims": (
+                ledger.get("role_claims", [])[:8]
+                + ledger.get("seer_check_claims", [])[:8]
+                + ledger.get("badge_flow_claims", [])[:8]
+                + ledger.get("action_claims", [])[:8]
+            ),
+            "claim_conflicts": ledger.get("claim_conflicts", [])[:6],
+        }
+        return (
+            "分层公开账本（玩家声明不是规则执行事实）: "
+            + self._compact_json(payload)
         )
 
     def _build_visible_state(self) -> str:

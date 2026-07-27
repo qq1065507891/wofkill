@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-16
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.agents.player_fallback_speech import build_fallback_speech
@@ -27,6 +27,12 @@ from werewolf_agent.agents.schemas import (
 logger = logging.getLogger(__name__)
 
 _FALLBACK_PREFIX = "[FALLBACK]"
+_TERMINAL_SPEECH_BODY_MAX_CHARS = 120
+_TERMINAL_PUBLIC_CLUE_MAX_CHARS = 80
+_PUBLIC_ACTION_CLUE_LABELS = {
+    "hunter_shot": "hunter_shot",
+    "witch_antidote": "witch_antidote",
+}
 
 _TARGET_REQUIRED_NIGHT_ACTIONS = frozenset({
     ActionType.WOLF_KILL,
@@ -135,37 +141,106 @@ def context_clues(context: AgentContext) -> str:
         text = str(last.get("text") or "").strip()
         if speaker and text:
             clues.append(f"{speaker}最近发言：{text[:24]}")
-    return "；".join(clues[:3])
+    ledger_clues: list[str] = []
+    for item in context.public_fact_ledger.get("badge_flow_claims", [])[:1]:
+        speaker = _player_id_clue_value(item.get("speaker"))
+        raw_targets = item.get("targets", [])
+        targets = [
+            target
+            for raw_target in raw_targets[:4]
+            if (target := _player_id_clue_value(raw_target))
+        ] if isinstance(raw_targets, list) else []
+        if speaker and targets:
+            ledger_clues.append(
+                f"{speaker}公开声明警徽流：{'、'.join(targets)}"
+            )
+    for item in context.public_fact_ledger.get("action_claims", [])[:1]:
+        speaker = _player_id_clue_value(item.get("speaker"))
+        action_code = " ".join(str(item.get("action") or "").split())
+        action = _PUBLIC_ACTION_CLUE_LABELS.get(action_code, "")
+        target = _player_id_clue_value(item.get("target"))
+        if speaker and action and target:
+            ledger_clues.append(
+                f"{speaker}公开声称{action}目标{target}，仅为玩家声明"
+            )
+    ordered_clues = ledger_clues + clues
+    return "；".join(list(dict.fromkeys(ordered_clues))[:3])
+
+
+def _player_id_clue_value(value: Any) -> str:
+    """只接受完整 pNN 标识，避免截断后产生看似可信的玩家 ID。"""
+    normalized = " ".join(str(value or "").split())
+    if (
+        len(normalized) == 3
+        and normalized.startswith("p")
+        and all("0" <= digit <= "9" for digit in normalized[1:])
+    ):
+        return normalized
+    return ""
+
+
+def _fit_complete_clues(clues: str, *, max_chars: int) -> str:
+    """按完整线索边界装入预算，绝不截断声明的权限标签。"""
+    selected: list[str] = []
+    used = 0
+    for clue in clues.split("；"):
+        if not clue:
+            continue
+        added = len(clue) + (1 if selected else 0)
+        if used + added > max_chars:
+            continue
+        selected.append(clue)
+        used += added
+    return "；".join(selected)
+
+
+def _with_context_clues(context: AgentContext, speech: str) -> str:
+    """在既有三条线索预算内为 fallback 补充公开依据。"""
+    clues = context_clues(context)
+    return f"{speech} 公开线索：{clues}" if clues else speech
 
 
 def build_fallback_speech(context: AgentContext) -> str:
     """根据任务类型、身份和公开目标构造兜底发言。"""
     seer_pk = _seer_pk_speech(context)
     if seer_pk:
-        return seer_pk
+        return _with_context_clues(context, seer_pk)
 
     seed_hash = _fallback_seed_hash(context)
     target = _fallback_speech_target(context, seed_hash)
     tmpl_idx = seed_hash % 7
 
     if context.task_type == TaskType.WOLF_DISCUSSION:
-        return _format_selected(
-            _WOLF_DISCUSSION_TARGET_TEMPLATES if target else _WOLF_DISCUSSION_TEMPLATES,
-            tmpl_idx,
-            target,
+        return _with_context_clues(
+            context,
+            _format_selected(
+                (
+                    _WOLF_DISCUSSION_TARGET_TEMPLATES
+                    if target
+                    else _WOLF_DISCUSSION_TEMPLATES
+                ),
+                tmpl_idx,
+                target,
+            ),
         )
     if context.task_type in (TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH):
-        return _SHERIFF_OR_PK_TEMPLATES[tmpl_idx]
+        return _with_context_clues(context, _SHERIFF_OR_PK_TEMPLATES[tmpl_idx])
     if context.task_type == TaskType.DEFENSE_SPEECH:
-        return _DEFENSE_TEMPLATES[tmpl_idx]
+        return _with_context_clues(context, _DEFENSE_TEMPLATES[tmpl_idx])
     if context.task_type == TaskType.LAST_WORDS:
-        return _format_selected(
-            _LAST_WORDS_TARGET_TEMPLATES if target else _LAST_WORDS_TEMPLATES,
-            tmpl_idx,
-            target,
+        return _with_context_clues(
+            context,
+            _format_selected(
+                _LAST_WORDS_TARGET_TEMPLATES if target else _LAST_WORDS_TEMPLATES,
+                tmpl_idx,
+                target,
+            ),
         )
     if target:
-        return _DAY_TARGET_TEMPLATES[tmpl_idx].format(target=target)
+        return _with_context_clues(
+            context,
+            _DAY_TARGET_TEMPLATES[tmpl_idx].format(target=target),
+        )
 
     logger.warning(
         "fallback speech used for agent=%s day=%s phase=%s task=%s",
@@ -174,7 +249,7 @@ def build_fallback_speech(context: AgentContext) -> str:
         context.phase,
         context.task_type,
     )
-    return _DAY_TEMPLATES[tmpl_idx]
+    return _with_context_clues(context, _DAY_TEMPLATES[tmpl_idx])
 
 
 def build_task_terminal_fallback(
@@ -248,17 +323,28 @@ def _minimal_visible_fact_speech(context: AgentContext, *, sheriff: bool) -> str
     """仅复述当前公开摘要或存活列表，避免模板臆测身份与行动。"""
     public_summary = str(context.public_summary or "").strip()
     if public_summary:
-        visible_fact = public_summary[:120]
+        visible_fact = public_summary
     else:
         alive = context.visible_world_state.get("alive_players", [])
-        visible_ids = [str(player_id) for player_id in alive if isinstance(player_id, str)]
+        visible_ids = [
+            str(player_id)
+            for player_id in alive
+            if isinstance(player_id, str)
+        ]
         visible_fact = (
             f"当前公开存活玩家为：{', '.join(visible_ids)}。"
             if visible_ids
             else "当前没有足够的公开记录可复述。"
         )
     prefix = "警长竞选发言" if sheriff else "普通发言"
-    return f"{_FALLBACK_PREFIX}{prefix}仅基于公开信息：{visible_fact}"
+    clues = _fit_complete_clues(
+        context_clues(context),
+        max_chars=_TERMINAL_PUBLIC_CLUE_MAX_CHARS,
+    )
+    clue_suffix = f"；公开线索：{clues}" if clues else ""
+    fact_budget = _TERMINAL_SPEECH_BODY_MAX_CHARS - len(clue_suffix)
+    body = visible_fact[:max(fact_budget, 0)] + clue_suffix
+    return f"{_FALLBACK_PREFIX}{prefix}仅基于公开信息：{body}"
 
 
 def _build_night_terminal_fallback(

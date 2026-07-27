@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-15
+修改日期: 2026-07-27
 使用示例: 内部模块，无对外接口
 """
 
@@ -12,7 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.core.models import GameState
-from werewolf_agent.core.resolution_batches import serialize_resolution_batch
+from werewolf_agent.core.resolution_batches import (
+    carrier_matches_resolution_batch,
+    serialize_resolution_batch,
+)
 from werewolf_agent.runtime.public_ledger import build_public_ledger
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
@@ -73,14 +76,23 @@ def build_visible_player_state(
     # During the sheriff election on day 1, deaths are already recorded in
     # game_state.deaths but have NOT been announced yet — players must not
     # see them prematurely (e.g. in their election speeches).
-    death_announced = any(
-        e.type == "judge_broadcast" and e.payload.get("phase") == "death_announce"
-        for e in game_state.events
-    )
-    if not death_announced:
-        # Keep only deaths that were announced in a prior day (exile, hunter shot).
-        # Night deaths are never visible until the first death_announce broadcast.
-        deaths = [d for d in deaths if d.timing != "night"]
+    announced_nights = {
+        day_number
+        for event in game_state.events
+        if event.type == "judge_broadcast"
+        and event.payload.get("phase") == "death_announce"
+        for day_number in (event.payload.get("day_number"),)
+        if isinstance(day_number, int) and day_number > 0
+    }
+    deaths = [
+        death
+        for death in deaths
+        if death.timing != "night"
+        or any(
+            carrier_matches_resolution_batch(death, f"night_{night_number}")
+            for night_number in announced_nights
+        )
+    ]
 
     visible: dict[str, Any] = {
         "phase": game_state.phase,
@@ -107,7 +119,7 @@ def build_visible_player_state(
         "sheriff_id": _effective_sheriff_id(game_state),
         "badge_state": _effective_badge_state(game_state),
         "sheriff_candidates": list(game_state.sheriff_candidates),
-        "public_ledger": _compact_public_ledger(build_public_ledger(game_state)),
+        "public_ledger": build_public_ledger(game_state),
     }
 
     # P3-1: role-specific private fields.  All produce role-gated
@@ -172,12 +184,6 @@ def _effective_badge_state(game_state: GameState) -> str | None:
     if _effective_sheriff_id(game_state) is None:
         return None
     return game_state.sheriff_badge_state
-
-
-def _compact_public_ledger(
-    ledger: dict[str, list[dict[str, Any]]],
-) -> dict[str, list[dict[str, Any]]]:
-    return {key: value for key, value in ledger.items() if value}
 
 
 def build_post_game_summary(

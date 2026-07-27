@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-23
+修改日期: 2026-07-27
 
 使用示例:
     >>> isinstance(_empty_result(config_provider="mock", config_model="mock", active_mode="native_tool"), object)
@@ -76,6 +76,8 @@ def _record_success_usage(
         reasoning_level=reasoning_level,
         reasoning_status=reasoning_status,
         reasoning_tokens=reasoning_tokens,
+        effective_temperature=result.effective_temperature,
+        temperature_override_reason=result.temperature_override_reason,
         attempts=result.attempts,
     )
     _append_usage(usage_log, usage_lock, usage)
@@ -101,6 +103,8 @@ def _record_failure_usage(
     reasoning_level: str = "none",
     reasoning_status: str = "not_requested",
     reasoning_tokens: int = 0,
+    effective_temperature: float | None = None,
+    temperature_override_reason: str | None = None,
     attempts: tuple = (),
 ) -> UsageRecord:
     """记录最终失败的路由用量。"""
@@ -122,6 +126,8 @@ def _record_failure_usage(
         reasoning_level=reasoning_level,
         reasoning_status=reasoning_status,
         reasoning_tokens=reasoning_tokens,
+        effective_temperature=effective_temperature,
+        temperature_override_reason=temperature_override_reason,
         attempts=attempts,
     )
     _append_usage(usage_log, usage_lock, usage)
@@ -136,6 +142,8 @@ def _empty_result(
     primary_error: Exception | None = None,
     fallback_error: Exception | None = None,
     last_empty_result: GenerateResult | None = None,
+    effective_temperature: float | None = None,
+    temperature_override_reason: str | None = None,
     attempts: tuple = (),
     failure_disposition: FailureDisposition = FailureDisposition.NONE,
 ) -> GenerateResult:
@@ -165,6 +173,16 @@ def _empty_result(
             else "not_requested"
         ),
         reasoning_tokens=(last_empty_result.reasoning_tokens if last_empty_result else 0),
+        effective_temperature=(
+            last_empty_result.effective_temperature
+            if last_empty_result and last_empty_result.effective_temperature is not None
+            else effective_temperature
+        ),
+        temperature_override_reason=(
+            last_empty_result.temperature_override_reason
+            if last_empty_result and last_empty_result.temperature_override_reason is not None
+            else temperature_override_reason
+        ),
         failure_disposition=failure_disposition,
         attempts=attempts,
     )

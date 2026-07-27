@@ -20,8 +20,36 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from pathlib import Path
 
 import pytest
+
+
+def test_production_yaml_effective_temperatures_are_task_specific() -> None:
+    """生产 YAML 在不注册环境 provider 时仍解析出最终采样参数。"""
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    config_path = Path(__file__).resolve().parents[2] / "config" / "models.yaml"
+    router = ModelRouter.from_yaml(config_path, register_env_providers=False)
+    expected_p03 = {
+        "discussion_summary": 0.2,
+        "vote": 0.3,
+        "night_action": 0.3,
+        "speech": 0.4,
+        "deception": 0.5,
+        "wolf_discussion": 0.5,
+    }
+    for task_type, temperature in expected_p03.items():
+        config, _ = router.resolve_config("p03", task_type)
+        assert config.temperature == temperature
+        assert config.top_p == 0.9
+
+    reflection, _ = router.resolve_config("p02", "reflection")
+    assert reflection.temperature == 1.0
+    assert reflection.top_p == 0.9
+    judge, _ = router.resolve_config("judge", "judge_vote_tally")
+    assert judge.temperature == 0.2
+    assert judge.top_p == 0.9
 
 
 # ---------------------------------------------------------------------------

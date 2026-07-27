@@ -2,7 +2,7 @@
 """验证运行时上下文的可见性、认知、记忆与提示组装边界。
 
 作者: Project contributors
-修改日期: 2026-07-25
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -35,6 +35,85 @@ def test_context_role_directives_are_split_from_context_facade() -> None:
         context._apply_role_strategy_context
         is context_role_directives.apply_role_strategy_context
     )
+
+
+def test_agent_context_exposes_public_fact_ledger_without_private_action_audit() -> None:
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.schemas import RetryInfo
+    from werewolf_agent.runtime.nodes.runtime_state import _new_engine
+
+    gs = GameState(
+        game_id="g42",
+        phase="day",
+        day_number=1,
+        players={
+            player_id: PlayerState(id=player_id, role=role)
+            for player_id, role in {
+                "p02": "villager",
+                "p03": "seer",
+                "p05": "witch",
+                "p07": "hunter",
+                "p08": "villager",
+                "p12": "villager",
+            }.items()
+        },
+        events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p03",
+                "day_number": 1,
+                "text": (
+                    "接下来公布警徽流：\n"
+                    "- 第二夜N2，我计划查验p02（赵猛）。理由：覆盖警上候选人。\n"
+                    "- 第三夜N3，我计划查验p12（冯弈）。理由：形成对照。\n"
+                ),
+            }),
+            GameEvent(type="speech", payload={
+                "speaker": "p07",
+                "day_number": 1,
+                "text": "我是猎人，现在开枪带走p02。",
+            }),
+            GameEvent(
+                type="witch_antidote_used",
+                payload={"target_id": "private-witch-target", "day_number": 1},
+                visibility="witch_private",
+            ),
+            GameEvent(
+                type="hunter_shot_selected",
+                payload={
+                    "actor_id": "p07",
+                    "target_id": "private-hunter-target",
+                    "day_number": 1,
+                },
+                visibility="moderator_only",
+            ),
+        ],
+    )
+
+    context = build_agent_context(
+        _new_engine(),
+        gs,
+        "p08",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+    prompt = PlayerPromptBuilder(context, "p08").build_user_prompt(RetryInfo())
+
+    assert context.public_fact_ledger["badge_flow_claims"][0]["targets"] == [
+        "p02",
+        "p12",
+    ]
+    assert context.public_fact_ledger["action_claims"][0]["authority"] == "player_claim"
+    assert "public_fact_ledger" not in context.model_dump()
+    for private_marker in (
+        "private-witch-target",
+        "private-hunter-target",
+        "witch_antidote_used",
+        "hunter_shot_selected",
+        "moderator_only",
+    ):
+        assert private_marker not in repr(context.public_fact_ledger)
+        assert private_marker not in repr(context)
+        assert private_marker not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -3659,7 +3738,7 @@ def test_runtime_state_declares_v2_discussion_mapping_shape() -> None:
 
     assert hints["discussion_positions_version"] is int
     assert hints["discussion_positions"] == dict[str, dict[str, Any]]
-    assert hints["discussion_summary_audit_records"] == list[dict[str, str]]
+    assert hints["discussion_summary_audit_records"] == list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -3771,7 +3850,10 @@ def _finished_gs_for_reflection() -> GameState:
             "day_number": 1,
             "votes": [{"voter": "p01", "target": "p05"}],
             "exiled": "p05"}),
-        GameEvent(type="judge_broadcast", payload={"phase": "death_announce"}),
+        GameEvent(type="judge_broadcast", payload={
+            "phase": "death_announce",
+            "day_number": 2,
+        }),
     ]
     return GameState(
         game_id="reflection_post_game",

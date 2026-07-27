@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-19
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -39,6 +39,405 @@ def _action(speech: str) -> SpeechPlayerAction:
         reason="引用公开发言",
         confidence=0.5,
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "speaker", "expected_actor", "support_kind"),
+    [
+        ("我已经开枪p01", "p07", "p07", "hunter_shot"),
+        ("p07首夜用解药救了p01", None, "p07", "witch_antidote"),
+    ],
+)
+def test_completed_action_classifier_preserves_span_and_actor(
+    text: str,
+    speaker: str | None,
+    expected_actor: str,
+    support_kind: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        PublicClaimType,
+        classify_public_claims,
+    )
+
+    claims = classify_public_claims(text, speaker=speaker)
+
+    assert len(claims) == 1
+    claim = claims[0]
+    assert claim.claim_type is PublicClaimType.PLAYER_CLAIM
+    assert (claim.start, claim.end, claim.text) == (0, len(text), text)
+    assert claim.target == "p01"
+    assert claim.support_kind == support_kind
+    assert claim.speaker_attribution == expected_actor
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "p07已经开枪p01x",
+        "p07已经开枪p01_",
+        "我建议开枪p01",
+    ],
+)
+def test_completed_action_classifier_rejects_ascii_suffix_or_suggestion(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert classify_public_claims(text, speaker="p07") == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我建议p07开枪带走p01",
+        "建议开枪带走p01",
+        "计划开枪带走p01",
+        "准备开枪带走p01",
+        "xp07已经开枪p01",
+    ],
+)
+def test_completed_action_classifier_rejects_suggestion_and_actor_prefix(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert not any(
+        claim.support_kind in {"hunter_shot", "witch_antidote"}
+        for claim in classify_public_claims(text, speaker="p08")
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "p07声称要开枪带走p01",
+        "p07要开枪带走p01",
+        "p07应该开枪带走p01",
+        "希望p07开枪带走p01",
+        "p07可以开枪带走p01",
+        "p07可能开枪带走p01",
+        "p07拟开枪带走p01",
+        "p07打算用解药救了p01",
+    ],
+)
+def test_completed_action_classifier_rejects_bounded_modal_planning_prefixes(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert not any(
+        claim.support_kind in {"hunter_shot", "witch_antidote"}
+        for claim in classify_public_claims(text, speaker="p08")
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "p01可能已经开枪带走p02",
+        "p01声称已经开枪带走p02",
+        "据我判断p01可能已经开枪带走p02",
+        "据我判断可能已经p01开枪带走p02",
+    ],
+)
+def test_completed_action_classifier_rejects_modal_with_aspect_marker(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert not any(
+        claim.support_kind in {"hunter_shot", "witch_antidote"}
+        for claim in classify_public_claims(text, speaker="p08")
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "speaker", "expected_actor", "support_kind"),
+    [
+        ("p01已经开枪带走p02", "p08", "p01", "hunter_shot"),
+        ("p07主要已经开枪p01", "p08", "p07", "hunter_shot"),
+        ("p07重要说明已经开枪p01", "p08", "p07", "hunter_shot"),
+        ("p07已经开枪带走p01", "p08", "p07", "hunter_shot"),
+        ("p07开枪带走p01", "p08", "p07", "hunter_shot"),
+        ("p07开枪p01", "p08", "p07", "hunter_shot"),
+        ("p07带走p01", "p08", "p07", "hunter_shot"),
+        ("我已经开枪带走p01", "p08", "p08", "hunter_shot"),
+        ("p07首夜用解药救了p01", "p08", "p07", "witch_antidote"),
+        ("p07用解药救了p01", "p08", "p07", "witch_antidote"),
+    ],
+)
+def test_completed_action_classifier_keeps_explicit_completion_controls(
+    text: str,
+    speaker: str,
+    expected_actor: str,
+    support_kind: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    claims = classify_public_claims(text, speaker=speaker)
+
+    assert len(claims) == 1
+    assert claims[0].speaker_attribution == expected_actor
+    assert claims[0].support_kind == support_kind
+
+
+def test_completed_action_classifier_uses_nearest_explicit_actor() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    claims = classify_public_claims("p02声称p03已经开枪p04", speaker="p08")
+
+    assert len(claims) == 1
+    assert claims[0].speaker_attribution == "p03"
+    assert claims[0].target == "p04"
+
+
+def test_action_claim_audit_does_not_use_reporter_as_engine_actor() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "p02声称p03已经开枪p04",
+        [],
+        speaker="p08",
+        public_evidence={
+            "confirmed_actions": [{
+                "actor": "p02",
+                "action": "hunter_shot",
+                "target": "p04",
+            }],
+        },
+    )
+
+    assert len(claims) == 1
+    assert verified == set()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "据我判断",
+        "据我分析",
+        "我判断",
+        "我分析",
+        "看来",
+        "看起来",
+        "估计",
+        "我认为",
+        "我怀疑",
+        "我推测",
+    ],
+)
+def test_completed_action_classifier_rejects_bounded_inference_prefixes(
+    prefix: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert not any(
+        claim.support_kind in {"hunter_shot", "witch_antidote"}
+        for claim in classify_public_claims(
+            f"{prefix}p07已经开枪p01",
+            speaker="p08",
+        )
+    )
+
+
+def test_completed_action_classifier_allows_neutral_clause_prefix() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    claims = classify_public_claims("昨天p07已经开枪p01", speaker="p08")
+
+    assert len(claims) == 1
+    assert claims[0].speaker_attribution == "p07"
+
+
+def test_completed_action_classifier_keeps_negation_and_inference_semantics() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    negated = classify_public_claims("p07没有已经开枪p01")
+    inferred = classify_public_claims("我怀疑p07已经开枪p01")
+
+    assert len(negated) == 1
+    assert negated[0].support_kind == "hunter_shot"
+    assert negated[0].negated is True
+    assert len(inferred) == 1
+    assert inferred[0].claim_type.value == "current_player_inference"
+
+
+def test_action_claim_audit_requires_exact_engine_evidence() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "我已经开枪p01",
+        [("p07", "我已经开枪p01")],
+        speaker="p07",
+        public_evidence={
+            "action_claims": [{
+                "day": 1,
+                "speaker": "p07",
+                "action": "hunter_shot",
+                "target": "p01",
+            }],
+            "confirmed_actions": [{
+                "day": 1,
+                "actor": "p07",
+                "action": "hunter_shot",
+                "target": "p01",
+            }],
+        },
+    )
+
+    assert len(claims) == 1
+    assert verified == claims
+
+
+@pytest.mark.parametrize(
+    "confirmed_action",
+    [
+        {"day": 1, "actor": "p08", "action": "hunter_shot", "target": "p01"},
+        {"day": 1, "actor": "p07", "action": "witch_antidote", "target": "p01"},
+        {"day": 1, "actor": "p07", "action": "hunter_shot", "target": "p02"},
+        {"day": 2, "actor": "p07", "action": "hunter_shot", "target": "p01"},
+    ],
+)
+def test_action_claim_audit_rejects_mismatched_engine_evidence(
+    confirmed_action: dict[str, object],
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "p07已经开枪p01",
+        [("p07", "p07已经开枪p01")],
+        public_evidence={
+            "action_claims": [{
+                "day": 1,
+                "speaker": "p07",
+                "action": "hunter_shot",
+                "target": "p01",
+            }],
+            "confirmed_actions": [confirmed_action],
+        },
+    )
+
+    assert len(claims) == 1
+    assert verified == set()
+
+
+def test_action_claim_audit_honors_explicit_first_night_day() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "p07首夜用解药救了p01",
+        [],
+        public_evidence={
+            "confirmed_actions": [{
+                "day": 2,
+                "actor": "p07",
+                "action": "witch_antidote",
+                "target": "p01",
+            }],
+        },
+    )
+
+    assert len(claims) == 1
+    assert verified == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "p07首夜用解药救了p01；p07用解药救了p01",
+        "p07用解药救了p01；p07首夜用解药救了p01",
+    ],
+)
+def test_action_claim_audit_is_order_independent_for_explicit_and_unknown_day(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        text,
+        [],
+        public_evidence={
+            "confirmed_actions": [{
+                "day": 2,
+                "actor": "p07",
+                "action": "witch_antidote",
+                "target": "p01",
+            }],
+        },
+    )
+
+    assert len(claims) == 2
+    assert {claim.day for claim in claims} == {None, 1}
+    assert {claim.day for claim in verified} == {None}
+
+
+def test_action_claim_audit_verifies_explicit_and_unknown_day_when_day_matches() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "p07首夜用解药救了p01；p07用解药救了p01",
+        [],
+        public_evidence={
+            "confirmed_actions": [{
+                "day": 1,
+                "actor": "p07",
+                "action": "witch_antidote",
+                "target": "p01",
+            }],
+        },
+    )
+
+    assert len(claims) == 2
+    assert verified == claims
+
+
+def test_action_claim_audit_never_accepts_player_claim_evidence_alone() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "p07已经开枪p01",
+        [("p07", "p07已经开枪p01")],
+        public_evidence={
+            "action_claims": [{
+                "day": 1,
+                "speaker": "p07",
+                "action": "hunter_shot",
+                "target": "p01",
+            }],
+        },
+    )
+
+    assert len(claims) == 1
+    assert verified == set()
+
+
+def test_public_claim_audit_keeps_existing_role_claim_semantics() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        public_claim_audit_keys,
+    )
+
+    claims, verified = public_claim_audit_keys(
+        "p05声称自己是女巫",
+        [("p05", "我是女巫")],
+        speaker="p08",
+        public_evidence={"confirmed_actions": []},
+    )
+
+    assert verified == claims
 
 
 def test_claim_keys_keep_speakers_independent_for_the_same_target() -> None:
@@ -973,6 +1372,63 @@ def test_semantic_repair_rejects_unsupported_public_claim() -> None:
     assert result.audit["unsupported_public_claim_count"] == 1
 
 
+def test_semantic_repair_rejects_executed_action_without_engine_evidence() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_fact_ledger": {
+            "action_claims": [{
+                "day": 1,
+                "speaker": "p07",
+                "action": "hunter_shot",
+                "target": "p01",
+            }],
+            "confirmed_actions": [],
+        },
+    })
+    result = validate_semantic_repair(
+        context,
+        _action("p07声称要开枪带走p01"),
+        _action("p07已经开枪带走p01"),
+    )
+
+    assert result.accepted is False
+    assert result.reason_codes == (
+        "unsupported_public_claim",
+        "executed_action_without_engine_evidence",
+    )
+    assert result.audit["introduced_claim_count"] == 1
+
+
+def test_semantic_repair_accepts_executed_action_with_exact_engine_evidence() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_fact_ledger": {
+            "action_claims": [{
+                "day": 1,
+                "speaker": "p07",
+                "action": "hunter_shot",
+                "target": "p01",
+            }],
+            "confirmed_actions": [{
+                "day": 1,
+                "actor": "p07",
+                "action": "hunter_shot",
+                "target": "p01",
+            }],
+        },
+    })
+    result = validate_semantic_repair(
+        context,
+        _action("p07声称要开枪带走p01"),
+        _action("p07已经开枪带走p01"),
+    )
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+
+
 def test_semantic_repair_reports_all_rejection_reasons_in_stable_order() -> None:
     from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
 
@@ -998,6 +1454,7 @@ def test_semantic_repair_reports_all_rejection_reasons_in_stable_order() -> None
     ("reason_code", "safe_explanation"),
     [
         ("unsupported_public_claim", "公开证据"),
+        ("executed_action_without_engine_evidence", "引擎执行证据"),
         ("speaker_attribution_changed", "说话人归属"),
         ("negation_changed", "否定关系"),
     ],

@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-18
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -75,6 +76,7 @@ def test_public_skill_resolution_excludes_private_reason_and_true_role() -> None
         actor_id="hunter",
         target_id="wolf",
         public_result="target_died",
+        day_number=2,
         private_reason="the model supplied a private reason",
         target_true_role="werewolf",
     )
@@ -84,12 +86,25 @@ def test_public_skill_resolution_excludes_private_reason_and_true_role() -> None
         "actor_id": "hunter",
         "target_id": "wolf",
         "public_result": "target_died",
+        "day_number": 2,
     }
     assert is_safe_public_skill_resolution_payload(event.payload)
     assert not is_safe_public_skill_resolution_payload({
         **event.payload,
         "private_reason": "sensitive",
     })
+    for unsafe_day_number in (True, -1, "2"):
+        assert not is_safe_public_skill_resolution_payload({
+            **event.payload,
+            "day_number": unsafe_day_number,
+        })
+    legacy_event = build_public_skill_resolution(
+        "hunter_shot_resolved",
+        actor_id="hunter",
+        target_id="wolf",
+        public_result="target_died",
+    )
+    assert "day_number" not in legacy_event.payload
     with pytest.raises(ValueError, match="public_skill_resolution_event_type"):
         build_public_skill_resolution(
             "seer_check_resolved",

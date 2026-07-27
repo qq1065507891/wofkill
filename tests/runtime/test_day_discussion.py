@@ -3,7 +3,7 @@
 验证日间自由讨论节点、发言审计与相关运行时行为。
 
 作者: Project contributors
-修改日期: 2026-07-23
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -518,6 +518,88 @@ def test_free_discussion_routes_to_vote_after_last_normal_speech() -> None:
     assert result["speech_index"] == 1
     assert result["current_speaker_id"] is None
     assert route_self_destruct_check(result) == "summarize_positions"
+
+
+def test_summary_fallback_uses_real_public_ledger_without_private_events() -> None:
+    from werewolf_agent.agents.discussion_summary import (
+        DiscussionSummaryGenerationError,
+    )
+    from werewolf_agent.agents.schemas import TaskType
+    from werewolf_agent.core.event_visibility import EventVisibility
+    from werewolf_agent.runtime.nodes.summary import summarize_positions
+
+    badge_ref = "public_fact:badge_flow_claim:p03:p05,p07"
+    check_ref = "public_fact:seer_check_claim:p03:p08:wolf"
+    witch_marker = "PRIVATE_WITCH_EVENT_MARKER"
+    hunter_marker = "PRIVATE_HUNTER_EVENT_MARKER"
+
+    class _FailingAgent:
+        @staticmethod
+        def summarize_discussion(_context):
+            raise DiscussionSummaryGenerationError(
+                "invalid_json",
+                audit={
+                    "response_shape": "text",
+                    "json_candidate_count": 0,
+                    "failure_stage": "protocol",
+                    "raw_text": "PRIVATE_FAILED_SUMMARY",
+                },
+            )
+
+    class _Registry:
+        @staticmethod
+        def get_agent(_player_id):
+            return _FailingAgent()
+
+    game_state = GameState(
+        game_id="summary-ledger-fallback",
+        day_number=1,
+        players={"p01": PlayerState(id="p01", role="villager")},
+        events=[
+            GameEvent(
+                "speech",
+                {
+                    "speaker": "p03",
+                    "text": "我是预言家，昨晚验p08查杀，警徽流p05 p07。",
+                    "day_number": 1,
+                },
+            ),
+            GameEvent(
+                "witch_antidote_used",
+                {"private_marker": witch_marker, "target_id": "p09"},
+                visibility=EventVisibility.WITCH_PRIVATE,
+            ),
+            GameEvent(
+                "hunter_shot_selected",
+                {"private_marker": hunter_marker, "target_id": "p06"},
+                visibility=EventVisibility.MODERATOR_ONLY,
+            ),
+        ],
+    )
+
+    result = summarize_positions({
+        "game_state": game_state,
+        "engine": _new_engine(),
+        "agent_registry": _Registry(),
+        "agent_call_delay_ms": -1,
+    })
+
+    assert result["discussion_positions"]["p01"]["evidence_refs"] == [
+        check_ref,
+        badge_ref,
+    ]
+    assert result["discussion_summary_audit_records"] == [{
+        "player_id": "p01",
+        "task": TaskType.DISCUSSION_SUMMARY.value,
+        "outcome": "deterministic_fallback",
+        "failure_code": "invalid_json",
+        "response_shape": "text",
+        "json_candidate_count": 0,
+        "failure_stage": "protocol",
+    }]
+    assert "PRIVATE_FAILED_SUMMARY" not in repr(result)
+    assert witch_marker not in repr(result)
+    assert hunter_marker not in repr(result)
 
 
 def test_free_discussion_announces_speech_order_and_discussion_end() -> None:

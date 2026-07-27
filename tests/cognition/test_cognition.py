@@ -171,6 +171,173 @@ class TestStructuredWorldState:
         assert facts[1].fact_type == "claimed_role"
         assert facts[2].fact_type == "claimed_suspect"
 
+    def test_public_speech_claim_keeps_claim_provenance_and_event_metadata(self):
+        """公开发言声明应标记为玩家声明，并保留事件来源与可见性。"""
+        state = _make_state()
+        speech_event = GameEvent(
+            type="speech",
+            payload={
+                "speaker": "p08",
+                "text": "我是预言家",
+                "day_number": 1,
+            },
+        )
+
+        speech_fact = next(
+            fact for fact in extract_facts(speech_event, state)
+            if fact.fact_type == "claimed_role"
+        )
+
+        assert speech_fact.metadata["authority"] == "player_claim"
+        assert speech_fact.metadata["support_kind"] == "public_speech"
+        assert speech_fact.metadata["source_event"] == "speech"
+        assert speech_fact.metadata["visibility"] == "public"
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["sheriff_pk_speech", "tie_pk_speech"],
+    )
+    def test_pk_speech_claim_keeps_public_claim_provenance(self, event_type):
+        """真实 PK 发言事件应提取角色声明并保留公开声明来源。"""
+        state = _make_state()
+        event = GameEvent(
+            type=event_type,
+            payload={
+                "speaker": "p08",
+                "text": "我是预言家",
+                "day_number": 1,
+            },
+        )
+
+        claimed_role = next(
+            fact for fact in extract_facts(event, state)
+            if fact.fact_type == "claimed_role"
+        )
+
+        assert claimed_role.metadata["authority"] == "player_claim"
+        assert claimed_role.metadata["support_kind"] == "public_speech"
+        assert claimed_role.metadata["source_event"] == event_type
+        assert claimed_role.metadata["visibility"] == "public"
+
+    def test_empty_tie_pk_speech_event_remains_generic(self):
+        """无玩家发言时的空 PK 事件应保留为通用事件。"""
+        facts = extract_facts(GameEvent(type="tie_pk_speech", payload={}), _make_state())
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "tie_pk_speech"
+        assert facts[0].source_player is None
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["sheriff_pk_speech", "tie_pk_speech"],
+    )
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"speaker": "", "text": "我是预言家"},
+            {"speaker": 8, "text": "我是预言家"},
+            {"speaker": "p08", "text": None},
+        ],
+    )
+    def test_malformed_pk_speech_event_remains_generic(self, event_type, payload):
+        """PK 发言缺少可用说话者或文本时应安全降级为通用事件。"""
+        facts = extract_facts(GameEvent(type=event_type, payload=payload), _make_state())
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == event_type
+        assert facts[0].source_player is None
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["sheriff_pk_speech", "tie_pk_speech"],
+    )
+    def test_pk_speech_with_empty_text_remains_speech(self, event_type):
+        """有效说话者的空字符串发言仍应按真实 PK 发言处理。"""
+        event = GameEvent(
+            type=event_type,
+            payload={"speaker": "p08", "text": ""},
+        )
+
+        facts = extract_facts(event, _make_state())
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "speech"
+        assert facts[0].source_player == "p08"
+        assert facts[0].metadata["support_kind"] == "public_speech"
+
+    def test_seer_check_keeps_engine_provenance_and_event_metadata(self):
+        """已执行的预言家查验应标记为引擎事实，并保留事件元数据。"""
+        state = _make_state()
+        seer_event = GameEvent(
+            type="seer_check",
+            payload={
+                "target_id": "p01",
+                "alignment": "werewolf",
+                "night_number": 1,
+            },
+        )
+
+        engine_fact = extract_facts(seer_event, state)[0]
+
+        assert engine_fact.metadata["authority"] == "engine"
+        assert engine_fact.metadata["support_kind"] == "executed_action"
+        assert engine_fact.metadata["source_event"] == "seer_check"
+        assert engine_fact.metadata["visibility"] == "public"
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["exile_last_words", "night_death_last_words"],
+    )
+    def test_last_words_claims_use_speech_extraction(self, event_type):
+        """包含发言者和文本的遗言事件应提取声明并标记遗言来源。"""
+        state = _make_state()
+        event = GameEvent(
+            type=event_type,
+            payload={
+                "speaker": "p08",
+                "text": "我是预言家",
+                "day_number": 1,
+            },
+        )
+
+        claimed_role = next(
+            fact for fact in extract_facts(event, state)
+            if fact.fact_type == "claimed_role"
+        )
+
+        assert claimed_role.metadata["authority"] == "player_claim"
+        assert claimed_role.metadata["support_kind"] == "last_words"
+        assert claimed_role.metadata["source_event"] == event_type
+        assert claimed_role.metadata["visibility"] == "public"
+
+    def test_last_words_prompt_event_remains_generic(self):
+        """仅用于邀请玩家发言的旧遗言事件不能伪装成真实发言。"""
+        state = _make_state()
+        event = GameEvent(
+            type="night_death_last_words",
+            payload={"players": ["p08"]},
+        )
+
+        facts = extract_facts(event, state)
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "night_death_last_words"
+        assert facts[0].source_player is None
+
+    def test_last_words_with_none_text_remains_generic(self):
+        """不可用遗言文本应降级为通用事件，不能进入发言解析。"""
+        state = _make_state()
+        event = GameEvent(
+            type="night_death_last_words",
+            payload={"speaker": "p08", "text": None},
+        )
+
+        facts = extract_facts(event, state)
+
+        assert len(facts) == 1
+        assert facts[0].fact_type == "night_death_last_words"
+        assert facts[0].source_player is None
+
     def test_extract_vote(self):
         state = _make_state()
         event = GameEvent(
@@ -1456,6 +1623,25 @@ class TestSeerClaimContractExtraction:
         assert len(badge_facts) == 1
         assert badge_facts[0].target_player == "p02"
         assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p11"]
+
+    def test_chinese_multiline_badge_flow_keeps_night_labels_in_one_claim(self):
+        """中文多行 N2/N3 警徽流应合并为单个事实并保留夜晚顺序。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p03",
+            text=(
+                "接下来公布警徽流：\n"
+                "- 第二夜N2，我计划查验p02（赵猛）。理由：覆盖警上候选人。\n"
+                "- 第三夜N3，我计划查验p12（冯弈）。理由：形成对照。\n"
+            ),
+            day=1,
+        )
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p02"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p12"]
 
     def test_inline_night_badge_flow_extracts_target(self):
         """真实日志的同一行 N2 验人计划应形成警徽流事实。"""

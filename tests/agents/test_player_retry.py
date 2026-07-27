@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-24
+修改日期: 2026-07-27
 
 使用示例:
     >>> python -m pytest tests/agents/test_player_retry.py -q
@@ -79,12 +79,14 @@ def test_repair_constraint_state_semantic_order_and_fact_policy_are_monotonic() 
 
     state.record_semantic_rejection((
         "negation_changed",
+        "executed_action_without_engine_evidence",
         "unsupported_public_claim",
         "negation_changed",
     ))
     assert state.semantic_repair_started is True
     assert state.semantic_reason_codes == (
         "unsupported_public_claim",
+        "executed_action_without_engine_evidence",
         "negation_changed",
     )
     assert state.fact_policy == "verified_claims_only"
@@ -92,6 +94,7 @@ def test_repair_constraint_state_semantic_order_and_fact_policy_are_monotonic() 
     state.record_semantic_rejection(("speaker_attribution_changed",))
     assert state.semantic_reason_codes == (
         "unsupported_public_claim",
+        "executed_action_without_engine_evidence",
         "speaker_attribution_changed",
         "negation_changed",
     )
@@ -777,6 +780,32 @@ def test_generic_fallback_classification_uses_actual_template_family() -> None:
     assert generic_fallback_speech_used(generic, "") is False
     assert generic_fallback_speech_used(defense, "信息不足，继续观察。") is True
     assert generic_fallback_speech_used(targeted, "我是好人，我怀疑p02。") is False
+
+
+def test_fallback_speech_labels_public_claims_without_upgrading_execution() -> None:
+    from werewolf_agent.agents.player_fallback_speech import build_fallback_speech
+
+    context = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        public_fact_ledger={
+            "badge_flow_claims": [{
+                "speaker": "p03",
+                "targets": ["p02", "p12"],
+            }],
+            "action_claims": [{
+                "speaker": "p07",
+                "action": "hunter_shot",
+                "target": "p02",
+            }],
+        },
+    )
+
+    fallback = build_fallback_speech(context)
+
+    assert "p03公开声明警徽流：p02、p12" in fallback
+    assert "p07公开声称hunter_shot目标p02，仅为玩家声明" in fallback
+    assert "已执行" not in fallback
 
 
 def _fake_pydantic_validation_error_str() -> str:

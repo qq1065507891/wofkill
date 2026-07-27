@@ -3,7 +3,7 @@
 玩家 Agent public facade，提供行动、讨论摘要与赛后反思的窄生成入口。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-26
+修改日期：2026-07-27
 使用示例：内部模块，无对外接口
 """
 
@@ -27,6 +27,7 @@ from werewolf_agent.agents.discussion_summary import (
     DiscussionSummary,
     DiscussionSummaryGenerationError,
     discussion_summary_tool,
+    discussion_summary_response_shape,
     parse_discussion_summary_text,
 )
 from werewolf_agent.memory.reflection_synthesis import ReflectionDraft
@@ -83,6 +84,10 @@ from werewolf_agent.agents.tool_schema import (
     vote_quality_error as _vote_quality_impl,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
+from werewolf_agent.model_gateway.usage_records import (
+    FailureDisposition,
+    GenerateResult,
+)
 from werewolf_agent.persona_runtime.router import PersonaRouter
 
 _SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS = (
@@ -93,6 +98,40 @@ _SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS = (
     "not_voting_reason",
     "private_reason",
 )
+
+
+def _summary_result_has_provider_failure(result: GenerateResult) -> bool:
+    """区分 provider/路由失败与 provider 成功返回空文本。"""
+
+    return getattr(result, "failure_disposition", FailureDisposition.NONE) in {
+        FailureDisposition.TRANSPORT_EXHAUSTED,
+        FailureDisposition.POLICY_REJECTED,
+        FailureDisposition.ROUTE_UNAVAILABLE,
+    }
+
+
+def _discussion_summary_error(
+    failure_code: str,
+    result: GenerateResult,
+    raw_text: str,
+    *,
+    failure_stage: str,
+) -> DiscussionSummaryGenerationError:
+    """从规范化结果生成不含原始响应的摘要错误。"""
+
+    response_shape, candidate_count = discussion_summary_response_shape(raw_text)
+    return DiscussionSummaryGenerationError(
+        failure_code,
+        audit={
+            "structured_output_mode": getattr(result, "structured_output_mode", ""),
+            "tool_call_required": getattr(result, "tool_call_required", False),
+            "tool_call_received": getattr(result, "tool_call_received", False),
+            "response_shape": response_shape,
+            "json_candidate_count": candidate_count,
+            "failure_stage": failure_stage,
+        },
+    )
+
 
 class ReflectionDraftGenerationError(RuntimeError):
     """携带稳定安全码的赛后反思生成失败。"""
@@ -179,38 +218,119 @@ class PlayerAgent:
 
         if context.task_type is not TaskType.DISCUSSION_SUMMARY:
             raise DiscussionSummaryGenerationError("task_contract_mismatch")
+        from werewolf_agent.model_gateway.generation_attempt_context import (
+            GenerationAttemptContext,
+        )
+
         system_prompt, prompt = discussion_summary_prompts(context)
         tool = discussion_summary_tool()
-        try:
-            result = self.model_router.generate(
-                agent_id=self.agent_id,
-                task_type=TaskType.DISCUSSION_SUMMARY.value,
-                prompt=prompt,
-                system_prompt=system_prompt,
-                tools=[tool],
-                tool_choice={
-                    "type": "tool",
-                    "name": "submit_discussion_summary",
-                },
-            )
-        except Exception as exc:
-            raise DiscussionSummaryGenerationError(
-                "model_generation_failed"
-            ) from exc
+        attempt_context = GenerationAttemptContext(run_scope=self.agent_id)
+        repair_instruction = (
+            "\n只输出一个符合 submit_discussion_summary Schema 的 JSON 对象；"
+            "不要输出解释、数组或多个对象。"
+        )
+        active_prompt = prompt
+        # text_json 只依赖提示词，OpenAI 兼容端点不会发送结构化约束；摘要
+        # 需要至少使用 json_object，之后仍由窄 Schema 做严格字段校验。
+        resolved_mode: str | None = "json_object"
+        resolve_config = getattr(self.model_router, "resolve_config", None)
+        if callable(resolve_config):
+            configured_mode = resolve_config(
+                self.agent_id,
+                TaskType.DISCUSSION_SUMMARY.value,
+            )[0].structured_output_mode
+            if configured_mode != "text_json":
+                resolved_mode = None
+        for attempt in range(2):
+            result: GenerateResult | None = None
+            try:
+                result = self.model_router.generate(
+                    agent_id=self.agent_id,
+                    task_type=TaskType.DISCUSSION_SUMMARY.value,
+                    prompt=active_prompt,
+                    system_prompt=system_prompt,
+                    tools=[tool],
+                    tool_choice={
+                        "type": "tool",
+                        "name": "submit_discussion_summary",
+                    },
+                    structured_output_mode=resolved_mode,
+                    generation_attempt_context=attempt_context,
+                    max_provider_calls=1,
+                )
+            except Exception:
+                pass
+            if result is None:
+                raise DiscussionSummaryGenerationError(
+                    "model_generation_failed",
+                    audit={
+                        "response_shape": "unknown",
+                        "failure_stage": "provider",
+                    },
+                )
 
-        raw_text = str(getattr(result, "text", "") or "").strip()
-        if not raw_text:
-            raise DiscussionSummaryGenerationError("empty_response")
-        try:
-            return parse_discussion_summary_text(raw_text)
-        except json.JSONDecodeError as exc:
-            raise DiscussionSummaryGenerationError("invalid_json") from exc
-        except ValidationError as exc:
-            raise DiscussionSummaryGenerationError(
-                "schema_validation_failed"
-            ) from exc
-        except ValueError as exc:
-            raise DiscussionSummaryGenerationError("invalid_json") from exc
+            resolved_mode = str(
+                getattr(result, "structured_output_mode", "") or ""
+            )
+            raw_text = str(getattr(result, "text", "") or "").strip()
+            if _summary_result_has_provider_failure(result):
+                raise _discussion_summary_error(
+                    "model_generation_failed",
+                    result,
+                    raw_text,
+                    failure_stage="provider",
+                )
+            if not raw_text:
+                raise _discussion_summary_error(
+                    "empty_response",
+                    result,
+                    raw_text,
+                    failure_stage="provider",
+                )
+
+            parse_error: DiscussionSummaryGenerationError | None = None
+            if (
+                getattr(result, "tool_call_required", False)
+                and not getattr(result, "tool_call_received", False)
+                and not getattr(result, "allow_text_tool_fallback", False)
+            ):
+                parse_error = _discussion_summary_error(
+                    "missing_tool_call",
+                    result,
+                    raw_text,
+                    failure_stage="protocol",
+                )
+            else:
+                try:
+                    return parse_discussion_summary_text(raw_text)
+                except json.JSONDecodeError:
+                    parse_error = _discussion_summary_error(
+                        "invalid_json",
+                        result,
+                        raw_text,
+                        failure_stage="protocol",
+                    )
+                except ValidationError:
+                    parse_error = _discussion_summary_error(
+                        "schema_validation_failed",
+                        result,
+                        raw_text,
+                        failure_stage="schema",
+                    )
+                except ValueError:
+                    parse_error = _discussion_summary_error(
+                        "invalid_json",
+                        result,
+                        raw_text,
+                        failure_stage="protocol",
+                    )
+
+            if attempt == 1:
+                raise parse_error
+            attempt_context.reject_latest_output()
+            active_prompt = prompt + repair_instruction
+
+        raise AssertionError("unreachable discussion summary repair state")
 
     def generate_reflection(
         self,

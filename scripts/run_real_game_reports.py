@@ -257,6 +257,7 @@ def _reasoning_evidence_summary(
         return value
 
     canonical: dict[tuple[str, int], Any] = {}
+    usage_by_attempt: dict[tuple[str, int], Any] = {}
     request_order: dict[str, int] = {}
     for usage in usage_log:
         for attempt in usage.attempts:
@@ -264,6 +265,7 @@ def _reasoning_evidence_summary(
             request_order.setdefault(opaque_request_id, len(request_order))
             key = (opaque_request_id, field(attempt, "ordinal"))
             canonical[key] = attempt
+            usage_by_attempt[key] = usage
     # ActionTrace 包含 parser/validator 完成后的最终投影；同键冲突时，
     # 它必须覆盖较早的 provider usage 快照。
     for attempt in action_attempts:
@@ -286,6 +288,29 @@ def _reasoning_evidence_summary(
         attempt for attempt in requested
         if field(attempt, "normalized_reasoning_status") == "confirmed"
     ]
+    rows: list[dict[str, Any]] = []
+    for attempt in attempts:
+        key = (field(attempt, "opaque_request_id"), field(attempt, "ordinal"))
+        usage = usage_by_attempt.get(key)
+        row = {
+            "opaque_request_id": field(attempt, "opaque_request_id"),
+            "ordinal": field(attempt, "ordinal"),
+            "provider": field(attempt, "provider"),
+            "model": field(attempt, "model"),
+            "requested_level": field(attempt, "requested_reasoning_level"),
+            "status": field(attempt, "normalized_reasoning_status"),
+            "reasoning_tokens": field(attempt, "reasoning_token_count"),
+            "evidence": field(attempt, "evidence_kind"),
+            "route": field(attempt, "route_kind"),
+            "root_cause": field(attempt, "root_cause"),
+            "outcome": field(attempt, "attempt_outcome"),
+            "provider_attempted": provider_attempted(attempt),
+        }
+        row["effective_temperature"] = getattr(usage, "effective_temperature", None)
+        row["temperature_override_reason"] = getattr(
+            usage, "temperature_override_reason", None
+        )
+        rows.append(row)
     return {
         "requested_denominator": len(requested),
         "confirmed_numerator": len(confirmed),
@@ -298,23 +323,7 @@ def _reasoning_evidence_summary(
                 for attempt in attempts
             ),
         },
-        "attempts": [
-            {
-                "opaque_request_id": field(attempt, "opaque_request_id"),
-                "ordinal": field(attempt, "ordinal"),
-                "provider": field(attempt, "provider"),
-                "model": field(attempt, "model"),
-                "requested_level": field(attempt, "requested_reasoning_level"),
-                "status": field(attempt, "normalized_reasoning_status"),
-                "reasoning_tokens": field(attempt, "reasoning_token_count"),
-                "evidence": field(attempt, "evidence_kind"),
-                "route": field(attempt, "route_kind"),
-                "root_cause": field(attempt, "root_cause"),
-                "outcome": field(attempt, "attempt_outcome"),
-                "provider_attempted": provider_attempted(attempt),
-            }
-            for attempt in attempts
-        ],
+        "attempts": rows,
     }
 
 

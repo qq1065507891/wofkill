@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-18
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_sections import PromptSectionMixin
@@ -84,6 +84,14 @@ def player_system_prompt_required_sections(
 USER_SECTION_SPECS: tuple[_SectionSpec, ...] = (
     _SectionSpec("_build_phase_context", "【辅助】", "阶段上下文", "action_context", _NEVER_DROP_TIER),
     _SectionSpec("_build_public_summary", "【场上记录】", "当前局公开事实", "public_record", _NEVER_DROP_TIER, True),
+    _SectionSpec(
+        "_build_public_fact_ledger",
+        "【场上记录】",
+        "分层公开账本",
+        "public_record",
+        _NEVER_DROP_TIER,
+        True,
+    ),
     _SectionSpec("_build_visible_state", "【辅助】", "可见世界状态", "public_record", _NEVER_DROP_TIER, True),
     _SectionSpec("_build_salience_events", "【辅助】", "关键事件", "public_record", _NEVER_DROP_TIER, True),
     _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
