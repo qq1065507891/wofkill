@@ -3,7 +3,7 @@
 验证日间自由讨论节点、发言审计与相关运行时行为。
 
 作者: Project contributors
-修改日期: 2026-07-23
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -518,6 +518,91 @@ def test_free_discussion_routes_to_vote_after_last_normal_speech() -> None:
     assert result["speech_index"] == 1
     assert result["current_speaker_id"] is None
     assert route_self_destruct_check(result) == "summarize_positions"
+
+
+def test_summary_fallback_sanitizes_audit_and_preserves_ledger_refs(
+    monkeypatch,
+) -> None:
+    from werewolf_agent.agents.discussion_summary import (
+        DiscussionSummaryGenerationError,
+    )
+    from werewolf_agent.agents.schemas import AgentContext, TaskType
+    from werewolf_agent.runtime.nodes.summary import summarize_positions
+
+    badge_ref = "public_fact:badge_flow_claim:p02:p03,p04"
+    check_ref = "public_fact:seer_check_claim:p02:p03:wolf"
+
+    class _FailingAgent:
+        @staticmethod
+        def summarize_discussion(_context):
+            raise DiscussionSummaryGenerationError(
+                "invalid_json",
+                audit={
+                    "response_shape": "text",
+                    "json_candidate_count": 0,
+                    "failure_stage": "protocol",
+                    "raw_text": "PRIVATE_FAILED_SUMMARY",
+                },
+            )
+
+    class _Registry:
+        @staticmethod
+        def get_agent(_player_id):
+            return _FailingAgent()
+
+    monkeypatch.setattr(
+        "werewolf_agent.runtime.nodes.summary.build_agent_context",
+        lambda _engine, _gs, player_id, task_type, **_kwargs: AgentContext(
+            agent_id=player_id,
+            task_type=task_type,
+            public_fact_ledger={
+                "badge_flow_claims": [{
+                    "speaker": "p02",
+                    "targets": ["p03", "p04"],
+                }],
+                "seer_check_claims": [{
+                    "speaker": "p02",
+                    "target": "p03",
+                    "result": "wolf",
+                }],
+            },
+        ),
+    )
+    game_state = GameState(
+        game_id="summary-ledger-fallback",
+        day_number=1,
+        players={"p01": PlayerState(id="p01", role="villager")},
+        events=[GameEvent(
+            "speech",
+            {
+                "speaker": "p02",
+                "text": "我是预言家，昨晚查杀p03，警徽流p03、p04。",
+                "day_number": 1,
+            },
+        )],
+    )
+
+    result = summarize_positions({
+        "game_state": game_state,
+        "engine": object(),
+        "agent_registry": _Registry(),
+        "agent_call_delay_ms": -1,
+    })
+
+    assert result["discussion_positions"]["p01"]["evidence_refs"] == [
+        badge_ref,
+        check_ref,
+    ]
+    assert result["discussion_summary_audit_records"] == [{
+        "player_id": "p01",
+        "task": TaskType.DISCUSSION_SUMMARY.value,
+        "outcome": "deterministic_fallback",
+        "failure_code": "invalid_json",
+        "response_shape": "text",
+        "json_candidate_count": 0,
+        "failure_stage": "protocol",
+    }]
+    assert "PRIVATE_FAILED_SUMMARY" not in repr(result)
 
 
 def test_free_discussion_announces_speech_order_and_discussion_end() -> None:

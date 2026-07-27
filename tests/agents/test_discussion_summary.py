@@ -328,8 +328,17 @@ def test_parse_discussion_summary_text_rejects_ambiguous_multiple_valid_objects(
 class _SummaryTextProvider:
     name = "summary-text"
 
-    def __init__(self, text: str) -> None:
-        self.text = text
+    def __init__(
+        self,
+        texts: str | list[str],
+        *,
+        tool_call_received: bool = False,
+        failure: Exception | None = None,
+    ) -> None:
+        self.texts = [texts] if isinstance(texts, str) else list(texts)
+        self.tool_call_received = tool_call_received
+        self.failure = failure
+        self.requests: list[dict[str, object]] = []
 
     def generate(
         self,
@@ -340,20 +349,32 @@ class _SummaryTextProvider:
         tool_choice=None,
         final_prompt_observer=None,
     ):
+        self.requests.append({
+            "prompt": prompt,
+            "mode": config.structured_output_mode,
+            "tool_choice": tool_choice,
+        })
+        if self.failure is not None:
+            raise self.failure
+        text = self.texts[min(len(self.requests) - 1, len(self.texts) - 1)]
         return GenerateResult(
-            text=self.text,
+            text=text,
             provider=self.name,
             model=config.model,
+            tool_call_received=self.tool_call_received,
         )
 
 
-def _summary_agent_for_text(text: str) -> PlayerAgent:
-    provider = _SummaryTextProvider(text)
+def _summary_agent_for_provider(
+    provider: _SummaryTextProvider,
+    *,
+    structured_output_mode: str = "text_json",
+) -> PlayerAgent:
     router = ModelRouter(
         model_profiles={
             "summary_model": {
                 "model": "summary-model",
-                "structured_output": {"mode": "text_json"},
+                "structured_output": {"mode": structured_output_mode},
                 "reasoning": {"level": "medium"},
                 "retry_count": 0,
             },
@@ -372,6 +393,10 @@ def _summary_agent_for_text(text: str) -> PlayerAgent:
         providers={provider.name: provider},
     )
     return PlayerAgent(agent_id="p01", model_router=router)
+
+
+def _summary_agent_for_text(text: str) -> PlayerAgent:
+    return _summary_agent_for_provider(_SummaryTextProvider(text))
 
 
 def _summary_context() -> AgentContext:
@@ -416,7 +441,164 @@ def test_player_summary_invalid_json_exposes_only_sanitized_audit_shape() -> Non
     error = exc_info.value
     assert error.failure_code == "invalid_json"
     assert error.audit == {
+        "failure_code": "invalid_json",
+        "structured_output_mode": "text_json",
+        "tool_call_required": False,
+        "tool_call_received": False,
+        "response_shape": "text",
+        "json_candidate_count": 0,
+        "failure_stage": "protocol",
+    }
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert "not json" not in repr(error.audit)
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "failure_code", "failure_stage", "candidate_count"),
+    [
+        ('{"summary":"one"} {"summary":"two"}', "invalid_json", "protocol", 2),
+        ('{"summary":"ok","unknown":true}', "schema_validation_failed", "schema", 1),
+    ],
+)
+def test_player_summary_audit_classifies_parser_failure_stage(
+    raw_text: str,
+    failure_code: str,
+    failure_stage: str,
+    candidate_count: int,
+) -> None:
+    provider = _SummaryTextProvider([raw_text, raw_text])
+
+    with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
+        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+
+    assert len(provider.requests) == 2
+    assert exc_info.value.audit["failure_code"] == failure_code
+    assert exc_info.value.audit["failure_stage"] == failure_stage
+    assert exc_info.value.audit["json_candidate_count"] == candidate_count
+
+
+def test_player_summary_parses_native_tool_arguments_and_audits_metadata() -> None:
+    provider = _SummaryTextProvider(
+        '{"summary":"工具参数"}',
+        tool_call_received=True,
+    )
+
+    summary = _summary_agent_for_provider(
+        provider,
+        structured_output_mode="native_tool",
+    ).summarize_discussion(_summary_context())
+
+    assert summary.summary == "工具参数"
+    assert provider.requests[0]["mode"] == "native_tool"
+    assert provider.requests[0]["tool_choice"] == {
+        "type": "tool",
+        "name": "submit_discussion_summary",
+    }
+
+
+def test_player_summary_repairs_once_with_shared_attempt_context(monkeypatch) -> None:
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptOutcome,
+        RouteKind,
+    )
+
+    rejected_marker = "REJECTED_PRIVATE_RESPONSE"
+    provider = _SummaryTextProvider([
+        rejected_marker,
+        '```json\n{"summary":"修复成功"}\n```',
+    ])
+    agent = _summary_agent_for_provider(provider)
+    attempt_contexts: list[object] = []
+    original_generate = agent.model_router.generate
+
+    def capture_attempt_context(**kwargs):
+        attempt_contexts.append(kwargs["generation_attempt_context"])
+        return original_generate(**kwargs)
+
+    monkeypatch.setattr(agent.model_router, "generate", capture_attempt_context)
+
+    summary = agent.summarize_discussion(_summary_context())
+
+    assert summary.summary == "修复成功"
+    assert len(provider.requests) == 2
+    assert len({id(context) for context in attempt_contexts}) == 1
+    attempts = attempt_contexts[-1].attempts
+    assert [item.route_kind for item in attempts] == [
+        RouteKind.PRIMARY,
+        RouteKind.REPAIR,
+    ]
+    assert [item.attempt_outcome for item in attempts] == [
+        AttemptOutcome.FAILURE,
+        AttemptOutcome.SUCCESS,
+    ]
+    assert provider.requests[1]["mode"] == "text_json"
+    assert str(provider.requests[1]["prompt"]).endswith(
+        "\n只输出一个符合 submit_discussion_summary Schema 的 JSON 对象；"
+        "不要输出解释、数组或多个对象。"
+    )
+    assert rejected_marker not in str(provider.requests[1]["prompt"])
+
+
+def test_player_summary_second_parse_failure_stops_after_two_calls() -> None:
+    provider = _SummaryTextProvider(["not json", "still not json"])
+
+    with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
+        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+
+    assert len(provider.requests) == 2
+    assert exc_info.value.failure_code == "invalid_json"
+
+
+def test_player_summary_empty_response_is_not_repaired() -> None:
+    provider = _SummaryTextProvider("")
+
+    with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
+        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+
+    assert len(provider.requests) == 1
+    assert exc_info.value.audit == {
+        "failure_code": "empty_response",
+        "structured_output_mode": "text_json",
+        "tool_call_required": False,
+        "tool_call_received": False,
+        "response_shape": "empty",
+        "json_candidate_count": 0,
+        "failure_stage": "provider",
+    }
+
+
+def test_player_summary_provider_failure_is_not_repaired() -> None:
+    provider = _SummaryTextProvider(
+        "unused",
+        failure=RuntimeError("PRIVATE_PROVIDER_FAILURE"),
+    )
+
+    with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
+        _summary_agent_for_provider(provider).summarize_discussion(_summary_context())
+
+    assert len(provider.requests) == 1
+    assert exc_info.value.failure_code == "model_generation_failed"
+    assert exc_info.value.audit["failure_stage"] == "provider"
+    assert "PRIVATE_PROVIDER_FAILURE" not in repr(exc_info.value.audit)
+
+
+def test_summary_error_discards_unsafe_audit_fields_and_values() -> None:
+    error = DiscussionSummaryGenerationError(
+        "invalid_json",
+        audit={
+            "response_shape": "text",
+            "json_candidate_count": 0,
+            "raw_text": "PRIVATE_RAW_TEXT",
+            "prompt": "PRIVATE_PROMPT",
+            "exception": RuntimeError("PRIVATE_EXCEPTION"),
+        },
+    )
+
+    assert str(error) == "invalid_json"
+    assert error.audit == {
+        "failure_code": "invalid_json",
         "response_shape": "text",
         "json_candidate_count": 0,
     }
-    assert "not json" not in repr(error.audit)
+    assert "PRIVATE" not in repr(error.audit)

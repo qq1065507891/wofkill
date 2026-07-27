@@ -3,7 +3,7 @@
 验证公开上下文摘要可见性和内部讨论摘要任务隔离。
 
 作者: Project contributors
-修改日期: 2026-07-25
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -220,6 +220,8 @@ def test_summarize_positions_records_safe_deterministic_fallback(
         "task": "discussion_summary",
         "outcome": "deterministic_fallback",
         "failure_code": "model_failure",
+        "response_shape": "unknown",
+        "failure_stage": "provider",
     }]
     assert sensitive_marker not in str(
         result["discussion_summary_audit_records"]

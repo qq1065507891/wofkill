@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-25
-修改日期: 2026-07-26
+修改日期: 2026-07-27
 
 使用示例:
     >>> state = {"discussion_positions": {"p01": "我怀疑p03"}}
@@ -34,7 +34,33 @@ _SAFE_FAILURE_CODES = frozenset({
     "schema_validation_failed",
     "agent_unavailable",
     "model_failure",
+    "missing_tool_call",
 })
+
+_SAFE_AUDIT_FIELDS = frozenset({
+    "structured_output_mode",
+    "tool_call_required",
+    "tool_call_received",
+    "response_shape",
+    "json_candidate_count",
+    "failure_stage",
+})
+_SAFE_STRUCTURED_OUTPUT_MODES = frozenset({
+    "",
+    "native_tool",
+    "json_schema",
+    "json_object",
+    "text_json",
+})
+_SAFE_RESPONSE_SHAPES = frozenset({
+    "empty",
+    "text",
+    "json_object",
+    "json_array",
+    "multiple_json_objects",
+    "unknown",
+})
+_SAFE_FAILURE_STAGES = frozenset({"protocol", "schema", "provider"})
 
 
 class DiscussionSummary(BaseModel):
@@ -52,7 +78,12 @@ class DiscussionSummary(BaseModel):
 class DiscussionSummaryGenerationError(RuntimeError):
     """携带可审计安全码的讨论摘要生成失败。"""
 
-    def __init__(self, failure_code: str) -> None:
+    def __init__(
+        self,
+        failure_code: str,
+        *,
+        audit: dict[str, Any] | None = None,
+    ) -> None:
         safe_code = (
             failure_code
             if failure_code in _SAFE_FAILURE_CODES
@@ -60,6 +91,54 @@ class DiscussionSummaryGenerationError(RuntimeError):
         )
         super().__init__(safe_code)
         self.failure_code = safe_code
+        self.audit = {
+            "failure_code": safe_code,
+            **_sanitize_summary_audit(audit or {}),
+        }
+
+
+def _sanitize_summary_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
+    """只保留固定类型与固定枚举值，避免任意字符串进入审计。"""
+
+    sanitized: dict[str, Any] = {}
+    for key in _SAFE_AUDIT_FIELDS:
+        value = audit.get(key)
+        if key == "structured_output_mode":
+            if isinstance(value, str) and value in _SAFE_STRUCTURED_OUTPUT_MODES:
+                sanitized[key] = value
+        elif key in {"tool_call_required", "tool_call_received"}:
+            if type(value) is bool:
+                sanitized[key] = value
+        elif key == "response_shape":
+            if isinstance(value, str) and value in _SAFE_RESPONSE_SHAPES:
+                sanitized[key] = value
+        elif key == "json_candidate_count":
+            if type(value) is int and 0 <= value <= 100:
+                sanitized[key] = value
+        elif (
+            key == "failure_stage"
+            and isinstance(value, str)
+            and value in _SAFE_FAILURE_STAGES
+        ):
+            sanitized[key] = value
+    return sanitized
+
+
+def discussion_summary_response_shape(raw_text: str) -> tuple[str, int]:
+    """不保留原文地返回响应形状与平衡 JSON 对象数量。"""
+
+    if not raw_text.strip():
+        return "empty", 0
+    repaired = repair_json_text(raw_text)
+    candidates = extract_balanced_json_objects(repaired)
+    candidate_count = len(candidates)
+    if _contains_object_in_array(repaired) or repaired.lstrip().startswith("["):
+        return "json_array", candidate_count
+    if candidate_count > 1:
+        return "multiple_json_objects", candidate_count
+    if candidate_count == 1:
+        return "json_object", 1
+    return "text", 0
 
 
 def parse_discussion_summary_text(raw_text: str) -> DiscussionSummary:
@@ -229,6 +308,7 @@ __all__ = [
     "DiscussionSummary",
     "DiscussionSummaryGenerationError",
     "discussion_summary_for_player",
+    "discussion_summary_response_shape",
     "discussion_summary_text",
     "discussion_summary_tool",
     "parse_discussion_summary_text",
