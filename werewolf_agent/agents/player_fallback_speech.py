@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-16
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.agents.player_fallback_speech import build_fallback_speech
@@ -135,37 +135,66 @@ def context_clues(context: AgentContext) -> str:
         text = str(last.get("text") or "").strip()
         if speaker and text:
             clues.append(f"{speaker}最近发言：{text[:24]}")
+    for item in context.public_fact_ledger.get("badge_flow_claims", [])[:1]:
+        clues.append(
+            f"{item.get('speaker')}公开声明警徽流："
+            f"{'、'.join(item.get('targets', []))}"
+        )
+    for item in context.public_fact_ledger.get("action_claims", [])[:1]:
+        clues.append(
+            f"{item.get('speaker')}公开声称{item.get('action')}目标"
+            f"{item.get('target')}，仅为玩家声明"
+        )
     return "；".join(clues[:3])
+
+
+def _with_context_clues(context: AgentContext, speech: str) -> str:
+    """在既有三条线索预算内为 fallback 补充公开依据。"""
+    clues = context_clues(context)
+    return f"{speech} 公开线索：{clues}" if clues else speech
 
 
 def build_fallback_speech(context: AgentContext) -> str:
     """根据任务类型、身份和公开目标构造兜底发言。"""
     seer_pk = _seer_pk_speech(context)
     if seer_pk:
-        return seer_pk
+        return _with_context_clues(context, seer_pk)
 
     seed_hash = _fallback_seed_hash(context)
     target = _fallback_speech_target(context, seed_hash)
     tmpl_idx = seed_hash % 7
 
     if context.task_type == TaskType.WOLF_DISCUSSION:
-        return _format_selected(
-            _WOLF_DISCUSSION_TARGET_TEMPLATES if target else _WOLF_DISCUSSION_TEMPLATES,
-            tmpl_idx,
-            target,
+        return _with_context_clues(
+            context,
+            _format_selected(
+                (
+                    _WOLF_DISCUSSION_TARGET_TEMPLATES
+                    if target
+                    else _WOLF_DISCUSSION_TEMPLATES
+                ),
+                tmpl_idx,
+                target,
+            ),
         )
     if context.task_type in (TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH):
-        return _SHERIFF_OR_PK_TEMPLATES[tmpl_idx]
+        return _with_context_clues(context, _SHERIFF_OR_PK_TEMPLATES[tmpl_idx])
     if context.task_type == TaskType.DEFENSE_SPEECH:
-        return _DEFENSE_TEMPLATES[tmpl_idx]
+        return _with_context_clues(context, _DEFENSE_TEMPLATES[tmpl_idx])
     if context.task_type == TaskType.LAST_WORDS:
-        return _format_selected(
-            _LAST_WORDS_TARGET_TEMPLATES if target else _LAST_WORDS_TEMPLATES,
-            tmpl_idx,
-            target,
+        return _with_context_clues(
+            context,
+            _format_selected(
+                _LAST_WORDS_TARGET_TEMPLATES if target else _LAST_WORDS_TEMPLATES,
+                tmpl_idx,
+                target,
+            ),
         )
     if target:
-        return _DAY_TARGET_TEMPLATES[tmpl_idx].format(target=target)
+        return _with_context_clues(
+            context,
+            _DAY_TARGET_TEMPLATES[tmpl_idx].format(target=target),
+        )
 
     logger.warning(
         "fallback speech used for agent=%s day=%s phase=%s task=%s",
@@ -174,7 +203,7 @@ def build_fallback_speech(context: AgentContext) -> str:
         context.phase,
         context.task_type,
     )
-    return _DAY_TEMPLATES[tmpl_idx]
+    return _with_context_clues(context, _DAY_TEMPLATES[tmpl_idx])
 
 
 def build_task_terminal_fallback(

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-25
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_schemas import AgentContext
@@ -122,6 +122,11 @@ class AgentContext(BaseModel):
     )
     public_world_evidence_ids: list[str] = Field(default_factory=list, exclude=True)
     public_claim_ledger: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    public_fact_ledger: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="当前玩家可见的规则事实、声明和冲突结构化投影。",
+    )
     simulation_predictions: dict[str, Any] = Field(default_factory=dict)
     decision_plan_audit: dict[str, Any] = Field(default_factory=dict)
     dialogue_plan_audit: dict[str, Any] = Field(default_factory=dict)

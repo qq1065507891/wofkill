@@ -2239,6 +2239,50 @@ def test_section_metadata_is_single_source_for_labels_and_budget() -> None:
     assert by_name["_build_final_output_guard"].drop_tier is None
 
 
+def test_layered_public_ledger_is_never_dropped_under_transcript_pressure() -> None:
+    context = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        public_summary="D1 公开摘要",
+        public_fact_ledger={
+            "confirmed_actions": [],
+            "role_claims": [{"speaker": "p03", "role": "seer"}],
+            "seer_check_claims": [],
+            "badge_flow_claims": [{
+                "speaker": "p03",
+                "targets": ["p02", "p12"],
+            }],
+            "action_claims": [{
+                "speaker": "p07",
+                "action": "hunter_shot",
+                "target": "p02",
+                "authority": "player_claim",
+            }],
+            "claim_conflicts": [],
+        },
+        visible_world_state={"alive_players": ["p02", "p03", "p08", "p12"]},
+        recent_transcript=[{
+            "speaker": "p03",
+            "text": "超长公开发言" * 20_000,
+        }],
+    )
+
+    prompt = PlayerPromptBuilder(context, "p08").build_user_prompt(RetryInfo())
+    public_summary_index = prompt.index("当前局公开事实")
+    ledger_index = prompt.index("分层公开账本")
+    visible_state_index = prompt.index("可见状态")
+
+    assert public_summary_index < ledger_index < visible_state_index
+    assert all(marker in prompt for marker in ("p02", "p12", "玩家声明", "执行事实"))
+    ledger_spec = PlayerPromptBuilder._SECTION_SPEC_BY_NAME[
+        "_build_public_fact_ledger"
+    ]
+    assert ledger_spec.drop_tier is None
+    assert ledger_spec.public_record is True
+
+
 def test_user_prompt_uses_merged_learning_and_output_sections() -> None:
     ctx = AgentContext(
         agent_id="p08",
