@@ -159,6 +159,8 @@ def test_completed_action_classifier_rejects_modal_with_aspect_marker(
         ("p07重要说明已经开枪p01", "p08", "p07", "hunter_shot"),
         ("p07已经开枪带走p01", "p08", "p07", "hunter_shot"),
         ("p07开枪带走p01", "p08", "p07", "hunter_shot"),
+        ("p07开枪p01", "p08", "p07", "hunter_shot"),
+        ("p07带走p01", "p08", "p07", "hunter_shot"),
         ("我已经开枪带走p01", "p08", "p08", "hunter_shot"),
         ("p07首夜用解药救了p01", "p08", "p07", "witch_antidote"),
         ("p07用解药救了p01", "p08", "p07", "witch_antidote"),

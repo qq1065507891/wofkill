@@ -71,7 +71,8 @@ _CURRENT_PLAYER_INFERENCE_REF = re.compile(
 _PUBLIC_ACTION_CLAIM_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<actor>我|p\d{2})?"
     r"(?:(?!p\d{2})[^，。；;]){0,12}"
-    r"(?P<action>已经开枪|开枪带走|首夜用解药救了|用解药救了)"
+    r"(?P<action>已经开枪|开枪带走|(?<!已经)开枪|(?<!开枪)带走|"
+    r"首夜用解药救了|用解药救了)"
     r"\s*(?P<target>p\d{2})(?![A-Za-z0-9_])"
 )
 _ACTION_MODAL_PREFIX_RE = re.compile(
