@@ -4,7 +4,7 @@ GameRunner 的跨局记忆恢复、终局快照和 V2 持久化审计事件逻�
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-18
+修改日期: 2026-07-27
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_memory import GameRunnerMemoryMixin
@@ -388,13 +388,17 @@ class GameRunnerMemoryMixin:
                     len(rejected & persisted) if entry_complete else None
                 ),
             })
+        persisted_entry_count = sum(
+            entry["persistence_complete"] is True for entry in entries
+        )
         complete = (
             bool(expected_entries)
             and
             upstream_complete
+            and rollback_complete
             and repository_read_complete
             and snapshot_read_complete
-            and all(entry["persistence_complete"] is True for entry in entries)
+            and persisted_entry_count == len(expected_entries)
         )
         status = transaction_status or self._reflection_persistence_status(
             expected_entries,
@@ -404,7 +408,7 @@ class GameRunnerMemoryMixin:
             "complete", "partial", "no_valid_entries", "persistence_failed",
         }:
             status = "persistence_failed"
-        if status not in {"complete", "partial"}:
+        if status not in {"complete", "partial"} or not rollback_complete:
             complete = False
         event = new_game_event(
             self._state,
@@ -412,6 +416,9 @@ class GameRunnerMemoryMixin:
             payload={
                 "status": status,
                 "expected_entry_count": len(expected_entries),
+                "persisted_entry_count": persisted_entry_count,
+                "repository_read_complete": repository_read_complete,
+                "snapshot_read_complete": snapshot_read_complete,
                 "persistence_complete": complete,
                 "rollback_complete": rollback_complete,
                 "entries": entries,

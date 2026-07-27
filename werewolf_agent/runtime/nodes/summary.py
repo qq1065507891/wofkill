@@ -528,15 +528,11 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
         ))
     gs = replace(gs, events=events)
 
-    persisted_count = sum(
-        1 for item in transactions if item.stage is ReflectionStage.PERSISTED
-    )
     logger.debug(
-        "  [复盘] 处理%d位：成功%d，未生成%d，持久化完成%d",
+        "  [复盘] 处理%d位：成功%d，未生成%d",
         len(reflection_entries),
         transaction_result.valid_entry_count,
         transaction_result.failure_count,
-        persisted_count,
     )
 
     return {"game_state": gs}
