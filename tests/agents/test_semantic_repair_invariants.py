@@ -132,8 +132,29 @@ def test_completed_action_classifier_rejects_bounded_modal_planning_prefixes(
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "p01可能已经开枪带走p02",
+        "p01声称已经开枪带走p02",
+        "据我判断p01可能已经开枪带走p02",
+        "据我判断可能已经p01开枪带走p02",
+    ],
+)
+def test_completed_action_classifier_rejects_modal_with_aspect_marker(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert not any(
+        claim.support_kind in {"hunter_shot", "witch_antidote"}
+        for claim in classify_public_claims(text, speaker="p08")
+    )
+
+
+@pytest.mark.parametrize(
     ("text", "speaker", "expected_actor", "support_kind"),
     [
+        ("p01已经开枪带走p02", "p08", "p01", "hunter_shot"),
         ("p07主要已经开枪p01", "p08", "p07", "hunter_shot"),
         ("p07重要说明已经开枪p01", "p08", "p07", "hunter_shot"),
         ("p07已经开枪带走p01", "p08", "p07", "hunter_shot"),

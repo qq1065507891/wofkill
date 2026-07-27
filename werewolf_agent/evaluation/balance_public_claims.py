@@ -75,12 +75,15 @@ _PUBLIC_ACTION_CLAIM_RE = re.compile(
     r"\s*(?P<target>p\d{2})(?![A-Za-z0-9_])"
 )
 _ACTION_MODAL_PREFIX_RE = re.compile(
-    r"(?:声称要|要|应该|希望|可以|建议|计划|准备|打算|可能|拟|考虑|提议)"
+    r"(?:声称(?:要|已经)|"
+    r"(?:要|应该|希望|可以|建议|计划|准备|打算|可能|拟|考虑|提议)(?:已经)?)"
     r"(?:p\d{2})?"
 )
 _ACTION_EXTERNAL_NONFACTUAL_PREFIX_RE = re.compile(
-    r"(?:据我(?:判断|分析)|我(?:判断|分析|认为|怀疑|推测)|看来|看起来|估计|"
-    r"(?:我)?(?:希望|建议|计划|准备|打算|可能|拟|考虑|提议|要|应该|可以))$"
+    r"(?:(?:据我(?:判断|分析)|我(?:判断|分析|认为|怀疑|推测)|"
+    r"看来|看起来|估计)(?:可能)?(?:已经)?|"
+    r"(?:我)?(?:希望|建议|计划|准备|打算|可能|拟|考虑|提议|要|应该|可以)"
+    r"(?:已经)?)$"
 )
 _COMPLETED_ACTION_SUPPORT_KINDS = frozenset({"hunter_shot", "witch_antidote"})
 
