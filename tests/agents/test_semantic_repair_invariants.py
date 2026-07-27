@@ -107,6 +107,55 @@ def test_completed_action_classifier_rejects_suggestion_and_actor_prefix(
     )
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "p07声称要开枪带走p01",
+        "p07要开枪带走p01",
+        "p07应该开枪带走p01",
+        "希望p07开枪带走p01",
+        "p07可以开枪带走p01",
+        "p07可能开枪带走p01",
+        "p07拟开枪带走p01",
+        "p07打算用解药救了p01",
+    ],
+)
+def test_completed_action_classifier_rejects_bounded_modal_planning_prefixes(
+    text: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    assert not any(
+        claim.support_kind in {"hunter_shot", "witch_antidote"}
+        for claim in classify_public_claims(text, speaker="p08")
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "speaker", "expected_actor", "support_kind"),
+    [
+        ("p07已经开枪带走p01", "p08", "p07", "hunter_shot"),
+        ("p07开枪带走p01", "p08", "p07", "hunter_shot"),
+        ("我已经开枪带走p01", "p08", "p08", "hunter_shot"),
+        ("p07首夜用解药救了p01", "p08", "p07", "witch_antidote"),
+        ("p07用解药救了p01", "p08", "p07", "witch_antidote"),
+    ],
+)
+def test_completed_action_classifier_keeps_explicit_completion_controls(
+    text: str,
+    speaker: str,
+    expected_actor: str,
+    support_kind: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    claims = classify_public_claims(text, speaker=speaker)
+
+    assert len(claims) == 1
+    assert claims[0].speaker_attribution == expected_actor
+    assert claims[0].support_kind == support_kind
+
+
 def test_completed_action_classifier_keeps_negation_and_inference_semantics() -> None:
     from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
 
@@ -1199,6 +1248,7 @@ def test_semantic_repair_rejects_executed_action_without_engine_evidence() -> No
         "unsupported_public_claim",
         "executed_action_without_engine_evidence",
     )
+    assert result.audit["introduced_claim_count"] == 1
 
 
 def test_semantic_repair_accepts_executed_action_with_exact_engine_evidence() -> None:
