@@ -1457,6 +1457,25 @@ class TestSeerClaimContractExtraction:
         assert badge_facts[0].target_player == "p02"
         assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p11"]
 
+    def test_chinese_multiline_badge_flow_keeps_night_labels_in_one_claim(self):
+        """中文多行 N2/N3 警徽流应合并为单个事实并保留夜晚顺序。"""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p03",
+            text=(
+                "接下来公布警徽流：\n"
+                "- 第二夜N2，我计划查验p02（赵猛）。理由：覆盖警上候选人。\n"
+                "- 第三夜N3，我计划查验p12（冯弈）。理由：形成对照。\n"
+            ),
+            day=1,
+        )
+
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) == 1
+        assert badge_facts[0].target_player == "p02"
+        assert badge_facts[0].metadata["badge_flow_order"] == ["p02", "p12"]
+
     def test_inline_night_badge_flow_extracts_target(self):
         """真实日志的同一行 N2 验人计划应形成警徽流事实。"""
         from werewolf_agent.cognition.world_state import _infer_claims_from_text

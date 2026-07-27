@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
-修改日期: 2026-07-20
+修改日期: 2026-07-27
 
 兼容边界：legacy 可见性的空字符串按未设置处理，必须回退 payload。
 """
@@ -94,6 +94,24 @@ def test_public_ledger_extracts_vote_records_and_last_words() -> None:
     assert ledger["last_words"] == [
         {"day": 2, "speaker": "p08", "text": "我不是狼，重点看p03。", "source_event": "exile_last_words"}
     ]
+
+
+def test_public_ledger_extracts_night_death_last_words_player_claim() -> None:
+    gs = GameState(game_id="g42_action_claim", events=[GameEvent(
+        type="night_death_last_words",
+        payload={
+            "speaker": "p07",
+            "day_number": 1,
+            "text": "我是猎人，现在开枪带走p01。",
+        },
+    )])
+
+    ledger = build_public_ledger(gs)
+
+    assert len(ledger["action_claims"]) == 1
+    assert ledger["action_claims"][0]["authority"] == "player_claim"
+    assert ledger["action_claims"][0]["target"] == "p01"
+    assert ledger["confirmed_actions"] == []
 
 
 def test_public_ledger_does_not_expose_real_seer_check() -> None:

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-25
-修改日期: 2026-07-26
+修改日期: 2026-07-27
 
 使用示例:
     >>> python -m pytest tests/agents/test_discussion_summary.py -q
@@ -407,3 +407,16 @@ def test_player_summary_maps_parser_failures_to_safe_codes(
         _summary_agent_for_text(raw_text).summarize_discussion(_summary_context())
 
     assert exc_info.value.failure_code == failure_code
+
+
+def test_player_summary_invalid_json_exposes_only_sanitized_audit_shape() -> None:
+    with pytest.raises(DiscussionSummaryGenerationError) as exc_info:
+        _summary_agent_for_text("not json").summarize_discussion(_summary_context())
+
+    error = exc_info.value
+    assert error.failure_code == "invalid_json"
+    assert error.audit == {
+        "response_shape": "text",
+        "json_candidate_count": 0,
+    }
+    assert "not json" not in repr(error.audit)

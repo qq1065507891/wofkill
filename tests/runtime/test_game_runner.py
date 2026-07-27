@@ -3,7 +3,7 @@
 验证 GameRunner 编排、终局边界与持久化行为。
 
 作者: Project contributors
-修改日期: 2026-07-18
+修改日期: 2026-07-27
 """
 
 from __future__ import annotations
@@ -15,6 +15,43 @@ from dataclasses import replace
 from werewolf_agent.core.models import GameState, PlayerState, GameEvent
 from werewolf_agent.runtime.graph import _new_engine
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+
+
+def test_reflection_log_reports_generated_and_verified_counts_without_persistence_claim(
+    monkeypatch, caplog,
+):
+    from werewolf_agent.runtime.nodes.summary import reflection
+
+    runner = GameRunner(GameRunnerConfig(seed=42))
+    runner._state = GameState(
+        game_id=runner.game_id,
+        phase="finished",
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+    monkeypatch.setattr(
+        "werewolf_agent.runtime.nodes.summary._dispatch_agent",
+        lambda *_args, **_kwargs: {
+            "reflection_verification": {
+                "status": "verified",
+                "decision_id": f"reflection:{runner.game_id}:p01",
+                "verified_fact_count": 1,
+                "verified_claim_ids": ["claim-p01"],
+                "verified_lessons": [{
+                    "lesson_id": "lesson-p01",
+                    "abstraction": "公开事实核验后再形成结论。",
+                }],
+                "rejected_fact_count": 0,
+                "rejected_lesson_count": 0,
+            },
+        },
+    )
+
+    with caplog.at_level("DEBUG", logger="werewolf_agent.runtime.nodes.summary"):
+        reflection({"game_state": runner.state, "agent_call_delay_ms": -1})
+
+    assert "generated=1" in caplog.text
+    assert "verified=1" in caplog.text
+    assert "持久化完成" not in caplog.text
 
 
 def test_terminal_state_is_committed_at_step_boundary() -> None:
