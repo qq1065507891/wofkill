@@ -17,3 +17,7 @@ game_stdout.log
 game_output.log
 tmp_analysis/
 .codegraph/
+
+# IDE / OS
+.DS_Store
+.idea/
