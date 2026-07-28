@@ -2,7 +2,7 @@
 
 Date: 2026-07-28
 Last revised: 2026-07-29
-Status: Approved design; implementation plan not yet written
+Status: Approved design; execution contracts completed; implementation plan not yet written
 Owner: Codex development session
 
 ## 1. Decision Summary
@@ -27,9 +27,11 @@ The approved direction is a clean rewrite of the player decision subsystem:
 - treat audit as a first-class tamper-evident subsystem, not ordinary logs.
 
 The existing `werewolf_agent/agents/speech_act_schemas.py` implementation and
-its tests are rejected artifacts. They must be deleted in the first
-implementation task. No new module may import them, adapt them, or use them as
-a compatibility contract.
+its tests are rejected artifacts. No new module may import them, adapt them, or
+use them as a compatibility contract. They remain only behind the legacy
+runtime entry point until the replacement vertical slice has passed replay and
+cutover gates; they are deleted in the final migration task, not before a
+working replacement exists.
 
 ## 2. Public Design Basis
 
@@ -126,6 +128,29 @@ game rules or hidden information probabilistic.
 12. Prove value through ablation and human-quality evaluation, not through
     tool-call counts or prompt length.
 
+### 4.1 Delivery Boundaries
+
+The rewrite is deliberately staged. A later-stage capability is not enabled
+merely because its package or schema exists.
+
+1. **Foundation and daytime speech:** versioned serial commits, durable turn
+   state, strict daytime `SpeechProposal`, public semantic records, deterministic
+   rendering, critical audit/outbox, and restart recovery. This is the first
+   playable vertical slice.
+2. **Independent and team action windows:** votes, ordinary private role
+   actions, explicitly commutative multi-player windows, and the wolf-team
+   coordination protocol in section 14.
+3. **Cognition extensions:** world model, in-turn reflection beyond structural
+   validation, RAG, skills, and cross-game semantic memory, each behind its own
+   feature gate and ablation gate.
+4. **Cutover:** migrate the runtime entry point per game, retain historical
+   replay readers, then delete legacy player-decision code only after all
+   cutover gates pass.
+
+The first stage intentionally schedules public speech serially. It does not
+claim concurrent public-speaking turns before the commit protocol and declared
+dependency sets can prove that such turns are safe.
+
 ## 5. Non-Goals
 
 1. Do not let a model adjudicate legal actions, role abilities, phase flow, or
@@ -215,6 +240,125 @@ legal proposal
 
 There is no path from model prose, reflection, RAG, memory, world hypotheses,
 or judge narration directly to `GameState`.
+
+### 7.1 Canonical Version and Commit Protocol
+
+`GameRevision` is the strictly increasing, per-game integer assigned by the
+transaction that appends a committed `GameEvent`. Revision zero is the
+ruleset-and-roster snapshot before the first event. A committed event advances
+the revision exactly once; derived projections, audit records, renderer output,
+and retried deliveries never advance it themselves. The authoritative event
+sequence and `GameRevision` are the same ordered stream; an optional event
+sequence field in an in-memory object is not an acceptable source of truth.
+
+The runtime uses four distinct versioned values:
+
+| Value | Meaning | Used by |
+| --- | --- | --- |
+| `game_revision` | Canonical committed-event position | proposal CAS and replay |
+| `window_version` | Ruleset-defined legal-action window and target set at that revision | action legality |
+| `view_fingerprint` | Hash of actor ID, visibility policy version, active grants, role/capability snapshot, and visible record hashes | read/result reuse |
+| `workspace_revision` | Monotonic version of one generated player projection | document/cache reads |
+
+`base_revision` in every proposal means `game_revision`, never a rendered-text
+counter or a document cache version. A proposal also carries the host-bound
+`window_id`, `window_version`, and `view_fingerprint`. The terminal gateway,
+not the model, supplies the actor identity and host idempotency key. A model may
+echo those values only; a mismatch is `security_violation`.
+
+A turn records a read set of immutable `(record_id, revision, content_hash)`
+references plus its legal-window snapshot. A later global revision does not by
+itself invalidate a turn. It is stale only when the active window, a referenced
+record, a visibility grant, the actor's alive/capability state, or a declared
+write conflict changes. This distinction is required for future independent
+multi-player windows. Stage 1 declares all public speech writes conflicting,
+so it opens exactly one active public-speech turn at a time.
+
+### 7.2 `CommitTurn` Transaction
+
+The persistence boundary exposes one transaction, conceptually:
+
+```text
+CommitTurn(
+  base_game_revision,
+  turn_id,
+  idempotency_key,
+  read_set,
+  proposal,
+  rule_result,
+  critical_audit_records,
+  projection_outbox_records
+) -> CommitResult
+```
+
+It performs, in one database transaction:
+
+1. lock the game stream and load its canonical revision;
+2. return the previous `CommitResult` when `(turn_id, idempotency_key)` already
+   committed;
+3. compare the proposal's base revision with the locked head; an intervening
+   revision is rejected for serial windows, while a future declared
+   commutative window may proceed only after its read set, write set, active
+   window, actor state, grants, and RuleEngine result all validate unchanged;
+4. assign the next event sequence/revision and append the `GameEvent` plus
+   immutable `PublicSpeechRecord` when applicable;
+5. append all critical audit records, persist the idempotency result, and append
+   projection-outbox records; then commit.
+
+Any validation failure rolls back all writes. Projection workers consume the
+outbox after commit and are idempotent by outbox ID; their failure cannot roll
+back truth. `save_game()` followed by `append_events()` is not a substitute for
+this transaction. The storage contract must add explicit turn, audit, outbox,
+and compare-and-swap methods before a new runtime path is enabled.
+Stage 1 requires equivalent semantics from the in-memory test repository,
+SQLite, and PostgreSQL; other repository implementations report the capability
+as unsupported and cannot enable the new runtime.
+
+### 7.3 Action-Window Scheduling
+
+Every `AgentTurn` belongs to a `LegalActionWindow` with a ruleset snapshot,
+open/close conditions, conflict class, participant snapshot, and deadline.
+The scheduler supports only these conflict classes:
+
+- `serial_public`: exactly one active terminal turn; used by stage-1 daytime
+  speech and any public action whose output may be answered by later speakers;
+- `serial_private`: one active turn because its result changes another
+  participant's legal view, such as a wolf kill followed by a witch decision;
+- `commutative_private`: multiple terminal proposals may be accepted only when
+  the ruleset declares their writes disjoint and their read sets remain valid;
+- `team_coordinator`: team members may write discussion/proposal records, while
+  exactly one mechanically selected coordinator owns the terminal action.
+
+Opening, re-opening, and closing a window are RuleEngine/Host operations, not
+agent tools. A cancelled turn is never silently rebased: the host creates a new
+turn with a new observation and idempotency key when the window remains open.
+
+### 7.4 Durable External Dispatch
+
+Model and external read calls use a durable `DispatchAttempt` state machine:
+
+```text
+PENDING -> DISPATCHING -> DISPATCHED -> RESULT_RECORDED
+                         \-> UNKNOWN_OUTCOME
+PENDING | DISPATCHING -> CANCELLED
+```
+
+Before a network request, the host persists `DISPATCHING` with a unique
+`dispatch_id`, lease hash, request hash, deadline, and provider/tool
+idempotency key. It records `DISPATCHED` immediately after handing off the
+request and records the typed result in a separate transaction. On restart the
+host never blindly repeats an unresolved request:
+
+- a provider/tool with an idempotency lookup is queried or reissued with the
+  same key;
+- a provider/tool without that guarantee becomes `UNKNOWN_OUTCOME`, consumes
+  its call budget, and follows the task's cancellation/fallback policy;
+- a result arriving after cancellation, lease replacement, deadline, or window
+  closure is audited and discarded.
+
+This protocol gives submit calls, model calls, and external tools different but
+explicit exactly-once/at-most-once semantics. It also makes provider billing and
+tool budgets auditable after a crash.
 
 ## 8. Proposed Package Boundaries
 
@@ -375,8 +519,12 @@ not every detailed document.
 Every cache key and document lookup is bound to at least:
 
 ```text
-game_id + player_id + visibility + revision + section_id
+game_id + player_id + view_fingerprint + workspace_revision + section_id
 ```
+
+The requested document content is additionally checked against the immutable
+record IDs and hashes in the turn read set. A cache hit with a matching key but
+a missing, changed, expired, or newly invisible record is rejected.
 
 ## 10. Observation and Progressive Context
 
@@ -513,12 +661,14 @@ initial context, but the game's reinjected prefix is generated from current
 host authority. A compaction never changes `GameState`, appends `GameEvent`,
 accepts memory, consumes a disclosure grant, or submits an action.
 
-If the game revision, phase, player-alive state, or visibility fingerprint
-changes before the transaction commits, the host discards the checkpoint and
-cancels the stale turn. If optional handoff generation fails, rehydration uses
-the host checkpoint alone. If checkpoint persistence or validation fails, the
-old history remains active and the host may retry compaction once while the
-deadline permits; it never continues from a partially persisted checkpoint.
+If the active window, declared read set, player-alive/capability state, or
+visibility fingerprint changes before the transaction commits, the host
+discards the checkpoint and cancels the stale turn. A global game-revision
+change alone follows the conflict rules in section 7.1. If optional handoff
+generation fails, rehydration uses the host checkpoint alone. If checkpoint
+persistence or validation fails, the old history remains active and the host
+may retry compaction once while the deadline permits; it never continues from a
+partially persisted checkpoint.
 After a failed retry the host cancels the model turn and applies the declared
 provider-failure fallback policy while the rule window remains open.
 
@@ -550,9 +700,11 @@ state change       -> CANCELLED
 deadline           -> EXPIRED
 ```
 
-The turn records game, player, role, phase, task, base revision, event cursor,
-legal actions, legal targets, visibility fingerprint, model lease, budget,
-deadline, status, and idempotency key.
+The turn records game, player, role, phase, task, `base_revision`,
+`window_id`, `window_version`, read set, legal actions, legal targets,
+`view_fingerprint`, model lease, budget, deadline, status, and idempotency
+key. `event_cursor` is recorded only as a replay convenience; it is not a
+substitute for the canonical `base_revision` or read set.
 
 The model may choose one of three operations at each step:
 
@@ -563,6 +715,12 @@ The model may choose one of three operations at each step:
 Plain assistant text cannot commit an action. A successful terminal submit
 ends the loop. A validation repair may alter only rejected fields on the same
 model lease and cannot reopen context, RAG, or skills.
+
+Stage 1 exposes only `serial_public` daytime speech windows. The scheduler
+opens the next speaker only after the previous speech commit, cancellation, or
+deadline. Votes, private role actions, team coordination, and any truly
+concurrent window remain disabled until their contract-specific tests prove the
+conflict class declared in section 7.3.
 
 Initial configurable budgets are bounded by task type. A reasonable starting
 profile is eight model steps, twelve total tool calls, six context reads, four
@@ -668,9 +826,33 @@ contains only wolf discussion, shared proposals, agreed commitments, and
 team-visible evidence. One wolf cannot read another wolf's hidden chain of
 thought, private working notes, or unrelated memories.
 
-Team actions handle simultaneous proposals, disagreement, player death,
-deadline expiry, and idempotent resolution. The RuleEngine remains responsible
-for the final legal team action and night outcome.
+The team store does not decide a target. A `wolf_team` legal window snapshots
+the living wolves, allowed targets, deadline, and a ruleset-defined mechanical
+coordinator selector. The initial selector is the lexicographically first
+living wolf ID in the pinned roster; a ruleset may replace that selector only
+with another deterministic, auditable function. Selecting a coordinator gives
+one agent terminal authority; it does not select a target or encode strategy.
+
+The protocol is:
+
+1. every living wolf may create bounded, team-visible discussion and
+   non-terminal `WolfTargetStance` records until the discussion deadline;
+2. the coordinator receives the same team-visible records and may submit the
+   sole `WolfTeamProposal` for the window;
+3. a coordinator death, loss of capability, or stale view cancels its turn and
+   deterministically selects the next eligible coordinator from the original
+   participant snapshot; it never transfers a private workspace;
+4. non-coordinator disagreement is evidence for the coordinator, not a host
+   vote and not a RuleEngine target-selection policy;
+5. on coordinator deadline or infrastructure failure, the ruleset's declared
+   neutral mandatory-action fallback applies. It uses the stable selector from
+   section 26 and records the participant snapshot and selector inputs.
+
+`WolfTeamProposal` is idempotent by team-window ID and may be committed only
+by the current coordinator. The RuleEngine validates the submitted action and
+resolves the night outcome; it never chooses among disagreeing targets. Team
+windows are stage-2 work and are not enabled by the daytime-speech vertical
+slice.
 
 ## 15. World Model
 
@@ -703,6 +885,27 @@ The player may call `reflect` during a turn. It submits a candidate classified
 as observation, hypothesis, commitment note, or lesson candidate with evidence
 references, confidence, applicability, and expiry. The host accepts, rejects,
 or downgrades it. The player cannot assign factual authority.
+
+Live acceptance is structural and deterministic, never a host judgment about
+strategy quality:
+
+- an `observation` must cite visible immutable records and may only store a
+  bounded, source-labelled extract; it cannot add a new fact predicate;
+- a `hypothesis` must remain player-private, cite at least one visible record,
+  carry a bounded confidence bucket and expiry, and is stored in the belief
+  layer only;
+- a `commitment_note` is accepted only when it resolves to the actor's already
+  committed `PublicSpeechRecord` or final vote record; `COMMITMENTS.md` is
+  always regenerated from those records rather than from the candidate text;
+- a `lesson_candidate` is stored only in the game-local review queue and is
+  ineligible for semantic memory until the post-game transaction verifies its
+  claimed outcomes.
+
+The host rejects dangling, invisible, stale, duplicate, over-length, or
+wrong-layer candidates. Duplicate detection uses a canonical typed payload hash
+within `(game_id, player_id, layer, source_refs)`. It never scores a candidate
+as tactically good or bad during live play. Any non-structural quality policy
+is a versioned, post-game review policy with its own audit record.
 
 At game end, a separate review transaction compares structured claims against
 committed events and final roles. It produces verified lessons, disproved
@@ -771,6 +974,137 @@ RuleEngine legality validation. The guaranteed property is that every final
 committed action is structured and legal, not that every first model attempt is
 valid.
 
+### 18.1 Common Terminal Envelope
+
+All terminal tools accept a strict, `extra=forbid` envelope. The gateway binds
+`turn_id`, `player_id`, `window_id`, `window_version`, `base_revision`,
+`view_fingerprint`, and `idempotency_key` from the active turn. They are not
+agent-selectable arguments. The model supplies only the proposal body and the
+pinned `schema_version`; an echoed bound value must match exactly.
+
+```text
+TerminalProposalEnvelope
+  schema_version             # exact proposal-schema version pinned by the turn
+  turn_id                    # host-bound
+  player_id                  # host-bound
+  window_id / window_version # host-bound
+  base_revision              # host-bound GameRevision
+  view_fingerprint           # host-bound
+  body                       # one strict discriminated proposal body
+```
+
+The host assigns the idempotency key when it opens the turn. It assigns
+`proposal_id`, request/dispatch IDs, and timestamps after schema parsing. The
+model cannot manufacture IDs that appear committed. Proposal schemas reject
+unknown fields, duplicate logical move IDs, unknown discriminators, and omitted
+required fields before any semantic validation starts.
+
+### 18.2 Action Proposal Bodies
+
+The following bodies are the complete first-contract surface. Their enum
+values are pinned by the ruleset snapshot and proposal-schema version; a
+ruleset cannot silently reinterpret an existing value.
+
+```text
+VoteProposal
+  kind = "vote"
+  choice = "target" | "abstain"
+  target_id: required only for "target"
+
+NightActionProposal
+  kind = "night_action"
+  action = "wolf_kill" | "wolf_no_kill" | "seer_check" |
+           "witch_antidote" | "witch_poison" | "witch_pass"
+  target_id: required only for wolf_kill, seer_check, witch_poison
+  subject_ref: required only for witch_antidote and identifies the
+               RuleEngine-provided current kill intent
+
+RoleAbilityProposal
+  kind = "role_ability"
+  ability_id: a ruleset capability ID exposed in this exact turn
+  operation: a discriminator defined by that capability's immutable schema
+  args: the strict discriminated union selected by (ability_id, operation)
+
+WolfTeamProposal
+  kind = "wolf_team"
+  team_window_id
+  coordinator_id
+  action = "kill" | "no_kill"
+  target_id: required only for "kill"
+  considered_stance_refs: zero to eight team-visible stance/discussion refs
+```
+
+`args` is not an arbitrary JSON map: the `CapabilityManifest` embeds the
+exact JSON Schema and content hash for each enabled `(ability_id, operation)`.
+The gateway exposes that schema only for the active role/action window and
+validates it before it calls the RuleEngine. Adding a role capability therefore
+requires a new schema version, schema fixtures, legality fixtures, and an
+explicit migration rule.
+
+Shared invariants are:
+
+- `target_id` must be in the current legal-target snapshot when present;
+- an abstention, pass, or no-kill may be submitted only if the ruleset exposes
+  that exact action as legal;
+- `subject_ref` and every team stance reference must be visible, active, and in
+  the turn read set;
+- a wolf-team coordinator ID must equal the Host-selected current coordinator;
+- an ability proposal cannot carry a capability unavailable to the actor or a
+  field belonging to a different operation;
+- proposal bodies never carry a `GameEvent`, phase transition, winner,
+  rendered text, raw rationale, or arbitrary metadata.
+
+### 18.3 Schema Versions and Errors
+
+`ProposalSchemaVersion` is a semantic version plus a content hash. A game pins
+the ruleset snapshot and the set of accepted proposal-schema versions at game
+creation. A new field or enum value is accepted only by a new minor/major
+version with explicit validators; an incompatible interpretation requires a
+new major version and cannot be enabled for an existing game. Historical
+proposals retain their original schema version and are decoded by versioned
+readers during replay.
+
+The validator returns stable machine-readable errors:
+
+```text
+schema_invalid
+bound_context_mismatch
+unknown_schema_version
+unknown_capability
+wrong_action_window
+stale_read_set
+target_not_legal
+invisible_reference
+grant_inactive
+semantic_mismatch
+rule_illegal
+idempotency_conflict
+```
+
+Each error includes a JSON-pointer field path and never includes hidden values.
+Only `schema_invalid` and a field-local `semantic_mismatch` are eligible for
+the one same-lease repair attempt. A stale read set, inactive grant, or changed
+window always cancels the turn and requires a new observation.
+
+### 18.4 Private Disclosure Grants
+
+Self `RoleClaim` is a public statement and may be true or false; it does not
+prove a private fact and requires no disclosure grant. A
+`PrivateResultDisclosure` asserts that an actor's actual private check or
+ability result is being published. Before the terminal request, the visibility
+policy may create a one-time `DisclosureGrant` containing:
+
+```text
+grant_id, actor_id, turn_id, window_id, game_revision,
+fact_kind, fact_record_id, fact_hash, target_id, timing_ref, expiry
+```
+
+The host matches every field exactly and consumes the grant in the same
+`CommitTurn` transaction as the public record. A grant is never reusable after
+commit, cancellation, expiry, or a changed fact revision. The host controls
+whether a ruleset permits a private result to be disclosed; the agent never
+creates or broadens a grant.
+
 ## 19. Public Speech From Scratch
 
 Speech uses three separate contracts:
@@ -786,26 +1120,35 @@ RenderedUtterance
   human-facing language projection
 ```
 
-A `SpeechProposal` contains typed public moves rather than arbitrary public
-prose. Its top-level contract is fixed before implementation planning:
+A `SpeechProposal` is the `body` of a terminal envelope and contains typed
+public moves rather than arbitrary public prose. Bound envelope fields carry
+the turn/player/revision identity; the speech body is fixed before implementation
+planning:
 
 ```text
-SpeechProposal
-  schema_version
-  turn_id
-  player_id
-  base_revision
+SpeechProposalBody
+  kind = "speech"
   objective
   moves[]
   response_record_refs[]
   delivery_plan
 ```
 
-`objective` is a bounded enum used for evaluation and rendering, not an
-instruction to consumers. `moves` contains one to eight uniquely identified
-public moves. `delivery_plan` may select tone, length class, address style,
-move ordering, and emphasis by move ID; it cannot contain prose or alter move
-semantics.
+`objective` is one of `state_case`, `challenge_claim`, `answer_question`,
+`ask_question`, `defend_self`, `declare_vote_position`, `retract_or_correct`,
+`express_uncertainty`, or `no_new_information`. It is used for evaluation and
+rendering, not as an instruction to consumers. `moves` contains one to eight
+uniquely identified public moves.
+
+`delivery_plan` contains only `tone`, `length_class`, `address_style`,
+`move_order`, `emphasis_move_ids`, and `connector_ids`. Tone is one of `calm`,
+`firm`, `skeptical`, `urgent`, `defensive`, or `conciliatory`; length is
+`brief`, `standard`, or `extended`; address style is `room`, `targeted`, or
+`mixed`. Move order contains every move ID exactly once, emphasis is a unique
+subset, and connector IDs must exist in the pinned renderer catalog. The plan
+cannot contain prose or alter move semantics. `response_record_refs` must equal
+the unique set of external public-record IDs used by `ResponseMove` or quoted
+moves.
 
 Every move contains `move_id`, `move_type`, `modality`, and zero or more
 viewer-visible `evidence_refs`. `modality` is one of `asserted`, `suspected`,
@@ -917,8 +1260,9 @@ illegal action, disclosure denied, rule window closed, schema invalid, semantic
 mismatch, and security violation. Error text is explanatory; error codes and
 field paths drive repair.
 
-Before commit, the host rechecks that the player is alive, the phase remains
-legal, the revision matches, and all referenced grants and evidence are active.
+Before commit, the host rechecks that the player is alive, the phase/window
+remains legal, the declared read and write sets are conflict-free under the
+locked head revision, and all referenced grants and evidence are active.
 
 ## 21. Host Runtime and RuleEngine
 
@@ -1009,11 +1353,21 @@ exact decision boundary after compaction without treating the handoff as fact.
 
 ### 23.2 Tamper Evidence and Atomicity
 
-Canonical JSON records form a per-game hash chain:
+Records use RFC 8785 JSON canonicalization encoded as UTF-8. Binary fields are
+base64url without padding. The previous hash is a 32-byte value, not a text
+concatenation, and the chain uses an explicit domain separator:
 
 ```text
-record_hash = hash(previous_hash + canonical_record)
+record_hash = SHA-256(
+  "wofkill-audit-v1\0" || previous_hash || canonical_record_without_record_hash
+)
 ```
+
+The genesis previous hash is 32 zero bytes. `previous_hash` is present in the
+canonical record and must match the separately framed input; verification
+rejects a mismatch. These framing rules, the canonicalization version, and hash
+algorithm are stored in the game audit manifest and never inferred from the
+current application version.
 
 GameEvent, critical AuditRecord, and projection-outbox request are committed in
 one transaction or not at all. Critical audit includes accepted proposals,
@@ -1042,14 +1396,27 @@ post-game view and authorized moderator services; moderator-secure records are
 available only to moderator audit services; security-only records require the
 security-auditor role. Every non-public audit read and export is itself audited.
 
-Player-private, moderator-secure, and security-only payloads use envelope
+Player-private, moderator-secure, and security-only payloads use AEAD envelope
 encryption at rest with a per-game data-encryption key and a versioned
-`AuditKeyProvider`. The repository stores key IDs and ciphertext, never key
+`AuditKeyProvider`. The associated data binds game ID, audit ID, sequence,
+visibility, schema version, and key ID. The canonical audit record contains the
+random nonce, ciphertext, authentication tag, key ID, and algorithm; its
+`payload_hash` is SHA-256 of that encrypted envelope, never of low-entropy
+private plaintext. The repository stores key IDs and ciphertext, never key
 material. Key rotation creates a new key version for subsequent records and
-keeps old versions only for their authorized retention window. Chain hashes
-remain unkeyed canonical SHA-256 for deterministic verification; periodic
-chain-head anchors use a versioned HMAC/signing key so storage administrators
-cannot silently rewrite the whole chain.
+keeps old versions only for their authorized retention window.
+
+Chain hashes remain unkeyed canonical SHA-256 so a verifier can prove byte
+integrity without decrypting payloads. Every 100 critical records and at least
+once every five minutes while a game is active, the writer sends the chain
+head, game ID, sequence, and timestamp to an append-only `AuditAnchorSink`.
+Its signing/HMAC key and storage are outside the AuditStore/database
+administrative boundary. The game-close transaction appends a final-anchor
+outbox request atomically with the terminal event. The game result is not
+rolled back if the external sink is unavailable, but audit export and the
+`audit_finalized` status remain blocked until the signed anchor receipt is
+persisted. Verification reports unanchored intervals rather than silently
+treating them as storage-administrator-resistant.
 
 The default retention policy is explicit and configurable only by deployment
 policy:
@@ -1058,17 +1425,24 @@ policy:
 - encrypted player-private and moderator-secure payloads remain through
   post-game review and the evaluation window, default 30 days;
 - security-only incident payloads default to 90 days;
-- after payload expiry, retain only non-identifying event kind, timing, schema
-  version, hashes, chain linkage, and aggregate metrics when policy permits;
+- after payload expiry, destroy the applicable data-encryption key and retain
+  only the now-undecryptable encrypted envelope, non-identifying event kind,
+  timing, schema version, hashes, chain linkage, and aggregate metrics when
+  policy permits;
 - credentials, authentication headers, and hidden chain-of-thought have zero
   retention because they are never accepted into audit payloads.
 
-An authorized game/player deletion request removes decryptable private payloads
-and associated per-game data keys, producing an audited tombstone and preserving
-only objective public events or non-identifying integrity records required by
-the configured game-data policy. Exports are scope-bounded, redacted by the
-requester's role, include a schema/chain manifest, and never expose ciphertext
-keys or another player's private records.
+An authorized game/player deletion request destroys the relevant private data
+keys, making the retained ciphertext cryptographically unreadable, and appends
+an audited tombstone. Retaining the original opaque envelope is required to
+recompute the historical chain; it is never exported as user data. A deployment
+whose policy requires physical ciphertext removal must use a separately signed
+redaction manifest and accepts that verification proves the original record
+hash and authorized deletion, not the removed payload bytes. Objective public
+events and non-identifying integrity records follow the configured game-data
+policy. Exports are scope-bounded, redacted by the requester's role, include a
+schema/chain manifest, and never expose ciphertext keys or another player's
+private records.
 
 The `AuditStore` allocates each per-game sequence number inside the storage
 transaction using an atomic counter or row lock; callers cannot choose a
@@ -1097,15 +1471,26 @@ visibility, change budgets, or invoke arbitrary code.
 ## 25. Concurrency, Persistence, and Recovery
 
 All reads are revision-pinned. Before commit, the host repeats legality,
-visibility, player-alive, phase, revision, and grant checks. A stale turn is
-cancelled. If the RuleEngine still offers the action, the runtime may open a new
-turn; this is rescheduling, not semantic retry.
+visibility, player-alive, phase, window, declared read-set, write-conflict, and
+grant checks under the game-stream lock. A changed global revision cancels the
+turn only when one of those declared dependencies changed. Stage-1 public
+speech is `serial_public`, so any intervening public speech is a declared write
+conflict and cancels the stale turn. If the RuleEngine still offers the action,
+the runtime may open a new turn; this is rescheduling, not semantic retry.
 
 Turn state and idempotency keys survive process restart. Duplicate delivery of
 the same submit call returns the existing result and cannot append a second
 event. Pause prevents new model work at a safe boundary and invalidates or
 suspends turns according to their deadline policy. Player death, phase close,
 self-destruct, and game termination cancel affected turns without fallback.
+
+Every model and external-tool request follows the durable dispatch protocol in
+section 7.4. Recovery first reconciles `DISPATCHING` and `DISPATCHED` attempts;
+it never starts new model work until every earlier attempt is either
+`RESULT_RECORDED`, `UNKNOWN_OUTCOME`, or `CANCELLED`. A recorded result is
+reused only when its lease, view fingerprint, read set, and active window still
+match. Unknown outcomes never receive a fresh provider call under a new ID just
+to hide an ambiguous prior charge.
 
 Committed `CompactionCheckpoint` records are part of recoverable turn state.
 On restart the host verifies checkpoint lineage, hashes, revision, visibility,
@@ -1225,28 +1610,89 @@ Default enablement requires safety gates, replay, adversarial privacy, long-
 context behavior, acceptable fallback and latency thresholds, measurable
 ablation benefit, and human review not worse than the retired system.
 
+### 27.7 Executable Stage-1 Gates
+
+The foundation/daytime-speech feature flag may be merged disabled after all of
+these CI gates pass:
+
+- generated JSON Schema fixtures match the checked-in schema hashes and every
+  accepted/rejected speech fixture has one stable expected error code;
+- 100 percent of successful terminal submissions produce exactly one event,
+  one idempotency result, required critical audit records, and one or more
+  projection-outbox records in the same transaction;
+- fault injection at every boundary before and after model dispatch, result
+  recording, RuleEngine validation, audit append, event append, idempotency
+  persistence, outbox append, and commit produces either the complete expected
+  transaction or no truth change;
+- 50 concurrent duplicate submissions on each supported repository backend
+  produce one commit result and no sequence gaps or duplicate audit sequences;
+- 30 seeded scripted games replay to byte-equivalent canonical GameEvents and
+  PublicSpeechRecords before and after process restarts;
+- adversarial visibility fixtures, including similar player IDs and stale
+  disclosure grants, produce zero private leaks and zero stale commits;
+- deterministic rendering passes every entity, attribution, negation,
+  modality, move-coverage, and forbidden-field fixture with zero deviations;
+- the complete existing rule, event, replay, visibility, persistence, API, and
+  runtime-flow test suites remain green.
+
+Default enablement for real games additionally requires at least 100 seeded
+full games with a controlled provider profile: schema-repair rate at or below
+5 percent, neutral fallback rate at or below 3 percent, no safety-gate failure,
+and host-runtime p95 overhead excluding provider latency at or below 100 ms per
+turn on the reference CI machine. Three blinded reviewers each score at least
+60 paired old/new utterances using the fixed evidence fidelity, coherence,
+persona consistency, repetition, and template-artifact rubric. The new system
+must have no category whose paired median is more than 0.5 points worse on a
+five-point scale, and no factual-fidelity regression is permitted.
+
+Stage-3 cognition components use at least 200 frozen, visibility-valid decision
+fixtures plus 100 paired seeded games. A component is beneficial only when its
+predeclared primary metric improves and the paired bootstrap 95-percent
+confidence interval excludes zero, while safety, calibration, fallback rate,
+latency, and cost remain within their declared non-inferiority margins. The
+evaluation manifest pins fixtures, seeds, provider/model snapshot, prompts,
+schema hashes, scorer versions, and exclusion rules before a run starts.
+
 ## 28. Implementation Sequence
 
-1. Delete the rejected SpeechAct code and tests; assert that the new package
-   cannot import old player-decision modules.
-2. Define the new strict contracts, error codes, and audit envelopes.
-3. Implement HostRuntime turn lifecycle, idempotency, cancellation, critical
-   audit, and fake-provider tests.
-4. Implement isolated player document projections, ObservationFrame, context
+1. Characterize preserved RuleEngine, event, replay, visibility, persistence,
+   API, and runtime-flow behavior. Add an import-boundary test proving the new
+   package cannot import rejected player-decision modules; do not delete the
+   legacy path yet.
+2. Define `GameRevision`, `LegalActionWindow`, terminal envelopes,
+   `SpeechProposalBody`, stable errors, audit envelopes, dispatch attempts, and
+   schema fixtures without routing any live game through them.
+3. Extend each repository behind an explicit capability flag with durable turn,
+   compare-and-swap `CommitTurn`, critical audit, idempotency, and projection
+   outbox transactions. Backends without the capability cannot enable the new
+   runtime.
+4. Implement stage-1 `serial_public` scheduling, HostRuntime turn lifecycle,
+   cancellation, durable model dispatch, restart reconciliation, and fake-
+   provider fault-injection tests.
+5. Implement isolated player document projections, `ObservationFrame`, context
    budget accounting, structured compaction, and checkpoint rehydration.
-5. Implement ToolGateway, MemoryGateway, reflection candidates, and a single
-   real AgentLoop.
-6. Complete the first vertical slice: ordinary daytime speech from observation
-   through tools, reflection, `SpeechProposal`, `PublicSpeechRecord`, event
-   commit, projections, and judge narration.
-7. Add vote and role capabilities one action family at a time.
-8. Add world model, RAG, verified post-game reflection, and cross-game memory
-   behind independent feature gates and ablation metrics.
-9. Complete the personality-aware JudgePresenter.
-10. Remove the old `PlayerAgent`, prompt, directive, quality heuristic,
-    strategy handler, parser, retry, and fallback live paths.
-11. Run seeded, adversarial, length, replay, privacy, performance, ablation,
+6. Implement the minimal stage-1 ToolGateway, structurally validated working
+   reflection candidates, and one real AgentLoop for ordinary daytime speech.
+7. Complete the first vertical slice through `SpeechProposal`,
+   `PublicSpeechRecord`, atomic event/audit/outbox commit, commitment
+   projections, deterministic player rendering, and deterministic judge
+   narration.
+8. Run all stage-1 CI gates, then add a per-game feature gate that selects
+   exactly one player-decision runtime at game creation. Persist that choice in
+   the ruleset/config snapshot; never switch an active game in place.
+9. Add vote and private role capabilities one legal-window family at a time,
+   followed by declared commutative windows and the wolf-team coordinator
+   protocol.
+10. Add world model, RAG, verified post-game reflection, skills, and cross-game
+    memory behind independent feature gates and predeclared ablation metrics.
+11. Complete optional presenter experiments only after the deterministic live
+    renderers meet zero-deviation gates.
+12. Run seeded, adversarial, length, replay, privacy, performance, ablation,
     and human-review gates before default enablement.
+13. After no new games use the legacy runtime and historical replay readers are
+    versioned, delete rejected SpeechAct code/tests and the old `PlayerAgent`,
+    prompt, directive, quality heuristic, strategy handler, parser, retry, and
+    fallback live paths in a separate reversible commit.
 
 The first playable vertical slice is one daytime speech turn: build isolated
 documents, open a turn, let the agent inspect context and evidence, reflect,
@@ -1271,6 +1717,20 @@ than old agent behavior.
 No compatibility facade may silently route new decisions through the old
 player implementation. Migration uses explicit feature gates at the runtime
 entry point, with only one authoritative player-decision path per game.
+
+Every game snapshot pins `player_runtime_version`. Existing or restored games
+continue on their pinned legacy runtime until completion; the host never
+switches an active game to the new runtime. New-runtime code may read
+versioned, immutable legacy public events through a historical replay adapter,
+but it may not call a legacy decision generator or convert rendered legacy
+speech into new semantic claims. Historical replays retain their original
+event/schema versions and remain readable after legacy live code is deleted.
+
+Cutover requires an inventory showing zero active games on the legacy runtime,
+successful replay of the supported historical corpus, a rollback procedure
+that changes only the default for newly created games, and a signed record of
+the stage-1 gates. Deletion of legacy code and tests occurs only after this
+cutover record exists.
 
 ## 30. Final Invariants
 
@@ -1303,3 +1763,16 @@ entry point, with only one authoritative player-decision path per game.
 20. At 80-percent predicted context occupancy the host compacts before the next
     model request; canonical context is reinjected and only typed checkpoint
     state, never a model summary, may preserve authority across the boundary.
+21. `GameRevision` advances only in `CommitTurn`; sequential repository calls
+    cannot emulate a committed action.
+22. A global revision mismatch is not automatically stale: the legal window,
+    read set, visibility grants, actor state, and declared conflict class decide
+    whether a turn remains valid.
+23. Every model/external-tool dispatch is durable before network I/O; unknown
+    outcomes are explicit and never hidden by an untracked retry.
+24. Wolf-team target selection belongs to the current coordinator agent;
+    RuleEngine validates and resolves but never selects among strategic targets.
+25. Private audit integrity commits to randomized ciphertext, and key deletion
+    has an explicit, verifiable crypto-shredding or signed-redaction meaning.
+26. Legacy decision code remains isolated until a working replacement passes
+    cutover gates, then is removed in a separate reversible change.
