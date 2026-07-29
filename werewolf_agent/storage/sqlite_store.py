@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：SQLite 游戏仓库，支持 GameEvent 与死亡批次 V2、V1 只读兼容。
+功能描述：SQLite 游戏仓库，支持事件兼容读写与自主玩家原子 CommitTurn。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-29
 使用示例：内部模块，无对外接口
 """
 
@@ -11,14 +11,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
 import threading
-from typing import Any
+from dataclasses import asdict
+from typing import Any, Self
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.core.resolution_batches import (
     normalize_resolution_batch_fields,
     serialize_resolution_batch_fields,
+)
+from werewolf_agent.player_agents.contracts.transactions import (
+    CommitResult,
+    CommitTurnRequest,
+    ProjectionOutboxRecord,
 )
 from werewolf_agent.runtime.event_metadata import (
     deserialize_game_event,
@@ -28,6 +33,15 @@ from werewolf_agent.runtime.event_metadata import (
 from werewolf_agent.runtime.game_termination import (
     validate_game_aborted_append,
     validate_game_state_save,
+)
+from werewolf_agent.storage.autonomous_commit import (
+    CommitTransactionError,
+    IdempotencyConflictError,
+    StaleCommitError,
+    bind_public_record,
+    build_commit_result,
+    build_committed_event,
+    request_hash,
 )
 
 
@@ -56,6 +70,57 @@ def _deserialize_game_state(raw: str) -> GameState:
         events=events,
         **data,
     )
+
+
+_AUTONOMOUS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS autonomous_game_streams (
+    game_id TEXT PRIMARY KEY,
+    game_revision INTEGER NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS autonomous_turn_commits (
+    game_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    committed_revision INTEGER NOT NULL,
+    PRIMARY KEY (game_id, turn_id, idempotency_key),
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS autonomous_public_records (
+    record_id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    committed_revision INTEGER NOT NULL,
+    record_json TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS autonomous_audit_records (
+    audit_id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    committed_revision INTEGER NOT NULL,
+    record_json TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS autonomous_projection_outbox (
+    outbox_id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    committed_revision INTEGER NOT NULL,
+    request_json TEXT NOT NULL,
+    delivered_at TEXT,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_autonomous_audit_revision
+    ON autonomous_audit_records (game_id, committed_revision);
+CREATE INDEX IF NOT EXISTS idx_autonomous_outbox_revision
+    ON autonomous_projection_outbox (game_id, committed_revision);
+"""
 
 
 _SCHEMA = """
@@ -134,7 +199,7 @@ CREATE TABLE IF NOT EXISTS reflections (
 
 CREATE INDEX IF NOT EXISTS idx_reflections_game ON reflections (game_id);
 CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id);
-"""
+""" + _AUTONOMOUS_SCHEMA
 
 
 
@@ -163,13 +228,14 @@ class SqliteGameRepository:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
         _ensure_event_schema_v2(self._conn)
+        self._conn.executescript(_AUTONOMOUS_SCHEMA)
         self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
-    def __enter__(self) -> "SqliteGameRepository":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -265,6 +331,181 @@ class SqliteGameRepository:
                 )
                 for r in rows
             ]
+
+    # -- Autonomous CommitTurn --------------------------------------------
+
+    def supports_autonomous_commit(self) -> bool:
+        """声明 SQLite 仓储已初始化自主提交表。"""
+        return True
+
+    def load_game_revision(self, game_id: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT game_revision FROM autonomous_game_streams WHERE game_id = ?",
+                (game_id,),
+            ).fetchone()
+            if row is not None:
+                return int(row[0])
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
+                (game_id,),
+            ).fetchone()
+            return int(row[0] or 0)
+
+    def load_outbox(self, game_id: str) -> list[ProjectionOutboxRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT request_json FROM autonomous_projection_outbox "
+                "WHERE game_id = ? ORDER BY committed_revision, outbox_id",
+                (game_id,),
+            ).fetchall()
+            return [
+                ProjectionOutboxRecord.model_validate_json(row[0])
+                for row in rows
+            ]
+
+    def commit_turn(self, request: CommitTurnRequest) -> CommitResult:
+        with self._lock:
+            digest = request_hash(request)
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                game_row = self._conn.execute(
+                    "SELECT 1 FROM games WHERE game_id = ?",
+                    (request.game_id,),
+                ).fetchone()
+                if game_row is None:
+                    raise CommitTransactionError(
+                        f"game does not exist: {request.game_id}",
+                    )
+                existing_row = self._conn.execute(
+                    "SELECT request_hash, result_json FROM autonomous_turn_commits "
+                    "WHERE game_id = ? AND turn_id = ? AND idempotency_key = ?",
+                    (request.game_id, request.turn_id, request.idempotency_key),
+                ).fetchone()
+                if existing_row is not None:
+                    if existing_row[0] != digest:
+                        raise IdempotencyConflictError(
+                            "idempotency key conflicts with an existing proposal",
+                        )
+                    existing = CommitResult.model_validate_json(existing_row[1])
+                    self._conn.rollback()
+                    return existing.model_copy(update={"replayed": True})
+
+                stream_row = self._conn.execute(
+                    "SELECT game_revision FROM autonomous_game_streams "
+                    "WHERE game_id = ?",
+                    (request.game_id,),
+                ).fetchone()
+                if stream_row is None:
+                    current = int(self._conn.execute(
+                        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
+                        (request.game_id,),
+                    ).fetchone()[0] or 0)
+                    self._conn.execute(
+                        "INSERT INTO autonomous_game_streams (game_id, game_revision) VALUES (?, ?)",
+                        (request.game_id, current),
+                    )
+                else:
+                    current = int(stream_row[0])
+                if request.base_game_revision != current:
+                    raise StaleCommitError(
+                        f"expected revision {current}, got {request.base_game_revision}",
+                    )
+
+                next_revision = current + 1
+                event = build_committed_event(
+                    request.game_id, request.event, next_revision,
+                )
+                record = bind_public_record(request.public_record, next_revision)
+                result = build_commit_result(
+                    request, digest, next_revision, event, record,
+                )
+                self._conn.execute(
+                    "INSERT INTO events "
+                    "(game_id, seq, event_type, payload_json, event_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        request.game_id,
+                        next_revision,
+                        event.type,
+                        json.dumps(
+                            serialize_legacy_event_payload(event),
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            serialize_game_event(event),
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+                if record is not None:
+                    self._conn.execute(
+                        "INSERT INTO autonomous_public_records "
+                        "(record_id, game_id, turn_id, committed_revision, record_json) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            record.record_id,
+                            request.game_id,
+                            request.turn_id,
+                            next_revision,
+                            record.model_dump_json(),
+                        ),
+                    )
+                for audit in request.critical_audit_records:
+                    self._conn.execute(
+                        "INSERT INTO autonomous_audit_records "
+                        "(audit_id, game_id, committed_revision, record_json) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            audit.audit_id,
+                            request.game_id,
+                            next_revision,
+                            audit.model_dump_json(),
+                        ),
+                    )
+                for outbox in request.projection_outbox_records:
+                    self._conn.execute(
+                        "INSERT INTO autonomous_projection_outbox "
+                        "(outbox_id, game_id, committed_revision, request_json) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            outbox.outbox_id,
+                            request.game_id,
+                            next_revision,
+                            outbox.model_dump_json(),
+                        ),
+                    )
+                self._conn.execute(
+                    "UPDATE autonomous_game_streams SET game_revision = ? "
+                    "WHERE game_id = ?",
+                    (next_revision, request.game_id),
+                )
+                self._conn.execute(
+                    "INSERT INTO autonomous_turn_commits "
+                    "(game_id, turn_id, idempotency_key, request_hash, result_json, committed_revision) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        request.game_id,
+                        request.turn_id,
+                        request.idempotency_key,
+                        digest,
+                        result.model_dump_json(),
+                        next_revision,
+                    ),
+                )
+                self._conn.commit()
+                return result
+            except (StaleCommitError, IdempotencyConflictError):
+                self._conn.rollback()
+                raise
+            except CommitTransactionError:
+                self._conn.rollback()
+                raise
+            except Exception as exc:
+                self._conn.rollback()
+                raise CommitTransactionError(
+                    "autonomous CommitTurn transaction failed",
+                ) from exc
 
     # -- Deaths -----------------------------------------------------------
 

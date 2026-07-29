@@ -87,6 +87,48 @@ MIGRATIONS: list[Migration] = [
         );
         CREATE INDEX IF NOT EXISTS idx_reflections_game ON reflections (game_id);
         CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id);
+        CREATE TABLE IF NOT EXISTS autonomous_game_streams (
+            game_id TEXT PRIMARY KEY,
+            game_revision INTEGER NOT NULL,
+            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS autonomous_turn_commits (
+            game_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            committed_revision INTEGER NOT NULL,
+            PRIMARY KEY (game_id, turn_id, idempotency_key),
+            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS autonomous_public_records (
+            record_id TEXT PRIMARY KEY,
+            game_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            committed_revision INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS autonomous_audit_records (
+            audit_id TEXT PRIMARY KEY,
+            game_id TEXT NOT NULL,
+            committed_revision INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS autonomous_projection_outbox (
+            outbox_id TEXT PRIMARY KEY,
+            game_id TEXT NOT NULL,
+            committed_revision INTEGER NOT NULL,
+            request_json TEXT NOT NULL,
+            delivered_at TEXT,
+            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_autonomous_audit_revision
+            ON autonomous_audit_records (game_id, committed_revision);
+        CREATE INDEX IF NOT EXISTS idx_autonomous_outbox_revision
+            ON autonomous_projection_outbox (game_id, committed_revision);
         """,
     ),
     Migration(

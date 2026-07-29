@@ -60,6 +60,13 @@ from werewolf_agent.player_agents.contracts.speech import (
     VoteCommitment,
     VotePosition,
 )
+from werewolf_agent.player_agents.contracts.transactions import (
+    CommitResult,
+    CommitTurnRequest,
+    CriticalAuditRecord,
+    EventCandidate,
+    ProjectionOutboxRecord,
+)
 from werewolf_agent.player_agents.contracts.turns import (
     AgentTurn,
     AgentTurnStatus,
@@ -77,12 +84,16 @@ __all__ = [
     "Alignment",
     "AlignmentRead",
     "ClaimMode",
+    "CommitResult",
+    "CommitTurnRequest",
     "ComparisonDimension",
     "ConditionalCommitment",
     "ConfidenceBucket",
     "ConflictClass",
     "ConsequenceKind",
+    "CriticalAuditRecord",
     "DisclosureGrant",
+    "EventCandidate",
     "EvidenceRelation",
     "LegalActionWindow",
     "LengthClass",
@@ -90,6 +101,7 @@ __all__ = [
     "PlayerComparison",
     "PrivateFactKind",
     "PrivateResultDisclosure",
+    "ProjectionOutboxRecord",
     "ProposalFailure",
     "PublicEvidenceCitation",
     "PublicSpeechRecord",

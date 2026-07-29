@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：内存游戏仓库，保留完整 GameEvent 并规范化 Death 批次。
+功能描述：内存游戏仓库，支持旧数据接口和自主玩家原子 CommitTurn。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-29
 使用示例：内部模块，无对外接口
 """
 
@@ -14,9 +14,24 @@ from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import normalize_resolution_batch_fields
+from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
+from werewolf_agent.player_agents.contracts.transactions import (
+    CommitResult,
+    CommitTurnRequest,
+    ProjectionOutboxRecord,
+)
 from werewolf_agent.runtime.game_termination import (
     validate_game_aborted_append,
     validate_game_state_save,
+)
+from werewolf_agent.storage.autonomous_commit import (
+    CommitTransactionError,
+    IdempotencyConflictError,
+    StaleCommitError,
+    bind_public_record,
+    build_commit_result,
+    build_committed_event,
+    request_hash,
 )
 
 
@@ -36,6 +51,12 @@ class InMemoryGameRepository:
         self._configs: dict[str, dict[str, Any]] = {}
         self._custom_configs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
+        self._autonomous_revision_by_game: dict[str, int] = {}
+        self._autonomous_commits: dict[tuple[str, str, str], CommitResult] = {}
+        self._autonomous_public_records: dict[str, PublicSpeechRecord] = {}
+        self._autonomous_audits: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._autonomous_outbox: dict[str, ProjectionOutboxRecord] = {}
+        self._autonomous_outbox_game_ids: dict[str, str] = {}
 
     def save_game(self, state: GameState) -> None:
         with self._lock:
@@ -62,6 +83,104 @@ class InMemoryGameRepository:
     def load_events(self, game_id: str) -> list[GameEvent]:
         with self._lock:
             return list(self._events.get(game_id, []))
+
+    # -- Autonomous CommitTurn --------------------------------------------
+
+    def supports_autonomous_commit(self) -> bool:
+        """声明内存仓储可以提供完整的自主提交语义。"""
+        return True
+
+    def load_game_revision(self, game_id: str) -> int:
+        with self._lock:
+            return self._autonomous_revision(game_id)
+
+    def load_outbox(self, game_id: str) -> list[ProjectionOutboxRecord]:
+        with self._lock:
+            return [
+                record.model_copy(deep=True)
+                for record in self._autonomous_outbox.values()
+                if self._autonomous_outbox_game_ids.get(record.outbox_id) == game_id
+            ]
+
+    def commit_turn(self, request: CommitTurnRequest) -> CommitResult:
+        with self._lock:
+            digest = request_hash(request)
+            key = (request.game_id, request.turn_id, request.idempotency_key)
+            existing = self._autonomous_commits.get(key)
+            if existing is not None:
+                if existing.request_hash != digest:
+                    raise IdempotencyConflictError(
+                        "idempotency key conflicts with an existing proposal",
+                    )
+                return existing.model_copy(update={"replayed": True})
+
+            if request.game_id not in self._games:
+                raise CommitTransactionError(f"game does not exist: {request.game_id}")
+            current = self._autonomous_revision(request.game_id)
+            if request.base_game_revision != current:
+                raise StaleCommitError(
+                    f"expected revision {current}, got {request.base_game_revision}",
+                )
+            next_revision = current + 1
+            event = build_committed_event(request.game_id, request.event, next_revision)
+            record = bind_public_record(request.public_record, next_revision)
+            result = build_commit_result(request, digest, next_revision, event, record)
+            self._check_autonomous_ids(request, record)
+
+            # 所有唯一性和 revision 检查通过后才一次性发布内存记录。
+            self._events.setdefault(request.game_id, []).append(event)
+            self._autonomous_revision_by_game[request.game_id] = next_revision
+            if record is not None:
+                self._autonomous_public_records[record.record_id] = record
+            for audit in request.critical_audit_records:
+                self._autonomous_audits[audit.audit_id] = (
+                    request.game_id,
+                    audit.model_dump(mode="json"),
+                )
+            for outbox in request.projection_outbox_records:
+                self._autonomous_outbox[outbox.outbox_id] = outbox
+                self._autonomous_outbox_game_ids[outbox.outbox_id] = request.game_id
+            self._autonomous_commits[key] = result
+            return result
+
+    def _autonomous_revision(self, game_id: str) -> int:
+        current = self._autonomous_revision_by_game.get(game_id)
+        if current is not None:
+            return current
+        events = self._events.get(game_id, [])
+        state = self._games.get(game_id)
+        if state is not None:
+            events = [*events, *state.events]
+        current = max(
+            (
+                event.sequence_number
+                for event in events
+                if isinstance(event.sequence_number, int)
+            ),
+            default=0,
+        )
+        self._autonomous_revision_by_game[game_id] = current
+        return current
+
+    def _check_autonomous_ids(
+        self,
+        request: CommitTurnRequest,
+        record: PublicSpeechRecord | None,
+    ) -> None:
+        if record is not None and record.record_id in self._autonomous_public_records:
+            raise CommitTransactionError(
+                f"public record already exists: {record.record_id}",
+            )
+        if any(
+            audit.audit_id in self._autonomous_audits
+            for audit in request.critical_audit_records
+        ):
+            raise CommitTransactionError("audit record already exists")
+        if any(
+            outbox.outbox_id in self._autonomous_outbox
+            for outbox in request.projection_outbox_records
+        ):
+            raise CommitTransactionError("projection outbox record already exists")
 
     def save_deaths(self, game_id: str, deaths: list[Death]) -> None:
         self._deaths[game_id] = list(deaths)
