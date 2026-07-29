@@ -1086,6 +1086,15 @@ Only `schema_invalid` and a field-local `semantic_mismatch` are eligible for
 the one same-lease repair attempt. A stale read set, inactive grant, or changed
 window always cancels the turn and requires a new observation.
 
+This safety rule is enforced at construction time, not left to caller
+convention. Human-readable messages come from a closed, code-keyed safe-message
+catalog; callers cannot attach arbitrary message text. A validator derives the
+JSON Pointer only from its canonical schema/model error location (field names
+and collection indexes), never from record contents, player identifiers, role
+values, or other observed data. The failure contract rejects `repairable=true`
+unless the code is `schema_invalid`, or the code is `semantic_mismatch` with a
+non-root field path.
+
 ### 18.4 Private Disclosure Grants
 
 Self `RoleClaim` is a public statement and may be true or false; it does not

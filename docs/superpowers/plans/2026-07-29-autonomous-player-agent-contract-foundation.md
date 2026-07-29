@@ -686,13 +686,13 @@ from werewolf_agent.player_agents.contracts.errors import (
 
 
 def test_failure_serializes_stable_code_and_field_path() -> None:
-    failure = ProposalFailure(
+    failure = ProposalFailure.for_code(
         code=ValidationErrorCode.TARGET_NOT_LEGAL,
         field_path="/body/moves/0/target_id",
-        message="target is not legal for this window",
         repairable=False,
     )
     assert failure.model_dump(mode="json")["code"] == "target_not_legal"
+    assert failure.message == "target is not legal for this window"
 
 
 def test_failure_rejects_non_json_pointer_and_extra_context() -> None:
@@ -705,12 +705,34 @@ def test_failure_rejects_non_json_pointer_and_extra_context() -> None:
         )
     with pytest.raises(ValidationError):
         ProposalFailure.model_validate({
-            "code": "invisible_reference",
+            "code": ValidationErrorCode.INVISIBLE_REFERENCE,
             "field_path": "/body/ref",
             "message": "reference is not visible",
             "repairable": False,
             "hidden_value": "seer:p03",
         })
+
+
+def test_failure_rejects_unsafe_message_and_invalid_repair_scope() -> None:
+    with pytest.raises(ValidationError, match="safe message catalog"):
+        ProposalFailure(
+            code=ValidationErrorCode.INVISIBLE_REFERENCE,
+            field_path="/body/ref",
+            message="hidden role is seer:p03",
+            repairable=False,
+        )
+    with pytest.raises(ValidationError, match="not repairable"):
+        ProposalFailure.for_code(
+            code=ValidationErrorCode.STALE_READ_SET,
+            field_path="/read_set",
+            repairable=True,
+        )
+    with pytest.raises(ValidationError, match="field-local"):
+        ProposalFailure.for_code(
+            code=ValidationErrorCode.SEMANTIC_MISMATCH,
+            field_path="",
+            repairable=True,
+        )
 ```
 
 - [ ] **Step 2: Run tests and verify RED**
@@ -738,7 +760,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import StringConstraints
+from pydantic import StringConstraints, model_validator
 from typing import Annotated
 
 from werewolf_agent.player_agents.contracts._base import StrictFrozenModel
@@ -763,12 +785,68 @@ class ValidationErrorCode(StrEnum):
     SECURITY_VIOLATION = "security_violation"
 
 
+_SAFE_MESSAGES: dict[ValidationErrorCode, str] = {
+    ValidationErrorCode.SCHEMA_INVALID: "proposal does not match the required schema",
+    ValidationErrorCode.BOUND_CONTEXT_MISMATCH: "proposal context does not match the bound turn",
+    ValidationErrorCode.UNKNOWN_SCHEMA_VERSION: "proposal schema version is not supported",
+    ValidationErrorCode.UNKNOWN_CAPABILITY: "proposal capability is not supported",
+    ValidationErrorCode.WRONG_ACTION_WINDOW: "proposal is not legal for the current window",
+    ValidationErrorCode.STALE_READ_SET: "proposal read set is stale",
+    ValidationErrorCode.TARGET_NOT_LEGAL: "target is not legal for this window",
+    ValidationErrorCode.INVISIBLE_REFERENCE: "reference is not visible",
+    ValidationErrorCode.GRANT_INACTIVE: "disclosure grant is not active",
+    ValidationErrorCode.SEMANTIC_MISMATCH: "proposal field does not match its semantic constraints",
+    ValidationErrorCode.RULE_ILLEGAL: "proposal is not legal under the current rules",
+    ValidationErrorCode.IDEMPOTENCY_CONFLICT: "idempotency key conflicts with an existing proposal",
+    ValidationErrorCode.SECURITY_VIOLATION: "proposal violates a security constraint",
+}
+
+
 class ProposalFailure(StrictFrozenModel):
     code: ValidationErrorCode
     field_path: JsonPointer
     message: Annotated[str, StringConstraints(min_length=1, max_length=240)]
     repairable: bool
+
+    @classmethod
+    def for_code(
+        cls,
+        *,
+        code: ValidationErrorCode,
+        field_path: str,
+        repairable: bool,
+    ) -> "ProposalFailure":
+        """使用封闭的安全消息目录构造失败载荷。"""
+        return cls(
+            code=code,
+            field_path=field_path,
+            message=_SAFE_MESSAGES[code],
+            repairable=repairable,
+        )
+
+    @model_validator(mode="after")
+    def _safe_repair_contract(self) -> "ProposalFailure":
+        if self.message != _SAFE_MESSAGES[self.code]:
+            raise ValueError("message must come from the safe message catalog")
+        if self.repairable and self.code not in {
+            ValidationErrorCode.SCHEMA_INVALID,
+            ValidationErrorCode.SEMANTIC_MISMATCH,
+        }:
+            raise ValueError(f"{self.code.value} is not repairable")
+        if (
+            self.repairable
+            and self.code is ValidationErrorCode.SEMANTIC_MISMATCH
+            and self.field_path == ""
+        ):
+            raise ValueError("repairable semantic_mismatch must be field-local")
+        return self
 ```
+
+Validators that create a `ProposalFailure` must pass a `field_path` rendered
+only from the canonical schema/model error location. Do not interpolate record
+contents, player or role identifiers, observed values, or tool output into the
+path. The contract model enforces the closed safe-message catalog and repair
+eligibility; the validator boundary owns the provenance of the JSON Pointer.
 
 - [ ] **Step 4: Export, run tests, and commit**
 
