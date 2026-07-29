@@ -272,7 +272,7 @@ Create `_base.py`:
 
 from __future__ import annotations
 
-from typing import Annotated, Iterable, TypeVar
+from typing import Any, Annotated, Iterable, Mapping, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
@@ -291,6 +291,32 @@ class StrictFrozenModel(BaseModel):
     """拒绝额外字段、隐式类型转换和实例修改的基础模型。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """复制模型，并对所有更新重新执行完整契约校验。"""
+        if not update:
+            return super().model_copy(deep=deep)
+        data = self.model_dump(round_trip=True)
+        data.update(update)
+        return type(self).model_validate(data)
+
+    def copy(
+        self,
+        *,
+        include: Any = None,
+        exclude: Any = None,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """将旧复制 API 委托给受校验路径，并拒绝不完整副本。"""
+        if include is not None or exclude is not None:
+            raise TypeError("partial copies are not supported for strict contracts")
+        return self.model_copy(update=update, deep=deep)
 
 
 T = TypeVar("T")
@@ -733,6 +759,25 @@ def test_failure_rejects_unsafe_message_and_invalid_repair_scope() -> None:
             field_path="",
             repairable=True,
         )
+
+
+def test_failure_copy_updates_are_fully_revalidated() -> None:
+    failure = ProposalFailure.for_code(
+        code=ValidationErrorCode.INVISIBLE_REFERENCE,
+        field_path="/body/ref",
+        repairable=False,
+    )
+    invalid_updates = (
+        {"message": "hidden role is seer:p03"},
+        {"repairable": True},
+        {"field_path": "body.ref"},
+        {"hidden_value": "seer:p03"},
+    )
+    for update in invalid_updates:
+        with pytest.raises(ValidationError):
+            failure.model_copy(update=update)
+        with pytest.raises(ValidationError):
+            failure.copy(update=update)
 ```
 
 - [ ] **Step 2: Run tests and verify RED**

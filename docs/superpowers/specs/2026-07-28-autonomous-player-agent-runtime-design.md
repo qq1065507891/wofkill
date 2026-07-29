@@ -965,6 +965,12 @@ All contracts use strict discriminated schemas, reject extra fields, carry
 schema version, turn ID, player ID, and base revision, and cannot carry a
 `GameEvent` or declare the next phase or winner.
 
+Immutable contract models expose no unvalidated copy-update path. Their
+`model_copy(update=...)` implementation merges into a round-trip dump and
+validates the complete result again. The deprecated `copy()` API delegates to
+that same validated path and rejects partial include/exclude copies, which
+could otherwise produce structurally incomplete contract instances.
+
 Provider support for strict tool calling or structured output is checked before
 a player route is leased. The live system does not fall back to free-form JSON,
 regular-expression extraction, or prose-to-action recovery.
