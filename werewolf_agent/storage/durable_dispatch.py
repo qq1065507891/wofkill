@@ -280,29 +280,9 @@ class DispatchReconciler:
                 continue
 
             if kind is RecoveryResolutionKind.REISSUED:
-                if resolution.result is None:
-                    # 重新交付仍复用原 provider key；仓储状态不变，等待下一次扫描。
-                    pending += 1
-                    continue
-                if not self._result_matches_attempt(attempt, resolution.result):
-                    errors += 1
-                    continue
-                try:
-                    disposition = self._repository.record_result(
-                        attempt.dispatch_id,
-                        expected_version=attempt.state_version,
-                        result=resolution.result,
-                    )
-                except Exception:  # noqa: BLE001 - one attempt must not abort recovery
-                    errors += 1
-                else:
-                    if disposition in {
-                        DispatchResultDisposition.RECORDED,
-                        DispatchResultDisposition.REPLAYED,
-                    }:
-                        resolved += 1
-                    else:
-                        errors += 1
+                # 重新交付必须复用原 provider key；resolver 不能借此伪造
+                # 已完成结果或推进 attempt。结果只能在后续 FOUND 扫描中记录。
+                pending += 1
                 continue
 
             if kind in {

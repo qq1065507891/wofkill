@@ -250,6 +250,32 @@ class PendingResolver:
         return RecoveryResolution(kind=RecoveryResolutionKind.PENDING)
 
 
+class ReissuedResolver:
+    def __init__(self, result: DispatchResultRecord) -> None:
+        self.result = result
+        self.seen_keys: list[str] = []
+
+    def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
+        self.seen_keys.append(attempt.provider_idempotency_key)
+        return RecoveryResolution(
+            kind=RecoveryResolutionKind.REISSUED,
+            result=self.result,
+        )
+
+
+class UnavailableResolver:
+    def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
+        return RecoveryResolution(kind=RecoveryResolutionKind.UNAVAILABLE)
+
+
+class UnsafeResolver:
+    def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
+        return RecoveryResolution(
+            kind=RecoveryResolutionKind.UNSAFE,
+            reason_code="unsafe_provider_binding",
+        )
+
+
 def test_capability_guard_requires_explicit_support() -> None:
     class PlainObject:
         def create_dispatch(self, attempt: DispatchAttempt) -> DispatchAttempt:
@@ -332,6 +358,27 @@ def test_reconciler_records_found_idempotent_result_without_new_dispatch_id() ->
     assert set(store._attempts) == {"dispatch-1"}
 
 
+def test_reconciler_reissued_result_keeps_attempt_dispatched_and_reuses_key() -> None:
+    store = InMemoryDispatchFixture(
+        [_attempt(status=DispatchStatus.DISPATCHED, state_version=2)]
+    )
+    resolver = ReissuedResolver(_result())
+
+    report = DispatchReconciler(store, resolver=resolver).reconcile_game("game-1")
+
+    assert report.resolved == 0
+    assert report.pending == 1
+    assert report.errors == 0
+    assert report.barrier_open is False
+    attempt = store.load_dispatch("dispatch-1")
+    assert attempt is not None
+    assert attempt.status is DispatchStatus.DISPATCHED
+    assert attempt.state_version == 2
+    assert attempt.provider_idempotency_key == "provider-key-1"
+    assert resolver.seen_keys == ["provider-key-1"]
+    assert store.results == {}
+
+
 def test_reconciler_leaves_pending_provider_and_keeps_barrier_closed() -> None:
     store = InMemoryDispatchFixture(
         [_attempt(status=DispatchStatus.DISPATCHING, state_version=1)]
@@ -341,6 +388,60 @@ def test_reconciler_leaves_pending_provider_and_keeps_barrier_closed() -> None:
     assert report.barrier_open is False
     with pytest.raises(DispatchRecoveryBlocked):
         store.assert_dispatch_allowed("game-1")
+
+
+def test_reconciler_leaves_unavailable_provider_pending() -> None:
+    store = InMemoryDispatchFixture(
+        [_attempt(status=DispatchStatus.DISPATCHING, state_version=1)]
+    )
+
+    report = DispatchReconciler(
+        store,
+        resolver=UnavailableResolver(),
+    ).reconcile_game("game-1")
+
+    assert report.pending == 1
+    assert report.barrier_open is False
+    attempt = store.load_dispatch("dispatch-1")
+    assert attempt is not None
+    assert attempt.status is DispatchStatus.DISPATCHING
+    assert attempt.state_version == 1
+
+
+def test_reconciler_marks_unsafe_resolution_unknown() -> None:
+    store = InMemoryDispatchFixture(
+        [_attempt(status=DispatchStatus.DISPATCHED, state_version=2)]
+    )
+
+    report = DispatchReconciler(
+        store,
+        resolver=UnsafeResolver(),
+    ).reconcile_game("game-1")
+
+    assert report.unknown == 1
+    assert report.budget_consumption_required is True
+    assert report.barrier_open is True
+    attempt = store.load_dispatch("dispatch-1")
+    assert attempt is not None
+    assert attempt.status is DispatchStatus.UNKNOWN_OUTCOME
+    assert attempt.reason_code == "unsafe_provider_binding"
+
+
+def test_reconciler_rejects_found_result_bound_to_different_dispatch() -> None:
+    store = InMemoryDispatchFixture(
+        [_attempt(status=DispatchStatus.DISPATCHED, state_version=2)]
+    )
+    resolver = FoundResolver(_result(dispatch_id="dispatch-other"))
+
+    report = DispatchReconciler(store, resolver=resolver).reconcile_game("game-1")
+
+    assert report.errors == 1
+    assert report.resolved == 0
+    assert store.results == {}
+    attempt = store.load_dispatch("dispatch-1")
+    assert attempt is not None
+    assert attempt.status is DispatchStatus.DISPATCHED
+    assert attempt.state_version == 2
 
 
 def test_reconciler_passes_immutable_attempt_to_resolver() -> None:
