@@ -1188,7 +1188,7 @@ The required fields and invariants are:
 | Move | Required semantic fields | Additional invariants |
 | --- | --- | --- |
 | `AlignmentRead` | `target_id`, `alignment`, `strength` | alignment is `good`, `wolf`, or `uncertain`; strength is `leaning`, `probable`, or `committed` |
-| `RoleClaim` | `claimant_id`, `role`, `claim_mode` | self claim/denial requires claimant = actor; quotation requires a visible source record; private role disclosure requires an active grant |
+| `RoleClaim` | `claimant_id`, `role`, `claim_mode` | claim/denial requires claimant = the host-bound actor; quotation requires a visible source record; private role disclosure requires an active grant |
 | `PrivateResultDisclosure` | `fact_kind`, `fact_ref`, `disclosure_grant_id`, `timing_ref`, typed result fields | grant must match actor, turn, revision, fact hash, result type, target, and timing exactly |
 | `PublicEvidenceCitation` | `evidence_refs`, `relation`, `subject_ids`, `supports_move_ids` | relation is `supports`, `contradicts`, or `contextualizes`; it cannot introduce a conclusion outside the referenced moves |
 | `PlayerComparison` | two-to-four `player_ids`, `dimension`, ordered `assessments` | dimension is claim, vote, evidence, commitment, or timeline consistency; every assessment cites public evidence |

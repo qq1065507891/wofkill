@@ -1041,6 +1041,20 @@ def test_speech_rejects_duplicate_response_record_refs() -> None:
         match="response_record_refs must not contain duplicates",
     ):
         SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
+
+
+def test_speech_rejects_non_actor_role_claim() -> None:
+    payload = _payload()
+    payload["body"]["moves"][0] = {  # type: ignore[index]
+        "move_id": "m1",
+        "move_type": "role_claim",
+        "modality": "asserted",
+        "claimant_id": "p02",
+        "role_id": "seer",
+        "claim_mode": "claim",
+    }
+    with pytest.raises(ValidationError, match="role claim claimant must match player"):
+        SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
 ```
 
 - [ ] **Step 2: Run tests and verify RED**
@@ -1473,14 +1487,18 @@ Create `proposals.py`:
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from werewolf_agent.player_agents.contracts._base import (
     ContentHash,
     NonEmptyId,
     StrictFrozenModel,
 )
-from werewolf_agent.player_agents.contracts.speech import SpeechProposalBody
+from werewolf_agent.player_agents.contracts.speech import (
+    ClaimMode,
+    RoleClaim,
+    SpeechProposalBody,
+)
 
 
 class SpeechProposalEnvelope(StrictFrozenModel):
@@ -1492,6 +1510,17 @@ class SpeechProposalEnvelope(StrictFrozenModel):
     base_revision: int = Field(ge=0)
     view_fingerprint: ContentHash
     body: SpeechProposalBody
+
+    @model_validator(mode="after")
+    def _actor_bound_role_claim(self) -> "SpeechProposalEnvelope":
+        for move in self.body.moves:
+            if (
+                isinstance(move, RoleClaim)
+                and move.claim_mode in {ClaimMode.CLAIM, ClaimMode.DENY}
+                and move.claimant_id != self.player_id
+            ):
+                raise ValueError("role claim claimant must match player")
+        return self
 ```
 
 - [ ] **Step 6: Export contracts and verify GREEN**
