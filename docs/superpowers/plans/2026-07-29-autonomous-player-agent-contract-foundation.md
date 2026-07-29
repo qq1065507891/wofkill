@@ -4,7 +4,7 @@
 
 **Goal:** Establish the isolated, versioned, strict contract layer required by the first autonomous daytime-speech vertical slice without changing any live game path.
 
-**Architecture:** Create a new `werewolf_agent.player_agents.contracts` package that has no dependency on legacy player-decision modules. Pydantic v2 models provide strict immutable versions, turn state, speech proposal, disclosure, public-record, and stable-error contracts; a checked-in generated schema fixture makes provider-facing drift reviewable. Runtime scheduling, persistence transactions, model dispatch, rendering, and feature-gate integration are intentionally deferred to later plans.
+**Architecture:** Create a new `werewolf_agent.player_agents.contracts` package that has no dependency on legacy player-decision modules. Pydantic v2 models provide strict immutable versions, turn state, speech proposal, disclosure, public-record, and stable-error contracts; a checked-in canonical schema fixture makes contract drift reviewable before later provider-dialect transforms. Runtime scheduling, persistence transactions, model dispatch, rendering, and feature-gate integration are intentionally deferred to later plans.
 
 **Tech Stack:** Python 3.12, Pydantic v2, pytest, ruff, mypy, standard-library `ast`, `enum`, `hashlib`, and `json`; all Python commands use `conda run -n wofkill`.
 
@@ -44,7 +44,7 @@ fallbacks in this plan.
 | `werewolf_agent/player_agents/contracts/schema_catalog.py` | Canonical schema export and content hash |
 | `scripts/export_player_agent_schemas.py` | Deterministic schema fixture exporter |
 | `tests/player_agents/` | Focused contract and package-boundary tests |
-| `tests/fixtures/player_agents/speech_proposal_schema_v1.json` | Reviewed provider-facing JSON Schema snapshot |
+| `tests/fixtures/player_agents/speech_proposal_schema_v1.json` | Reviewed canonical JSON Schema snapshot for provider adapters |
 
 ### Task 1: Establish the Isolated Package Boundary
 
@@ -1882,7 +1882,12 @@ git commit -m "feat: add public speech record contracts"
 
 Expected: PASS, followed by a successful commit.
 
-### Task 7: Pin and Verify the Provider-Facing JSON Schema
+### Task 7: Pin and Verify the Canonical Proposal JSON Schema
+
+This task snapshots the canonical contract schema consumed by later provider
+adapters. It does not claim direct compatibility with every provider's
+restricted JSON Schema dialect; transformed provider fixtures and acceptance
+tests belong to the later tool-gateway plan.
 
 **Files:**
 - Create: `werewolf_agent/player_agents/contracts/schema_catalog.py`
@@ -1896,7 +1901,7 @@ Expected: PASS, followed by a successful commit.
 ```python
 # -*- coding: utf-8 -*-
 """
-验证提供商可见的发言 schema 与仓库快照及内容哈希完全一致。
+验证规范发言 schema 与仓库快照及内容哈希完全一致。
 
 作者: Project contributors
 创建日期: 2026-07-29
@@ -1937,7 +1942,7 @@ Expected: collection ERROR because `schema_catalog` does not exist.
 ```python
 # -*- coding: utf-8 -*-
 """
-生成并哈希提供商可见的自主玩家提案 JSON Schema。
+生成并哈希供 provider adapter 使用的规范自主玩家提案 JSON Schema。
 
 作者: Project contributors
 创建日期: 2026-07-29
@@ -2082,7 +2087,7 @@ git commit -m "feat: pin autonomous speech proposal schema"
   rejected deterministically.
 - Private disclosure, public semantic records, and rendered text are separate
   contracts.
-- The provider-facing JSON Schema and its content hash are checked in and
-  reproducible.
+- The canonical proposal JSON Schema and its content hash are checked in and
+  reproducible; provider-dialect transforms remain explicitly deferred.
 - No live runtime, repository schema, RuleEngine behavior, or legacy fallback
   is modified by this plan.

@@ -975,6 +975,13 @@ Provider support for strict tool calling or structured output is checked before
 a player route is leased. The live system does not fall back to free-form JSON,
 regular-expression extraction, or prose-to-action recovery.
 
+The versioned schema fixture produced by the contract foundation is the
+canonical proposal schema and the input to later provider adapters. It is not,
+by itself, proof that a provider accepts that exact JSON Schema dialect.
+Provider adapters may only apply deterministic, versioned dialect transforms;
+their transformed fixtures, content hashes, and live provider acceptance tests
+are part of the later tool-gateway plan and must pass before a route is leased.
+
 Schema compliance is followed by host semantic, visibility, revision, and
 RuleEngine legality validation. The guaranteed property is that every final
 committed action is structured and legal, not that every first model attempt is
