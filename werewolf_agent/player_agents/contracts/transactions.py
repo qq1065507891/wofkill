@@ -4,13 +4,12 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
-from types import MappingProxyType
 from typing import Any, Self
 
 from pydantic import Field, field_serializer, field_validator, model_validator
@@ -20,43 +19,13 @@ from werewolf_agent.player_agents.contracts._base import (
     ContentHash,
     NonEmptyId,
     StrictFrozenModel,
+    _freeze_json_object,
+    _thaw_json_value,
     require_unique,
 )
 from werewolf_agent.player_agents.contracts.proposals import SpeechProposalEnvelope
 from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
 from werewolf_agent.player_agents.contracts.revisions import ReadReference
-
-
-def _freeze_json_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        if not all(isinstance(key, str) for key in value):
-            raise ValueError("JSON object keys must be strings")
-        return MappingProxyType({
-            key: _freeze_json_value(item)
-            for key, item in value.items()
-        })
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_json_value(item) for item in value)
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return value
-    raise ValueError("value must be finite JSON data")
-
-
-def _freeze_json_object(value: Any) -> Mapping[str, Any]:
-    frozen = _freeze_json_value(value)
-    if not isinstance(frozen, Mapping):
-        raise TypeError("value must be a JSON object")
-    return frozen
-
-
-def _thaw_json_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _thaw_json_value(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw_json_value(item) for item in value]
-    return value
 
 
 class EventCandidate(StrictFrozenModel):

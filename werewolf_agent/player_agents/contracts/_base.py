@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-提供玩家智能体契约共享的严格不可变模型、标识符和哈希类型。
+提供玩家智能体契约共享的严格不可变模型、标识符、哈希类型和 JSON 冻结工具。
 
 作者: Project contributors
 创建日期: 2026-07-29
@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import Annotated, Any, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -65,3 +67,38 @@ def require_unique(values: Iterable[T], *, field_name: str) -> tuple[T, ...]:
     if len(items) != len(set(items)):
         raise ValueError(f"{field_name} must not contain duplicates")
     return items
+
+
+def _freeze_json_value(value: Any) -> Any:
+    """递归冻结有限 JSON 值，防止模型内部容器被外部修改。"""
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("JSON object keys must be strings")
+        return MappingProxyType({
+            key: _freeze_json_value(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item) for item in value)
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise ValueError("value must be finite JSON data")
+
+
+def _freeze_json_object(value: Any) -> Mapping[str, Any]:
+    """冻结并校验 JSON 对象根值。"""
+    frozen = _freeze_json_value(value)
+    if not isinstance(frozen, Mapping):
+        raise TypeError("value must be a JSON object")
+    return frozen
+
+
+def _thaw_json_value(value: Any) -> Any:
+    """将冻结的 JSON 值恢复为可序列化的普通 Python 容器。"""
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value

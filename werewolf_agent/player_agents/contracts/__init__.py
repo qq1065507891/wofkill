@@ -8,6 +8,15 @@
 """
 
 from werewolf_agent.player_agents.contracts.disclosure import DisclosureGrant
+from werewolf_agent.player_agents.contracts.dispatch import (
+    DispatchAttempt,
+    DispatchOperationKind,
+    DispatchRecoveryPolicy,
+    DispatchResultDisposition,
+    DispatchResultOutcome,
+    DispatchResultRecord,
+    DispatchStatus,
+)
 from werewolf_agent.player_agents.contracts.errors import (
     ProposalFailure,
     ValidationErrorCode,
@@ -93,6 +102,13 @@ __all__ = [
     "ConsequenceKind",
     "CriticalAuditRecord",
     "DisclosureGrant",
+    "DispatchAttempt",
+    "DispatchOperationKind",
+    "DispatchRecoveryPolicy",
+    "DispatchResultDisposition",
+    "DispatchResultOutcome",
+    "DispatchResultRecord",
+    "DispatchStatus",
     "EventCandidate",
     "EvidenceRelation",
     "LegalActionWindow",
