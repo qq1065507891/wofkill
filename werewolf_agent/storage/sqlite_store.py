@@ -735,12 +735,8 @@ class SqliteGameRepository:
                         attempt.updated_at.isoformat(),
                     ),
                 )
+                stored = attempt.model_copy(deep=True)
                 self._conn.commit()
-                stored = self._load_dispatch_unlocked(attempt.dispatch_id)
-                if stored is None:
-                    raise DispatchTransactionError(
-                        "dispatch disappeared after insert",
-                    )
                 return stored.model_copy(deep=True)
             except (
                 DispatchInvalidTransition,
@@ -770,7 +766,7 @@ class SqliteGameRepository:
             if existing is None:
                 raise DispatchNotFound(dispatch_id)
             placeholders = ", ".join("?" for _ in allowed_statuses)
-            updated_at = self._dispatch_now()
+            updated_at = datetime.now(timezone.utc)
             cur = self._conn.execute(
                 "UPDATE autonomous_dispatch_attempts SET status = ?, "
                 "state_version = state_version + 1, reason_code = ?, updated_at = ? "
@@ -778,7 +774,7 @@ class SqliteGameRepository:
                 (
                     target_status.value,
                     reason_code,
-                    updated_at,
+                    updated_at.isoformat(),
                     dispatch_id,
                     expected_version,
                     *(status.value for status in allowed_statuses),
@@ -792,12 +788,16 @@ class SqliteGameRepository:
                 if current.state_version != expected_version:
                     raise DispatchStateConflict(dispatch_id)
                 raise DispatchInvalidTransition(dispatch_id)
+            updated = existing.model_copy(
+                deep=True,
+                update={
+                    "status": target_status,
+                    "state_version": existing.state_version + 1,
+                    "reason_code": reason_code,
+                    "updated_at": updated_at,
+                },
+            )
             self._conn.commit()
-            updated = self._load_dispatch_unlocked(dispatch_id)
-            if updated is None:
-                raise DispatchTransactionError(
-                    "dispatch disappeared after transition",
-                )
             return updated.model_copy(deep=True)
         except (
             DispatchNotFound,
@@ -929,7 +929,12 @@ class SqliteGameRepository:
                         result.result_hash,
                         result.result_kind,
                         result.outcome.value,
-                        result.model_dump_json(),
+                        json.dumps(
+                            result.model_dump(mode="json"),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
                         result.recorded_at.isoformat(),
                     ),
                 )

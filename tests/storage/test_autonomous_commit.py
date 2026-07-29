@@ -7,6 +7,7 @@
 修改日期: 2026-07-29
 """
 
+import json
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +50,7 @@ from werewolf_agent.storage.durable_dispatch import (
     DispatchRecoveryBlocked,
     DispatchResultConflict,
     DispatchStateConflict,
+    DispatchTransactionError,
 )
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 from werewolf_agent.storage.sqlite_store import SqliteGameRepository
@@ -585,4 +587,95 @@ def test_sqlite_dispatch_result_rollback_preserves_attempt(tmp_path) -> None:
     assert loaded is not None
     assert loaded.status is DispatchStatus.DISPATCHED
     assert loaded.state_version == 2
+    repository.close()
+
+
+def test_sqlite_dispatch_result_json_is_canonical_utf8(tmp_path) -> None:
+    def record_json(payload: dict[str, object], db_name: str) -> str:
+        repository = SqliteGameRepository(str(tmp_path / db_name))
+        repository.save_game(GameState(game_id="g1"))
+        repository.create_dispatch(_dispatch_attempt())
+        repository.mark_dispatching("dispatch-1", expected_version=0)
+        repository.mark_dispatched("dispatch-1", expected_version=1)
+        repository.record_result(
+            "dispatch-1",
+            expected_version=2,
+            result=_dispatch_result(payload=payload),
+        )
+        raw = repository._conn.execute(
+            "SELECT result_json FROM autonomous_dispatch_results "
+            "WHERE dispatch_id = ?",
+            ("dispatch-1",),
+        ).fetchone()[0]
+        repository.close()
+        return raw
+
+    first = record_json({"z": "终", "a": {"y": 2, "x": 1}}, "canonical-a.db")
+    second = record_json({"a": {"x": 1, "y": 2}, "z": "终"}, "canonical-b.db")
+    expected = json.dumps(
+        json.loads(first),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert first == second
+    assert first == expected
+    assert "终" in first
+    assert "\\u7ec8" not in first
+
+
+def test_sqlite_dispatch_write_failures_roll_back_atomically(tmp_path) -> None:
+    repository = SqliteGameRepository(str(tmp_path / "dispatch-faults.db"))
+    repository.save_game(GameState(game_id="g1"))
+    repository._conn.executescript(
+        """
+        CREATE TRIGGER fail_dispatch_insert
+        BEFORE INSERT ON autonomous_dispatch_attempts
+        BEGIN SELECT RAISE(ABORT, 'injected dispatch insert failure'); END;
+        """,
+    )
+    with pytest.raises(DispatchTransactionError):
+        repository.create_dispatch(_dispatch_attempt())
+    assert repository.load_dispatch("dispatch-1") is None
+
+    repository._conn.execute("DROP TRIGGER fail_dispatch_insert")
+    repository._conn.commit()
+    repository.create_dispatch(_dispatch_attempt())
+    repository._conn.executescript(
+        """
+        CREATE TRIGGER fail_dispatch_update
+        BEFORE UPDATE ON autonomous_dispatch_attempts
+        WHEN NEW.status = 'dispatching'
+        BEGIN SELECT RAISE(ABORT, 'injected dispatch update failure'); END;
+        """,
+    )
+    with pytest.raises(DispatchTransactionError):
+        repository.mark_dispatching("dispatch-1", expected_version=0)
+    pending = repository.load_dispatch("dispatch-1")
+    assert pending is not None
+    assert pending.status is DispatchStatus.PENDING
+    assert pending.state_version == 0
+
+    repository._conn.execute("DROP TRIGGER fail_dispatch_update")
+    repository._conn.commit()
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.mark_dispatched("dispatch-1", expected_version=1)
+    repository._conn.executescript(
+        """
+        CREATE TRIGGER fail_dispatch_result
+        BEFORE INSERT ON autonomous_dispatch_results
+        BEGIN SELECT RAISE(ABORT, 'injected dispatch result failure'); END;
+        """,
+    )
+    with pytest.raises(DispatchTransactionError):
+        repository.record_result(
+            "dispatch-1", expected_version=2, result=_dispatch_result()
+        )
+    dispatched = repository.load_dispatch("dispatch-1")
+    assert dispatched is not None
+    assert dispatched.status is DispatchStatus.DISPATCHED
+    assert dispatched.state_version == 2
+    assert repository._conn.execute(
+        "SELECT COUNT(*) FROM autonomous_dispatch_results"
+    ).fetchone()[0] == 0
     repository.close()
