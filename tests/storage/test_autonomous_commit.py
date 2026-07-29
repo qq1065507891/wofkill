@@ -512,3 +512,77 @@ def test_memory_dispatch_rejects_unknown_ids_and_cleans_up_on_delete() -> None:
     assert repository._dispatch_attempts == {}
     assert repository._dispatch_results == {}
     assert repository._dispatch_key_index == {}
+
+
+def test_sqlite_dispatch_persists_across_reopen_and_enforces_barrier(tmp_path) -> None:
+    db_path = tmp_path / "dispatch-restart.db"
+    repository = SqliteGameRepository(str(db_path))
+    repository.save_game(GameState(game_id="g1"))
+    assert repository.supports_durable_dispatch() is True
+    repository.create_dispatch(_dispatch_attempt())
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.mark_dispatched("dispatch-1", expected_version=1)
+    repository.close()
+
+    reopened = SqliteGameRepository(str(db_path))
+    loaded = reopened.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is DispatchStatus.DISPATCHED
+    assert loaded.state_version == 2
+    with pytest.raises(DispatchRecoveryBlocked):
+        reopened.assert_dispatch_allowed("g1")
+    reopened.close()
+
+
+def test_sqlite_dispatch_cas_late_result_replay_and_conflict(tmp_path) -> None:
+    repository = SqliteGameRepository(str(tmp_path / "dispatch-cas.db"))
+    repository.save_game(GameState(game_id="g1"))
+    repository.create_dispatch(_dispatch_attempt())
+    with pytest.raises(DispatchInvalidTransition):
+        repository.mark_dispatched("dispatch-1", expected_version=0)
+    with pytest.raises(DispatchStateConflict):
+        repository.mark_dispatching("dispatch-1", expected_version=99)
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.mark_dispatched("dispatch-1", expected_version=1)
+    result = _dispatch_result()
+    assert repository.record_result("dispatch-1", expected_version=2, result=result) is DispatchResultDisposition.RECORDED
+    assert repository.record_result("dispatch-1", expected_version=3, result=result) is DispatchResultDisposition.REPLAYED
+    with pytest.raises(DispatchResultConflict):
+        repository.record_result(
+            "dispatch-1", expected_version=3, result=_dispatch_result(result_hash="b" * 64)
+        )
+
+    cancelled = _dispatch_attempt(dispatch_id="dispatch-2", provider_idempotency_key="provider-key-2")
+    repository.create_dispatch(cancelled)
+    repository.cancel_dispatch("dispatch-2", expected_version=0, reason_code="cancelled")
+    assert repository.record_result("dispatch-2", expected_version=1, result=_dispatch_result(dispatch_id="dispatch-2", result_id="result-2")) is DispatchResultDisposition.DISCARDED_LATE
+    repository.close()
+
+
+def test_sqlite_dispatch_result_rollback_preserves_attempt(tmp_path) -> None:
+    repository = SqliteGameRepository(str(tmp_path / "dispatch-rollback.db"))
+    repository.save_game(GameState(game_id="g1"))
+    repository.create_dispatch(_dispatch_attempt())
+    repository.create_dispatch(
+        _dispatch_attempt(
+            dispatch_id="dispatch-2",
+            provider_idempotency_key="provider-key-2",
+        )
+    )
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.mark_dispatched("dispatch-1", expected_version=1)
+    repository._conn.execute(
+        "INSERT INTO autonomous_dispatch_results "
+        "(result_id, dispatch_id, request_hash, lease_hash, result_hash, result_kind, outcome, result_json, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("result-1", "dispatch-2", DISPATCH_HASH, DISPATCH_HASH, DISPATCH_HASH, "model_response", "success", "{}", DISPATCH_NOW.isoformat()),
+    )
+    repository._conn.commit()
+
+    with pytest.raises(DispatchResultConflict):
+        repository.record_result("dispatch-1", expected_version=2, result=_dispatch_result())
+    loaded = repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is DispatchStatus.DISPATCHED
+    assert loaded.state_version == 2
+    repository.close()

@@ -51,6 +51,8 @@ def test_migration_manager_does_not_apply_autonomous_schema(tmp_path) -> None:
         "autonomous_public_records",
         "autonomous_audit_records",
         "autonomous_projection_outbox",
+        "autonomous_dispatch_attempts",
+        "autonomous_dispatch_results",
     } & tables
 
 
@@ -88,6 +90,45 @@ def test_fresh_sqlite_schema_includes_autonomous_commit_tables(tmp_path) -> None
         "autonomous_projection_outbox",
     } <= tables
     repository.close()
+
+
+def test_fresh_sqlite_schema_includes_durable_dispatch_tables_and_indexes(tmp_path) -> None:
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    repository = SqliteGameRepository(str(tmp_path / "dispatch-schema.db"))
+    tables = {
+        row[0]
+        for row in repository._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'",
+        ).fetchall()
+    }
+    indexes = {
+        row[0]
+        for row in repository._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'",
+        ).fetchall()
+    }
+    assert {
+        "autonomous_dispatch_attempts",
+        "autonomous_dispatch_results",
+    } <= tables
+    assert {
+        "uq_dispatch_executor_key",
+        "idx_dispatch_game_status_created",
+    } <= indexes
+    repository.close()
+
+
+def test_migration_manager_does_not_apply_durable_dispatch_schema(tmp_path) -> None:
+    from werewolf_agent.storage.migrations import MIGRATIONS
+    from werewolf_agent.storage.sqlite_store import _AUTONOMOUS_DISPATCH_SCHEMA
+
+    assert "autonomous_dispatch_attempts" in _AUTONOMOUS_DISPATCH_SCHEMA
+    assert all(
+        "autonomous_dispatch_attempts" not in migration.sql
+        and "autonomous_dispatch_results" not in migration.sql
+        for migration in MIGRATIONS
+    )
 
 
 def test_repository_upgrades_legacy_events_table_and_round_trips_v2(tmp_path) -> None:
