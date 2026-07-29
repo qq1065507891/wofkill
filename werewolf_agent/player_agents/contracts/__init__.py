@@ -6,11 +6,17 @@
 创建日期: 2026-07-29
 """
 
+from werewolf_agent.player_agents.contracts.disclosure import DisclosureGrant
 from werewolf_agent.player_agents.contracts.errors import (
     ProposalFailure,
     ValidationErrorCode,
 )
 from werewolf_agent.player_agents.contracts.proposals import SpeechProposalEnvelope
+from werewolf_agent.player_agents.contracts.records import (
+    PublicSpeechRecord,
+    RecordOrigin,
+    RenderedUtterance,
+)
 from werewolf_agent.player_agents.contracts.revisions import (
     ReadReference,
     RevisionContext,
@@ -69,6 +75,7 @@ __all__ = [
     "ConfidenceBucket",
     "ConflictClass",
     "ConsequenceKind",
+    "DisclosureGrant",
     "EvidenceRelation",
     "LegalActionWindow",
     "LengthClass",
@@ -78,9 +85,12 @@ __all__ = [
     "PrivateResultDisclosure",
     "ProposalFailure",
     "PublicEvidenceCitation",
+    "PublicSpeechRecord",
     "QuestionMove",
     "QuestionTopic",
     "ReadReference",
+    "RecordOrigin",
+    "RenderedUtterance",
     "RequestedField",
     "ResponseKind",
     "ResponseMove",
