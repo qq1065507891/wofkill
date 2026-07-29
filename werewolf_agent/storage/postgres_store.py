@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：PostgreSQL 游戏仓库，支持事件兼容读写与自主玩家原子 CommitTurn。
+功能描述：PostgreSQL 游戏仓库，支持事件兼容读写、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
 作者: Project contributors
 创建日期：2025-01-15
 修改日期：2026-07-29
@@ -12,12 +12,21 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import (
     normalize_resolution_batch_fields,
     serialize_resolution_batch_fields,
+)
+from werewolf_agent.player_agents.contracts.dispatch import (
+    DispatchAttempt,
+    DispatchOperationKind,
+    DispatchRecoveryPolicy,
+    DispatchResultDisposition,
+    DispatchResultRecord,
+    DispatchStatus,
 )
 from werewolf_agent.player_agents.contracts.transactions import (
     CommitResult,
@@ -42,6 +51,16 @@ from werewolf_agent.storage.autonomous_commit import (
     build_commit_result,
     build_committed_event,
     request_hash,
+)
+from werewolf_agent.storage.durable_dispatch import (
+    DispatchIdempotencyConflict,
+    DispatchInvalidTransition,
+    DispatchLeaseMismatch,
+    DispatchNotFound,
+    DispatchRecoveryBlocked,
+    DispatchResultConflict,
+    DispatchStateConflict,
+    DispatchTransactionError,
 )
 from werewolf_agent.storage.sqlite_store import (
     _deserialize_game_state,
@@ -396,6 +415,488 @@ class PostgresGameRepository:
                 raise CommitTransactionError(
                     "autonomous CommitTurn transaction failed",
                 ) from exc
+
+    # -- Durable dispatch --------------------------------------------------
+
+    def supports_durable_dispatch(self) -> bool:
+        """仅在连接已存在且 durable dispatch schema 完成后声明 capability。"""
+        return self._conn is not None and bool(
+            getattr(self, "_autonomous_schema_ready", False),
+        )
+
+    @staticmethod
+    def _dispatch_copy(attempt: DispatchAttempt) -> DispatchAttempt:
+        """从 ORM/数据库值重建防御性副本，避免泄露冻结映射内部对象。"""
+        return DispatchAttempt.model_validate(attempt.model_dump(round_trip=True))
+
+    @staticmethod
+    def _dispatch_datetime(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+    @classmethod
+    def _dispatch_from_row(cls, row: Any) -> DispatchAttempt:
+        return DispatchAttempt.model_validate(
+            {
+                "dispatch_id": row[0],
+                "game_id": row[1],
+                "turn_id": row[2],
+                "actor_id": row[3],
+                "operation_kind": DispatchOperationKind(row[4]),
+                "executor_id": row[5],
+                "provider_idempotency_key": row[6],
+                "recovery_policy": DispatchRecoveryPolicy(row[7]),
+                "request_hash": row[8],
+                "lease_hash": row[9],
+                "view_fingerprint": row[10],
+                "deadline": cls._dispatch_datetime(row[11]),
+                "status": DispatchStatus(row[12]),
+                "state_version": int(row[13]),
+                "reason_code": row[14],
+                "created_at": cls._dispatch_datetime(row[15]),
+                "updated_at": cls._dispatch_datetime(row[16]),
+            },
+        )
+
+    @staticmethod
+    def _dispatch_select_columns() -> str:
+        return (
+            "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
+            "executor_id, provider_idempotency_key, recovery_policy, request_hash, "
+            "lease_hash, view_fingerprint, deadline, status, state_version, "
+            "reason_code, created_at, updated_at"
+        )
+
+    def _load_dispatch_row(
+        self,
+        conn: Any,
+        dispatch_id: str,
+        *,
+        for_update: bool = False,
+    ) -> DispatchAttempt | None:
+        suffix = " FOR UPDATE" if for_update else ""
+        row = conn.execute(
+            "SELECT "
+            f"{self._dispatch_select_columns()} "
+            "FROM autonomous_dispatch_attempts WHERE dispatch_id = %s"
+            f"{suffix}",
+            (dispatch_id,),
+        ).fetchone()
+        return None if row is None else self._dispatch_from_row(row)
+
+    @staticmethod
+    def _lock_dispatch_game(conn: Any, game_id: str) -> None:
+        row = conn.execute(
+            "SELECT 1 FROM games WHERE game_id = %s FOR UPDATE",
+            (game_id,),
+        ).fetchone()
+        if row is None:
+            raise DispatchTransactionError(f"game does not exist: {game_id}")
+
+    @staticmethod
+    def _rowcount_is_one(cursor: Any) -> bool:
+        rowcount = getattr(cursor, "rowcount", 1)
+        return not isinstance(rowcount, int) or rowcount == 1
+
+    @staticmethod
+    def _dispatch_result_copy(result: DispatchResultRecord) -> DispatchResultRecord:
+        return DispatchResultRecord.model_validate(result.model_dump(round_trip=True))
+
+    @classmethod
+    def _result_from_row(cls, row: Any) -> DispatchResultRecord:
+        if len(row) == 1:
+            raw = row[0]
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            return DispatchResultRecord.model_validate(raw)
+        payload = row[7]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        # 兼容返回完整结果对象的测试替身；生产表只保存 canonical payload。
+        if (
+            isinstance(payload, dict)
+            and "payload" in payload
+            and "result_id" in payload
+        ):
+            payload = payload["payload"]
+        return DispatchResultRecord.model_validate(
+            {
+                "result_id": row[0],
+                "dispatch_id": row[1],
+                "request_hash": row[2],
+                "lease_hash": row[3],
+                "result_hash": row[4],
+                "result_kind": row[5],
+                "outcome": row[6],
+                "payload": payload,
+                "recorded_at": cls._dispatch_datetime(row[8]),
+            },
+        )
+
+    def _load_result_row(
+        self,
+        conn: Any,
+        dispatch_id: str,
+        *,
+        for_update: bool = False,
+    ) -> DispatchResultRecord | None:
+        suffix = " FOR UPDATE" if for_update else ""
+        row = conn.execute(
+            "SELECT result_id, dispatch_id, request_hash, lease_hash, result_hash, "
+            "result_kind, outcome, result_json, recorded_at "
+            "FROM autonomous_dispatch_results WHERE dispatch_id = %s"
+            f"{suffix}",
+            (dispatch_id,),
+        ).fetchone()
+        return None if row is None else self._result_from_row(row)
+
+    def create_dispatch(self, attempt: DispatchAttempt) -> DispatchAttempt:
+        """在外部网络 I/O 前原子持久化一个 PENDING dispatch 意图。"""
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                if (
+                    attempt.status is not DispatchStatus.PENDING
+                    or attempt.state_version != 0
+                ):
+                    raise DispatchInvalidTransition(
+                        "new dispatch must start in PENDING at version 0",
+                    )
+                self._lock_dispatch_game(conn, attempt.game_id)
+                if self._load_dispatch_row(conn, attempt.dispatch_id, for_update=True):
+                    raise DispatchIdempotencyConflict(attempt.dispatch_id)
+                key_row = conn.execute(
+                    "SELECT dispatch_id FROM autonomous_dispatch_attempts "
+                    "WHERE executor_id = %s AND provider_idempotency_key = %s "
+                    "FOR UPDATE",
+                    (attempt.executor_id, attempt.provider_idempotency_key),
+                ).fetchone()
+                if key_row is not None:
+                    raise DispatchIdempotencyConflict(
+                        "provider idempotency key already exists: "
+                        f"{(attempt.executor_id, attempt.provider_idempotency_key)}",
+                    )
+                barrier_row = conn.execute(
+                    "SELECT dispatch_id FROM autonomous_dispatch_attempts "
+                    "WHERE game_id = %s AND status IN (%s, %s) FOR UPDATE",
+                    (
+                        attempt.game_id,
+                        DispatchStatus.DISPATCHING.value,
+                        DispatchStatus.DISPATCHED.value,
+                    ),
+                ).fetchone()
+                if barrier_row is not None:
+                    raise DispatchRecoveryBlocked(attempt.game_id)
+                conn.execute(
+                    "INSERT INTO autonomous_dispatch_attempts ("
+                    "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
+                    "executor_id, provider_idempotency_key, recovery_policy, "
+                    "request_hash, lease_hash, view_fingerprint, deadline, status, "
+                    "state_version, reason_code, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s, %s)",
+                    (
+                        attempt.dispatch_id,
+                        attempt.game_id,
+                        attempt.turn_id,
+                        attempt.actor_id,
+                        attempt.operation_kind.value,
+                        attempt.executor_id,
+                        attempt.provider_idempotency_key,
+                        attempt.recovery_policy.value,
+                        attempt.request_hash,
+                        attempt.lease_hash,
+                        attempt.view_fingerprint,
+                        attempt.deadline,
+                        attempt.status.value,
+                        attempt.state_version,
+                        attempt.reason_code,
+                        attempt.created_at,
+                        attempt.updated_at,
+                    ),
+                )
+                conn.commit()
+                return self._dispatch_copy(attempt)
+            except (
+                DispatchInvalidTransition,
+                DispatchIdempotencyConflict,
+                DispatchRecoveryBlocked,
+                DispatchTransactionError,
+            ):
+                conn.rollback()
+                raise
+            except Exception as exc:
+                conn.rollback()
+                raise DispatchTransactionError(
+                    "durable dispatch create transaction failed",
+                ) from exc
+
+    def _transition_dispatch(
+        self,
+        dispatch_id: str,
+        expected_version: int,
+        allowed_statuses: tuple[DispatchStatus, ...],
+        target_status: DispatchStatus,
+        reason_code: str | None = None,
+    ) -> DispatchAttempt:
+        conn = self._ensure_connection()
+        try:
+            # 先读出 game_id，再按 game -> dispatch 顺序加锁，避免与 create
+            # 的同一顺序相反而形成跨事务死锁。
+            existing = self._load_dispatch_row(conn, dispatch_id)
+            if existing is None:
+                raise DispatchNotFound(dispatch_id)
+            self._lock_dispatch_game(conn, existing.game_id)
+            existing = self._load_dispatch_row(conn, dispatch_id, for_update=True)
+            if existing is None:
+                raise DispatchNotFound(dispatch_id)
+            if existing.state_version != expected_version:
+                raise DispatchStateConflict(dispatch_id)
+            if existing.status not in allowed_statuses:
+                raise DispatchInvalidTransition(dispatch_id)
+            updated_at = datetime.now(timezone.utc)
+            status_placeholders = ", ".join("%s" for _ in allowed_statuses)
+            cursor = conn.execute(
+                "UPDATE autonomous_dispatch_attempts SET status = %s, "
+                "state_version = state_version + 1, reason_code = %s, updated_at = %s "
+                "WHERE dispatch_id = %s AND state_version = %s "
+                f"AND status IN ({status_placeholders})",
+                (
+                    target_status.value,
+                    reason_code,
+                    updated_at,
+                    dispatch_id,
+                    expected_version,
+                    *(status.value for status in allowed_statuses),
+                ),
+            )
+            if not self._rowcount_is_one(cursor):
+                raise DispatchStateConflict(dispatch_id)
+            updated = existing.model_copy(
+                update={
+                    "status": target_status,
+                    "state_version": existing.state_version + 1,
+                    "reason_code": reason_code,
+                    "updated_at": updated_at,
+                },
+            )
+            conn.commit()
+            return self._dispatch_copy(updated)
+        except (
+            DispatchNotFound,
+            DispatchStateConflict,
+            DispatchInvalidTransition,
+            DispatchTransactionError,
+        ):
+            conn.rollback()
+            raise
+        except Exception as exc:
+            conn.rollback()
+            raise DispatchTransactionError(
+                "durable dispatch transition transaction failed",
+            ) from exc
+
+    def mark_dispatching(
+        self,
+        dispatch_id: str,
+        expected_version: int,
+    ) -> DispatchAttempt:
+        with self._lock:
+            return self._transition_dispatch(
+                dispatch_id,
+                expected_version,
+                (DispatchStatus.PENDING,),
+                DispatchStatus.DISPATCHING,
+            )
+
+    def mark_dispatched(
+        self,
+        dispatch_id: str,
+        expected_version: int,
+    ) -> DispatchAttempt:
+        with self._lock:
+            return self._transition_dispatch(
+                dispatch_id,
+                expected_version,
+                (DispatchStatus.DISPATCHING,),
+                DispatchStatus.DISPATCHED,
+            )
+
+    def cancel_dispatch(
+        self,
+        dispatch_id: str,
+        expected_version: int,
+        reason_code: str,
+    ) -> DispatchAttempt:
+        with self._lock:
+            return self._transition_dispatch(
+                dispatch_id,
+                expected_version,
+                (DispatchStatus.PENDING, DispatchStatus.DISPATCHING),
+                DispatchStatus.CANCELLED,
+                reason_code,
+            )
+
+    def mark_unknown_outcome(
+        self,
+        dispatch_id: str,
+        expected_version: int,
+        reason_code: str,
+    ) -> DispatchAttempt:
+        with self._lock:
+            return self._transition_dispatch(
+                dispatch_id,
+                expected_version,
+                (DispatchStatus.DISPATCHING, DispatchStatus.DISPATCHED),
+                DispatchStatus.UNKNOWN_OUTCOME,
+                reason_code,
+            )
+
+    def record_result(
+        self,
+        dispatch_id: str,
+        expected_version: int,
+        result: DispatchResultRecord,
+    ) -> DispatchResultDisposition:
+        """原子写入结果并使用 dispatch 状态版本 CAS 推进 attempt。"""
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                attempt = self._load_dispatch_row(conn, dispatch_id)
+                if attempt is None:
+                    raise DispatchNotFound(dispatch_id)
+                self._lock_dispatch_game(conn, attempt.game_id)
+                attempt = self._load_dispatch_row(conn, dispatch_id, for_update=True)
+                if attempt is None:
+                    raise DispatchNotFound(dispatch_id)
+                if attempt.state_version != expected_version:
+                    raise DispatchStateConflict(dispatch_id)
+                if result.dispatch_id != dispatch_id:
+                    raise DispatchResultConflict(dispatch_id)
+                if result.request_hash != attempt.request_hash:
+                    raise DispatchResultConflict(dispatch_id)
+                if result.lease_hash != attempt.lease_hash:
+                    raise DispatchLeaseMismatch(dispatch_id)
+
+                prior = self._load_result_row(conn, dispatch_id, for_update=True)
+                if prior is not None:
+                    if prior == result:
+                        conn.rollback()
+                        return DispatchResultDisposition.REPLAYED
+                    raise DispatchResultConflict(dispatch_id)
+                if attempt.status in {
+                    DispatchStatus.CANCELLED,
+                    DispatchStatus.UNKNOWN_OUTCOME,
+                }:
+                    conn.rollback()
+                    return DispatchResultDisposition.DISCARDED_LATE
+                if attempt.status is not DispatchStatus.DISPATCHED:
+                    raise DispatchInvalidTransition(dispatch_id)
+                result_id_row = conn.execute(
+                    "SELECT dispatch_id FROM autonomous_dispatch_results "
+                    "WHERE result_id = %s FOR UPDATE",
+                    (result.result_id,),
+                ).fetchone()
+                if result_id_row is not None:
+                    raise DispatchResultConflict(dispatch_id)
+
+                payload = json.dumps(
+                    result.model_dump(mode="json")["payload"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                conn.execute(
+                    "INSERT INTO autonomous_dispatch_results ("
+                    "result_id, dispatch_id, request_hash, lease_hash, result_hash, "
+                    "result_kind, outcome, result_json, recorded_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
+                    (
+                        result.result_id,
+                        dispatch_id,
+                        result.request_hash,
+                        result.lease_hash,
+                        result.result_hash,
+                        result.result_kind,
+                        result.outcome.value,
+                        payload,
+                        result.recorded_at,
+                    ),
+                )
+                updated_at = datetime.now(timezone.utc)
+                cursor = conn.execute(
+                    "UPDATE autonomous_dispatch_attempts SET status = %s, "
+                    "state_version = state_version + 1, reason_code = NULL, "
+                    "updated_at = %s WHERE dispatch_id = %s "
+                    "AND state_version = %s AND status = %s",
+                    (
+                        DispatchStatus.RESULT_RECORDED.value,
+                        updated_at,
+                        dispatch_id,
+                        expected_version,
+                        DispatchStatus.DISPATCHED.value,
+                    ),
+                )
+                if not self._rowcount_is_one(cursor):
+                    raise DispatchStateConflict(dispatch_id)
+                conn.commit()
+                return DispatchResultDisposition.RECORDED
+            except (
+                DispatchNotFound,
+                DispatchStateConflict,
+                DispatchInvalidTransition,
+                DispatchLeaseMismatch,
+                DispatchResultConflict,
+                DispatchTransactionError,
+            ):
+                conn.rollback()
+                raise
+            except Exception as exc:
+                conn.rollback()
+                raise DispatchTransactionError(
+                    "durable dispatch result transaction failed",
+                ) from exc
+
+    def load_dispatch(self, dispatch_id: str) -> DispatchAttempt | None:
+        with self._lock:
+            attempt = self._load_dispatch_row(
+                self._ensure_connection(), dispatch_id,
+            )
+            return None if attempt is None else self._dispatch_copy(attempt)
+
+    def list_recoverable_dispatches(self, game_id: str) -> list[DispatchAttempt]:
+        with self._lock:
+            rows = self._ensure_connection().execute(
+                "SELECT "
+                f"{self._dispatch_select_columns()} "
+                "FROM autonomous_dispatch_attempts "
+                "WHERE game_id = %s AND status IN (%s, %s) "
+                "ORDER BY created_at, dispatch_id",
+                (
+                    game_id,
+                    DispatchStatus.DISPATCHING.value,
+                    DispatchStatus.DISPATCHED.value,
+                ),
+            ).fetchall()
+            return [
+                self._dispatch_copy(self._dispatch_from_row(row))
+                for row in rows
+            ]
+
+    def assert_dispatch_allowed(self, game_id: str) -> None:
+        with self._lock:
+            row = self._ensure_connection().execute(
+                "SELECT dispatch_id FROM autonomous_dispatch_attempts "
+                "WHERE game_id = %s AND status IN (%s, %s) LIMIT 1",
+                (
+                    game_id,
+                    DispatchStatus.DISPATCHING.value,
+                    DispatchStatus.DISPATCHED.value,
+                ),
+            ).fetchone()
+            if row is not None:
+                raise DispatchRecoveryBlocked(game_id)
 
     def save_deaths(self, game_id: str, deaths: list[Death]) -> None:
         with self._lock:
@@ -876,6 +1377,51 @@ class PostgresGameRepository:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_autonomous_outbox_revision "
             "ON autonomous_projection_outbox (game_id, committed_revision)"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS autonomous_dispatch_attempts (
+                dispatch_id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+                turn_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                operation_kind TEXT NOT NULL,
+                executor_id TEXT NOT NULL,
+                provider_idempotency_key TEXT NOT NULL,
+                recovery_policy TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                lease_hash TEXT NOT NULL,
+                view_fingerprint TEXT NOT NULL,
+                deadline TIMESTAMPTZ NOT NULL,
+                status TEXT NOT NULL,
+                state_version BIGINT NOT NULL,
+                reason_code TEXT,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS autonomous_dispatch_results (
+                result_id TEXT PRIMARY KEY,
+                dispatch_id TEXT NOT NULL UNIQUE
+                    REFERENCES autonomous_dispatch_attempts(dispatch_id)
+                    ON DELETE CASCADE,
+                request_hash TEXT NOT NULL,
+                lease_hash TEXT NOT NULL,
+                result_hash TEXT NOT NULL,
+                result_kind TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                result_json JSONB NOT NULL,
+                recorded_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "uq_autonomous_dispatch_executor_provider_key "
+            "ON autonomous_dispatch_attempts (executor_id, provider_idempotency_key)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_autonomous_dispatch_game_status_created "
+            "ON autonomous_dispatch_attempts (game_id, status, created_at, dispatch_id)"
         )
 
     @staticmethod

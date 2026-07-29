@@ -7,9 +7,16 @@
 """
 
 import threading
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 from tests.player_agents.test_transaction_contracts import _request
+from werewolf_agent.player_agents.contracts.dispatch import (
+    DispatchAttempt,
+    DispatchOperationKind,
+    DispatchRecoveryPolicy,
+    DispatchStatus,
+)
 
 
 def _repository_without_connection():
@@ -128,6 +135,82 @@ def test_postgres_schema_contains_all_autonomous_tables() -> None:
         assert f"create table if not exists {table}" in sql
     assert "jsonb" in sql
     assert "%s" not in sql
+
+
+def _dispatch_attempt(**updates: object) -> DispatchAttempt:
+    data: dict[str, object] = {
+        "dispatch_id": "dispatch-1",
+        "game_id": "game-1",
+        "turn_id": "turn-1",
+        "actor_id": "p01",
+        "operation_kind": DispatchOperationKind.MODEL,
+        "executor_id": "mock-provider",
+        "provider_idempotency_key": "provider-key-1",
+        "recovery_policy": DispatchRecoveryPolicy.IDEMPOTENT_LOOKUP_OR_REISSUE,
+        "request_hash": "a" * 64,
+        "lease_hash": "b" * 64,
+        "view_fingerprint": "c" * 64,
+        "deadline": datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
+        "created_at": datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        "updated_at": datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        "status": DispatchStatus.PENDING,
+        "state_version": 0,
+    }
+    data.update(updates)
+    return DispatchAttempt.model_validate(data)
+
+
+def test_postgres_schema_contains_durable_dispatch_tables_and_indexes() -> None:
+    repository = _repository_without_connection()
+    connection = _clean_schema_connection()
+
+    repository._ensure_schema_transaction(connection)
+
+    sql = " ".join(call.args[0].lower() for call in connection.execute.call_args_list)
+    assert "create table if not exists autonomous_dispatch_attempts" in sql
+    assert "create table if not exists autonomous_dispatch_results" in sql
+    assert "timestamptz" in sql
+    assert "state_version bigint" in sql
+    assert "references games(game_id) on delete cascade" in sql
+    assert "jsonb" in sql
+    assert "unique index" in sql
+    assert "executor_id, provider_idempotency_key" in sql
+    assert "game_id, status, created_at" in sql
+
+
+def test_postgres_durable_capability_never_opens_connection() -> None:
+    repository = _repository_without_connection()
+
+    assert repository.supports_durable_dispatch() is False
+    assert repository._conn is None
+
+
+def test_postgres_dispatch_transition_locks_game_and_attempt_rows() -> None:
+    repository = _repository_without_connection()
+    repository._conn = MagicMock()
+    repository._autonomous_schema_ready = True
+    row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "pending", 0,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+    repository._conn.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value=row)),
+        MagicMock(fetchone=MagicMock(return_value=(1,))),
+        MagicMock(fetchone=MagicMock(return_value=row)),
+        MagicMock(rowcount=1),
+    ]
+
+    updated = repository.mark_dispatching("dispatch-1", 0)
+
+    assert updated.status is DispatchStatus.DISPATCHING
+    statements = " ".join(call.args[0].upper() for call in repository._conn.execute.call_args_list)
+    assert "FROM AUTONOMOUS_DISPATCH_ATTEMPTS" in statements
+    assert "FOR UPDATE" in statements
+    assert "FROM GAMES" in statements
+    repository._conn.commit.assert_called_once()
 
 
 def test_postgres_commit_smoke_replays_one_atomic_result() -> None:
