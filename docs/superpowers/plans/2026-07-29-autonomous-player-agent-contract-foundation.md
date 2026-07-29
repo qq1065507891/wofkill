@@ -2052,7 +2052,7 @@ Run:
 
 ```bash
 conda run -n wofkill python -m pytest tests/player_agents -v
-conda run -n wofkill python -m ruff check werewolf_agent/player_agents tests/player_agents scripts/export_player_agent_schemas.py
+conda run -n wofkill python -m ruff check --ignore UP009 werewolf_agent/player_agents tests/player_agents scripts/export_player_agent_schemas.py
 conda run -n wofkill python -m mypy werewolf_agent/player_agents
 ```
 
