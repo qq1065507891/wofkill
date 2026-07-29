@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 from __future__ import annotations
@@ -362,6 +363,10 @@ class SpeechProposalBody(StrictFrozenModel):
         if not set(self.delivery_plan.emphasis_move_ids) <= set(move_ids):
             raise ValueError("emphasis_move_ids must reference proposal moves")
 
+        require_unique(
+            self.response_record_refs,
+            field_name="response_record_refs",
+        )
         external_refs = {
             move.source_record_id
             for move in self.moves

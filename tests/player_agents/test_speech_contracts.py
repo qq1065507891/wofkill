@@ -109,3 +109,16 @@ def test_speech_rejects_duplicate_and_cyclic_move_references() -> None:
     ]
     with pytest.raises(ValidationError, match="move references must be acyclic"):
         SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
+
+
+def test_speech_rejects_duplicate_response_record_refs() -> None:
+    payload = _payload()
+    payload["body"]["response_record_refs"] = [  # type: ignore[index]
+        "public-3",
+        "public-3",
+    ]
+    with pytest.raises(
+        ValidationError,
+        match="response_record_refs must not contain duplicates",
+    ):
+        SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
