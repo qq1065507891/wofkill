@@ -66,13 +66,6 @@ class EventCandidate(StrictFrozenModel):
     payload: Mapping[str, Any] = Field(default_factory=dict)
     visibility: EventVisibility | None = None
 
-    @field_validator("visibility", mode="before")
-    @classmethod
-    def _known_visibility(cls, value: Any) -> EventVisibility | None:
-        if value is None or isinstance(value, EventVisibility):
-            return value
-        raise ValueError("visibility must be an EventVisibility value")
-
     @field_validator("payload")
     @classmethod
     def _immutable_payload(cls, value: Any) -> Mapping[str, Any]:

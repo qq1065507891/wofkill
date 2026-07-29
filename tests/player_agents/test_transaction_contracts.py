@@ -123,9 +123,13 @@ def test_event_candidate_requires_known_visibility_enum() -> None:
         visibility=EventVisibility.PUBLIC,
     )
     assert candidate.visibility == EventVisibility.PUBLIC
+    assert EventCandidate.model_validate_json(
+        candidate.model_dump_json(),
+    ) == candidate
 
-    with pytest.raises(ValidationError):
-        EventCandidate(type="speech_submitted", visibility="typo")
+    for invalid in ("public", "typo"):
+        with pytest.raises(ValidationError):
+            EventCandidate(type="speech_submitted", visibility=invalid)
 
 
 def test_request_hash_is_order_independent_for_json_object_keys() -> None:
