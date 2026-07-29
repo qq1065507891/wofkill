@@ -117,6 +117,11 @@ class InMemoryGameRepository:
             if request.game_id not in self._games:
                 raise CommitTransactionError(f"game does not exist: {request.game_id}")
             current = self._autonomous_revision(request.game_id)
+            event_head = self._autonomous_event_head(request.game_id)
+            if current != event_head:
+                raise CommitTransactionError(
+                    f"autonomous stream head {current} does not match event head {event_head}",
+                )
             if request.base_game_revision != current:
                 raise StaleCommitError(
                     f"expected revision {current}, got {request.base_game_revision}",
@@ -147,20 +152,21 @@ class InMemoryGameRepository:
         current = self._autonomous_revision_by_game.get(game_id)
         if current is not None:
             return current
-        events = self._events.get(game_id, [])
+        return self._autonomous_event_head(game_id)
+
+    def _autonomous_event_head(self, game_id: str) -> int:
+        stored_events = self._events.get(game_id, [])
         state = self._games.get(game_id)
-        if state is not None:
-            events = [*events, *state.events]
-        current = max(
+        state_events = state.events if state is not None else []
+        explicit_revision = max(
             (
                 event.sequence_number
-                for event in events
+                for event in [*stored_events, *state_events]
                 if isinstance(event.sequence_number, int)
             ),
             default=0,
         )
-        self._autonomous_revision_by_game[game_id] = current
-        return current
+        return max(explicit_revision, len(stored_events), len(state_events))
 
     def _check_autonomous_ids(
         self,
@@ -228,13 +234,36 @@ class InMemoryGameRepository:
         return list(self._games.values())
 
     def delete_game(self, game_id: str) -> None:
-        """删除游戏及其所有关联数据，包括自定义配置。"""
-        self._games.pop(game_id, None)
-        self._events.pop(game_id, None)
-        self._deaths.pop(game_id, None)
-        self._usage.pop(game_id, None)
-        self._evaluations.pop(game_id, None)
-        self._configs.pop(game_id, None)
+        """删除游戏及其 legacy 与自主提交关联数据。"""
+        with self._lock:
+            self._games.pop(game_id, None)
+            self._events.pop(game_id, None)
+            self._deaths.pop(game_id, None)
+            self._usage.pop(game_id, None)
+            self._evaluations.pop(game_id, None)
+            self._configs.pop(game_id, None)
+            self._autonomous_revision_by_game.pop(game_id, None)
+            self._autonomous_commits = {
+                key: result
+                for key, result in self._autonomous_commits.items()
+                if key[0] != game_id
+            }
+            self._autonomous_public_records = {
+                record_id: record
+                for record_id, record in self._autonomous_public_records.items()
+                if record.game_id != game_id
+            }
+            self._autonomous_audits = {
+                audit_id: stored
+                for audit_id, stored in self._autonomous_audits.items()
+                if stored[0] != game_id
+            }
+            for outbox_id, stored_game_id in tuple(
+                self._autonomous_outbox_game_ids.items(),
+            ):
+                if stored_game_id == game_id:
+                    self._autonomous_outbox_game_ids.pop(outbox_id, None)
+                    self._autonomous_outbox.pop(outbox_id, None)
 
     # -- RAG entries ---------------------------------------------------------
 

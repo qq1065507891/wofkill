@@ -228,7 +228,6 @@ class SqliteGameRepository:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
         _ensure_event_schema_v2(self._conn)
-        self._conn.executescript(_AUTONOMOUS_SCHEMA)
         self._conn.commit()
 
     def close(self) -> None:
@@ -407,6 +406,15 @@ class SqliteGameRepository:
                     )
                 else:
                     current = int(stream_row[0])
+                    event_head = int(self._conn.execute(
+                        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
+                        (request.game_id,),
+                    ).fetchone()[0] or 0)
+                    if current != event_head:
+                        raise CommitTransactionError(
+                            "autonomous stream head "
+                            f"{current} does not match event head {event_head}",
+                        )
                 if request.base_game_revision != current:
                     raise StaleCommitError(
                         f"expected revision {current}, got {request.base_game_revision}",

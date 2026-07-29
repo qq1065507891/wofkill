@@ -3,7 +3,7 @@
 验证 SQLite fresh schema、版本迁移与 repository 自动升级的一致性。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-29
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import re
 
 def test_sqlite_schema_matches_migration_v1():
     """审查 U10: SqliteGameRepository._SCHEMA 与 migrations.py v1 表集合必须一致。"""
-    from werewolf_agent.storage.sqlite_store import _SCHEMA
     from werewolf_agent.storage.migrations import MIGRATIONS
+    from werewolf_agent.storage.sqlite_store import _SCHEMA
     v1 = next((m for m in MIGRATIONS if m.version == 1), None)
     assert v1 is not None, "no v1 migration"
     schema_tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", _SCHEMA))
@@ -39,6 +39,26 @@ def test_fresh_sqlite_schema_includes_nullable_event_json() -> None:
     events_table = _SCHEMA.split("CREATE TABLE IF NOT EXISTS events", 1)[1].split(");", 1)[0]
     assert "event_json TEXT" in events_table
     assert "event_json TEXT NOT NULL" not in events_table
+
+
+def test_fresh_sqlite_schema_includes_autonomous_commit_tables(tmp_path) -> None:
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    repository = SqliteGameRepository(str(tmp_path / "autonomous-schema.db"))
+    tables = {
+        row[0]
+        for row in repository._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'",
+        ).fetchall()
+    }
+    assert {
+        "autonomous_game_streams",
+        "autonomous_turn_commits",
+        "autonomous_public_records",
+        "autonomous_audit_records",
+        "autonomous_projection_outbox",
+    } <= tables
+    repository.close()
 
 
 def test_repository_upgrades_legacy_events_table_and_round_trips_v2(tmp_path) -> None:

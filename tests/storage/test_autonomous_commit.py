@@ -7,12 +7,19 @@
 """
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.player_agents.test_public_record_contracts import _record_payload
 from tests.player_agents.test_transaction_contracts import _request
-from werewolf_agent.core.models import GameState
-from werewolf_agent.player_agents.contracts.transactions import EventCandidate
+from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.player_agents.contracts.errors import ValidationErrorCode
+from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
+from werewolf_agent.player_agents.contracts.transactions import (
+    EventCandidate,
+    ProjectionOutboxRecord,
+)
 from werewolf_agent.storage.autonomous_commit import (
     AutonomousCommitUnsupported,
     CommitTransactionError,
@@ -34,6 +41,18 @@ def test_request_hash_is_sha256_hex() -> None:
 def test_capability_guard_rejects_legacy_repository() -> None:
     with pytest.raises(AutonomousCommitUnsupported):
         require_autonomous_commit_repository(object())
+
+
+def test_storage_errors_expose_stable_contract_codes() -> None:
+    assert (
+        AutonomousCommitUnsupported.code
+        is ValidationErrorCode.UNKNOWN_CAPABILITY
+    )
+    assert StaleCommitError.code is ValidationErrorCode.STALE_READ_SET
+    assert (
+        IdempotencyConflictError.code
+        is ValidationErrorCode.IDEMPOTENCY_CONFLICT
+    )
 
 
 def test_build_event_assigns_authoritative_identity() -> None:
@@ -127,3 +146,109 @@ def test_sqlite_conflicting_outbox_rolls_back_every_write(tmp_path) -> None:
         ("g1",),
     ).fetchone()[0] == 0
     repository.close()
+
+
+@pytest.fixture(params=("memory", "sqlite"))
+def autonomous_repository(request, tmp_path):
+    if request.param == "memory":
+        repository = InMemoryGameRepository()
+    else:
+        repository = SqliteGameRepository(str(tmp_path / "shared.db"))
+    repository.save_game(GameState(game_id="g1"))
+    yield repository
+    close = getattr(repository, "close", None)
+    if callable(close):
+        close()
+
+
+def test_concurrent_duplicate_submissions_commit_once(autonomous_repository) -> None:
+    request = _request()
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(autonomous_repository.commit_turn, [request] * 50))
+
+    assert sum(not result.replayed for result in results) == 1
+    assert sum(result.replayed for result in results) == 49
+    assert autonomous_repository.load_game_revision("g1") == 1
+    assert len(autonomous_repository.load_events("g1")) == 1
+    assert len(autonomous_repository.load_outbox("g1")) == 1
+
+
+def test_public_record_is_bound_to_allocated_revision(autonomous_repository) -> None:
+    payload = _record_payload()
+    payload["game_id"] = "g1"
+    payload["committed_revision"] = 99
+    record = PublicSpeechRecord.model_validate(payload)
+
+    result = autonomous_repository.commit_turn(_request(public_record=record))
+
+    assert result.public_record_id == record.record_id
+    assert result.committed_revision == 1
+    if isinstance(autonomous_repository, InMemoryGameRepository):
+        stored = autonomous_repository._autonomous_public_records[record.record_id]
+        assert stored.committed_revision == 1
+    else:
+        raw = autonomous_repository._conn.execute(
+            "SELECT record_json FROM autonomous_public_records WHERE record_id = ?",
+            (record.record_id,),
+        ).fetchone()[0]
+        assert PublicSpeechRecord.model_validate_json(raw).committed_revision == 1
+
+
+def test_existing_outbox_id_leaves_no_partial_memory_commit() -> None:
+    repository = InMemoryGameRepository()
+    repository.save_game(GameState(game_id="g1"))
+    repository._autonomous_outbox["outbox-1"] = ProjectionOutboxRecord(
+        outbox_id="outbox-1",
+        kind="existing",
+    )
+    repository._autonomous_outbox_game_ids["outbox-1"] = "g1"
+
+    with pytest.raises(CommitTransactionError):
+        repository.commit_turn(_request())
+
+    assert repository.load_game_revision("g1") == 0
+    assert repository.load_events("g1") == []
+    assert repository._autonomous_commits == {}
+
+
+def test_existing_legacy_event_sets_initial_revision(autonomous_repository) -> None:
+    autonomous_repository.append_events(
+        "g1",
+        [GameEvent(type="legacy_event")],
+    )
+
+    result = autonomous_repository.commit_turn(_request(base_revision=1))
+
+    assert result.committed_revision == 2
+    assert result.event_id == "g1:e000002"
+
+
+def test_mixed_legacy_write_after_stream_creation_is_rejected(
+    autonomous_repository,
+) -> None:
+    autonomous_repository.commit_turn(_request())
+    autonomous_repository.append_events(
+        "g1",
+        [GameEvent(type="legacy_event_after_stream")],
+    )
+
+    with pytest.raises(CommitTransactionError, match="stream head"):
+        autonomous_repository.commit_turn(
+            _request(
+                turn_id="turn-2",
+                base_revision=1,
+                audit_ids=("audit-2",),
+                outbox_ids=("outbox-2",),
+            ),
+        )
+
+
+def test_delete_game_removes_autonomous_state(autonomous_repository) -> None:
+    autonomous_repository.commit_turn(_request())
+
+    autonomous_repository.delete_game("g1")
+    autonomous_repository.save_game(GameState(game_id="g1"))
+
+    assert autonomous_repository.load_game_revision("g1") == 0
+    assert autonomous_repository.load_outbox("g1") == []
+    assert autonomous_repository.commit_turn(_request()).committed_revision == 1

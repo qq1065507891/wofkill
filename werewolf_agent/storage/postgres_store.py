@@ -294,6 +294,15 @@ class PostgresGameRepository:
                     )
                 else:
                     current = int(stream_row[0])
+                    event_head = int(conn.execute(
+                        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = %s",
+                        (request.game_id,),
+                    ).fetchone()[0] or 0)
+                    if current != event_head:
+                        raise CommitTransactionError(
+                            "autonomous stream head "
+                            f"{current} does not match event head {event_head}",
+                        )
                 if request.base_game_revision != current:
                     raise StaleCommitError(
                         f"expected revision {current}, got {request.base_game_revision}",

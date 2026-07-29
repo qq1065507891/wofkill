@@ -8,11 +8,13 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_serializer, field_validator, model_validator
 
-from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.player_agents.contracts._base import (
     ContentHash,
     NonEmptyId,
@@ -24,12 +26,53 @@ from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
 from werewolf_agent.player_agents.contracts.revisions import ReadReference
 
 
+def _freeze_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("JSON object keys must be strings")
+        return MappingProxyType({
+            key: _freeze_json_value(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item) for item in value)
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise ValueError("value must be finite JSON data")
+
+
+def _freeze_json_object(value: Any) -> Mapping[str, Any]:
+    frozen = _freeze_json_value(value)
+    if not isinstance(frozen, Mapping):
+        raise TypeError("value must be a JSON object")
+    return frozen
+
+
+def _thaw_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value
+
+
 class EventCandidate(StrictFrozenModel):
     """由 Host 在仓储事务中补齐权威身份的事件候选。"""
 
     type: NonEmptyId
-    payload: dict[str, Any] = Field(default_factory=dict)
-    visibility: EventVisibility | None = None
+    payload: Mapping[str, Any] = Field(default_factory=dict)
+    visibility: NonEmptyId | None = None
+
+    @field_validator("payload")
+    @classmethod
+    def _immutable_payload(cls, value: Any) -> Mapping[str, Any]:
+        return _freeze_json_object(value)
+
+    @field_serializer("payload")
+    def _serialize_payload(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return _thaw_json_value(value)
 
 
 class CriticalAuditRecord(StrictFrozenModel):
@@ -37,7 +80,16 @@ class CriticalAuditRecord(StrictFrozenModel):
 
     audit_id: NonEmptyId
     kind: NonEmptyId
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: Mapping[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload")
+    @classmethod
+    def _immutable_payload(cls, value: Any) -> Mapping[str, Any]:
+        return _freeze_json_object(value)
+
+    @field_serializer("payload")
+    def _serialize_payload(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return _thaw_json_value(value)
 
 
 class ProjectionOutboxRecord(StrictFrozenModel):
@@ -45,7 +97,16 @@ class ProjectionOutboxRecord(StrictFrozenModel):
 
     outbox_id: NonEmptyId
     kind: NonEmptyId
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: Mapping[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload")
+    @classmethod
+    def _immutable_payload(cls, value: Any) -> Mapping[str, Any]:
+        return _freeze_json_object(value)
+
+    @field_serializer("payload")
+    def _serialize_payload(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return _thaw_json_value(value)
 
 
 class CommitTurnRequest(StrictFrozenModel):
@@ -57,11 +118,23 @@ class CommitTurnRequest(StrictFrozenModel):
     base_game_revision: int = Field(ge=0)
     read_set: tuple[ReadReference, ...] = ()
     proposal: SpeechProposalEnvelope
-    rule_result: dict[str, Any] = Field(default_factory=dict)
+    rule_result: Mapping[str, Any] = Field(default_factory=dict)
     event: EventCandidate
     public_record: PublicSpeechRecord | None = None
     critical_audit_records: tuple[CriticalAuditRecord, ...] = ()
     projection_outbox_records: tuple[ProjectionOutboxRecord, ...] = ()
+
+    @field_validator("rule_result")
+    @classmethod
+    def _immutable_rule_result(cls, value: Any) -> Mapping[str, Any]:
+        return _freeze_json_object(value)
+
+    @field_serializer("rule_result")
+    def _serialize_rule_result(
+        self,
+        value: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return _thaw_json_value(value)
 
     @model_validator(mode="after")
     def _bind_context(self) -> Self:

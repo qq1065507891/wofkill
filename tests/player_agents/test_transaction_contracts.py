@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from werewolf_agent.player_agents.contracts.proposals import SpeechProposalEnvelope
+from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
 from werewolf_agent.player_agents.contracts.transactions import (
     CommitTurnRequest,
     CriticalAuditRecord,
@@ -77,6 +78,7 @@ def _request(
     audit_ids: tuple[str, ...] = ("audit-1",),
     outbox_ids: tuple[str, ...] = ("outbox-1",),
     event_type: str = "speech_submitted",
+    public_record: PublicSpeechRecord | None = None,
 ) -> CommitTurnRequest:
     return CommitTurnRequest(
         game_id=game_id,
@@ -88,6 +90,7 @@ def _request(
         ),
         rule_result=rule_result or {"accepted": True},
         event=EventCandidate(type=event_type, payload={"turn_id": turn_id}),
+        public_record=public_record,
         critical_audit_records=tuple(
             CriticalAuditRecord(audit_id=audit_id, kind="proposal_accepted")
             for audit_id in audit_ids
@@ -118,3 +121,11 @@ def test_request_hash_is_order_independent_for_json_object_keys() -> None:
     right = _request(rule_result={"reason": "ok", "accepted": True})
     assert request_hash(left) == request_hash(right)
     assert re.fullmatch(r"[0-9a-f]{64}", request_hash(left))
+
+
+def test_transaction_json_payloads_are_deeply_immutable() -> None:
+    request = _request(rule_result={"accepted": True, "details": ["safe"]})
+
+    with pytest.raises(TypeError):
+        request.rule_result["accepted"] = False  # type: ignore[index]
+    assert request.rule_result["details"] == ("safe",)

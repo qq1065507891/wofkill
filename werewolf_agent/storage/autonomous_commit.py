@@ -13,8 +13,9 @@ import json
 from datetime import datetime, timezone
 from typing import Protocol, cast
 
-from werewolf_agent.core.event_visibility import event_visibility
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameEvent
+from werewolf_agent.player_agents.contracts.errors import ValidationErrorCode
 from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
 from werewolf_agent.player_agents.contracts.transactions import (
     CommitResult,
@@ -27,13 +28,19 @@ from werewolf_agent.player_agents.contracts.transactions import (
 class AutonomousCommitUnsupported(RuntimeError):
     """仓储未声明自主玩家提交能力。"""
 
+    code = ValidationErrorCode.UNKNOWN_CAPABILITY
+
 
 class StaleCommitError(RuntimeError):
     """提交所依据的游戏 revision 已过期。"""
 
+    code = ValidationErrorCode.STALE_READ_SET
+
 
 class IdempotencyConflictError(RuntimeError):
     """幂等键已绑定到不同的提交请求。"""
+
+    code = ValidationErrorCode.IDEMPOTENCY_CONFLICT
 
 
 class CommitTransactionError(RuntimeError):
@@ -69,8 +76,12 @@ def build_committed_event(
     revision: int,
 ) -> GameEvent:
     """为候选事件分配唯一身份和 authoritative revision。"""
-    visibility = candidate.visibility or event_visibility(
-        GameEvent(type=candidate.type, payload=dict(candidate.payload)),
+    visibility = (
+        EventVisibility.from_legacy(candidate.visibility)
+        if candidate.visibility is not None
+        else event_visibility(
+            GameEvent(type=candidate.type, payload=dict(candidate.payload)),
+        )
     )
     return GameEvent(
         type=candidate.type,
