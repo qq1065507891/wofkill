@@ -26,6 +26,7 @@ from werewolf_agent.player_agents.contracts.dispatch import (
 from werewolf_agent.storage.durable_dispatch import (
     DispatchIdempotencyConflict,
     DispatchInvalidTransition,
+    DispatchNotFound,
     DispatchResultConflict,
     DispatchStateConflict,
 )
@@ -436,6 +437,113 @@ def test_postgres_record_result_decodes_psycopg_outcome_for_replay() -> None:
         )
 
     assert connection.rollback.call_count == 2
+
+
+def test_postgres_record_result_replays_business_payload_with_result_fields() -> None:
+    repository = _repository_without_connection()
+    connection = MagicMock()
+    repository._conn = connection
+    repository._autonomous_schema_ready = True
+    attempt_row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "dispatched", 2,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+    business_payload = {
+        "result_id": "business-result-id",
+        "payload": {"accepted": True},
+    }
+    result_row = (
+        "result-1", "dispatch-1", "a" * 64, "b" * 64, "c" * 64,
+        "model_response", "success", business_payload,
+        datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
+    )
+
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = attempt_row
+        elif "SELECT 1 FROM games" in normalized:
+            cursor.fetchone.return_value = (1,)
+        elif "FROM autonomous_dispatch_results" in normalized:
+            cursor.fetchone.return_value = result_row
+        else:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return cursor
+
+    connection.execute.side_effect = execute
+    result = _dispatch_result(payload=business_payload)
+
+    assert (
+        repository.record_result("dispatch-1", expected_version=2, result=result)
+        is DispatchResultDisposition.REPLAYED
+    )
+    connection.rollback.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("current_row_updates", "expected_error"),
+    (
+        (None, DispatchNotFound),
+        ({"state_version": 3}, DispatchStateConflict),
+        ({"status": "pending"}, DispatchInvalidTransition),
+    ),
+)
+def test_postgres_record_result_reloads_after_cas_miss(
+    current_row_updates: dict[str, object] | None,
+    expected_error: type[Exception],
+) -> None:
+    repository = _repository_without_connection()
+    connection = MagicMock()
+    repository._conn = connection
+    repository._autonomous_schema_ready = True
+    initial_row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "dispatched", 2,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+    current_row = None
+    if current_row_updates is not None:
+        current_values = list(initial_row)
+        if "status" in current_row_updates:
+            current_values[12] = current_row_updates["status"]
+        if "state_version" in current_row_updates:
+            current_values[13] = current_row_updates["state_version"]
+        current_row = tuple(current_values)
+    attempt_rows = [initial_row, initial_row, current_row]
+
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = attempt_rows.pop(0)
+        elif normalized.startswith("SELECT 1 FROM games"):
+            cursor.fetchone.return_value = (1,)
+        elif "FROM autonomous_dispatch_results" in normalized:
+            cursor.fetchone.return_value = None
+        elif normalized.startswith("INSERT INTO autonomous_dispatch_results"):
+            pass
+        elif normalized.startswith("UPDATE autonomous_dispatch_attempts"):
+            cursor.rowcount = 0
+        else:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return cursor
+
+    connection.execute.side_effect = execute
+
+    with pytest.raises(expected_error):
+        repository.record_result(
+            "dispatch-1",
+            expected_version=2,
+            result=_dispatch_result(),
+        )
+
+    connection.rollback.assert_called_once()
 
 
 def test_postgres_commit_smoke_replays_one_atomic_result() -> None:

@@ -536,11 +536,20 @@ class PostgresGameRepository:
         if isinstance(payload, str):
             payload = json.loads(payload)
         # 兼容返回完整结果对象的测试替身；生产表只保存 canonical payload。
-        if (
-            isinstance(payload, dict)
-            and "payload" in payload
-            and "result_id" in payload
-        ):
+        # 业务 payload 也可以合法包含 result_id/payload，必须确认完整对象字段
+        # 均存在后才解包，避免破坏这类 payload 的回放等价性。
+        result_fields = {
+            "result_id",
+            "dispatch_id",
+            "request_hash",
+            "lease_hash",
+            "result_hash",
+            "result_kind",
+            "outcome",
+            "payload",
+            "recorded_at",
+        }
+        if isinstance(payload, dict) and result_fields.issubset(payload):
             payload = payload["payload"]
         return DispatchResultRecord.model_validate(
             {
@@ -874,6 +883,17 @@ class PostgresGameRepository:
                     ),
                 )
                 if not self._rowcount_is_one(cursor):
+                    current = self._load_dispatch_row(
+                        conn,
+                        dispatch_id,
+                        for_update=True,
+                    )
+                    if current is None:
+                        raise DispatchNotFound(dispatch_id)
+                    if current.state_version != expected_version:
+                        raise DispatchStateConflict(dispatch_id)
+                    if current.status is not DispatchStatus.DISPATCHED:
+                        raise DispatchInvalidTransition(dispatch_id)
                     raise DispatchStateConflict(dispatch_id)
                 conn.commit()
                 return DispatchResultDisposition.RECORDED
