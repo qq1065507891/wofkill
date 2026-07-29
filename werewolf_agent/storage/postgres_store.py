@@ -25,6 +25,7 @@ from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchOperationKind,
     DispatchRecoveryPolicy,
     DispatchResultDisposition,
+    DispatchResultOutcome,
     DispatchResultRecord,
     DispatchStatus,
 )
@@ -500,6 +501,25 @@ class PostgresGameRepository:
         return not isinstance(rowcount, int) or rowcount == 1
 
     @staticmethod
+    def _is_unique_violation(exc: BaseException) -> bool:
+        """识别 psycopg 不同版本暴露的唯一约束冲突。"""
+        if getattr(exc, "sqlstate", None) == "23505":
+            return True
+        if getattr(exc, "pgcode", None) == "23505":
+            return True
+        constraint_name = getattr(exc, "constraint_name", None)
+        if constraint_name is None:
+            constraint_name = getattr(
+                getattr(exc, "diag", None),
+                "constraint_name",
+                None,
+            )
+        return constraint_name in {
+            "autonomous_dispatch_attempts_pkey",
+            "uq_autonomous_dispatch_executor_provider_key",
+        }
+
+    @staticmethod
     def _dispatch_result_copy(result: DispatchResultRecord) -> DispatchResultRecord:
         return DispatchResultRecord.model_validate(result.model_dump(round_trip=True))
 
@@ -528,7 +548,7 @@ class PostgresGameRepository:
                 "lease_hash": row[3],
                 "result_hash": row[4],
                 "result_kind": row[5],
-                "outcome": row[6],
+                "outcome": DispatchResultOutcome(row[6]),
                 "payload": payload,
                 "recorded_at": cls._dispatch_datetime(row[8]),
             },
@@ -628,6 +648,8 @@ class PostgresGameRepository:
                 raise
             except Exception as exc:
                 conn.rollback()
+                if self._is_unique_violation(exc):
+                    raise DispatchIdempotencyConflict(attempt.dispatch_id) from exc
                 raise DispatchTransactionError(
                     "durable dispatch create transaction failed",
                 ) from exc
@@ -672,6 +694,17 @@ class PostgresGameRepository:
                 ),
             )
             if not self._rowcount_is_one(cursor):
+                current = self._load_dispatch_row(
+                    conn,
+                    dispatch_id,
+                    for_update=True,
+                )
+                if current is None:
+                    raise DispatchNotFound(dispatch_id)
+                if current.state_version != expected_version:
+                    raise DispatchStateConflict(dispatch_id)
+                if current.status not in allowed_statuses:
+                    raise DispatchInvalidTransition(dispatch_id)
                 raise DispatchStateConflict(dispatch_id)
             updated = existing.model_copy(
                 update={
@@ -1421,7 +1454,7 @@ class PostgresGameRepository:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_autonomous_dispatch_game_status_created "
-            "ON autonomous_dispatch_attempts (game_id, status, created_at, dispatch_id)"
+            "ON autonomous_dispatch_attempts (game_id, status, created_at)"
         )
 
     @staticmethod

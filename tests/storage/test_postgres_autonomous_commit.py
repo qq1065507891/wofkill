@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-验证 PostgreSQL 自主 CommitTurn capability 和 schema 定义。
+验证 PostgreSQL 自主 CommitTurn、durable dispatch schema 与结果幂等契约。
 
 作者: Project contributors
 创建日期: 2026-07-29
@@ -8,14 +8,26 @@
 
 import threading
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from tests.player_agents.test_transaction_contracts import _request
 from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchAttempt,
     DispatchOperationKind,
     DispatchRecoveryPolicy,
+    DispatchResultDisposition,
+    DispatchResultOutcome,
+    DispatchResultRecord,
     DispatchStatus,
+)
+from werewolf_agent.storage.durable_dispatch import (
+    DispatchIdempotencyConflict,
+    DispatchInvalidTransition,
+    DispatchResultConflict,
+    DispatchStateConflict,
 )
 
 
@@ -160,6 +172,22 @@ def _dispatch_attempt(**updates: object) -> DispatchAttempt:
     return DispatchAttempt.model_validate(data)
 
 
+def _dispatch_result(**updates: object) -> DispatchResultRecord:
+    data: dict[str, object] = {
+        "result_id": "result-1",
+        "dispatch_id": "dispatch-1",
+        "request_hash": "a" * 64,
+        "lease_hash": "b" * 64,
+        "result_hash": "c" * 64,
+        "result_kind": "model_response",
+        "outcome": DispatchResultOutcome.SUCCESS,
+        "payload": {"accepted": True},
+        "recorded_at": datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
+    }
+    data.update(updates)
+    return DispatchResultRecord.model_validate(data)
+
+
 def test_postgres_schema_contains_durable_dispatch_tables_and_indexes() -> None:
     repository = _repository_without_connection()
     connection = _clean_schema_connection()
@@ -176,6 +204,8 @@ def test_postgres_schema_contains_durable_dispatch_tables_and_indexes() -> None:
     assert "unique index" in sql
     assert "executor_id, provider_idempotency_key" in sql
     assert "game_id, status, created_at" in sql
+    assert "on autonomous_dispatch_attempts (game_id, status, created_at)" in sql
+    assert "created_at, dispatch_id" not in sql
 
 
 def test_postgres_durable_capability_never_opens_connection() -> None:
@@ -211,6 +241,138 @@ def test_postgres_dispatch_transition_locks_game_and_attempt_rows() -> None:
     assert "FOR UPDATE" in statements
     assert "FROM GAMES" in statements
     repository._conn.commit.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("current_row_updates", "expected_error"),
+    (
+        (
+            {"state_version": 1, "status": "dispatching"},
+            DispatchStateConflict,
+        ),
+        (
+            {"state_version": 0, "status": "dispatched"},
+            DispatchInvalidTransition,
+        ),
+    ),
+)
+def test_postgres_dispatch_transition_reloads_after_cas_miss(
+    current_row_updates: dict[str, object],
+    expected_error: type[Exception],
+) -> None:
+    repository = _repository_without_connection()
+    repository._conn = MagicMock()
+    repository._autonomous_schema_ready = True
+    initial_row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "pending", 0,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+    current_row = list(initial_row)
+    current_row[12] = current_row_updates["status"]
+    current_row[13] = current_row_updates["state_version"]
+    repository._conn.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value=initial_row)),
+        MagicMock(fetchone=MagicMock(return_value=(1,))),
+        MagicMock(fetchone=MagicMock(return_value=initial_row)),
+        MagicMock(rowcount=0),
+        MagicMock(fetchone=MagicMock(return_value=tuple(current_row))),
+    ]
+
+    with pytest.raises(expected_error):
+        repository.mark_dispatching("dispatch-1", expected_version=0)
+
+    repository._conn.rollback.assert_called_once()
+
+
+class _UniqueViolation(RuntimeError):
+    sqlstate = "23505"
+
+
+class _NamedConstraintViolation(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("provider key raced")
+        self.diag = SimpleNamespace(
+            constraint_name="uq_autonomous_dispatch_executor_provider_key",
+        )
+
+
+@pytest.mark.parametrize(
+    "unique_error",
+    (_UniqueViolation("provider key raced"), _NamedConstraintViolation()),
+)
+def test_postgres_create_dispatch_maps_unique_race_to_idempotency_conflict(
+    unique_error: Exception,
+) -> None:
+    repository = _repository_without_connection()
+    repository._conn = MagicMock()
+    repository._autonomous_schema_ready = True
+    repository._conn.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value=(1,))),
+        MagicMock(fetchone=MagicMock(return_value=None)),
+        MagicMock(fetchone=MagicMock(return_value=None)),
+        MagicMock(fetchone=MagicMock(return_value=None)),
+        unique_error,
+    ]
+
+    with pytest.raises(DispatchIdempotencyConflict):
+        repository.create_dispatch(_dispatch_attempt())
+
+    repository._conn.rollback.assert_called_once()
+
+
+def test_postgres_record_result_decodes_psycopg_outcome_for_replay() -> None:
+    repository = _repository_without_connection()
+    connection = MagicMock()
+    repository._conn = connection
+    repository._autonomous_schema_ready = True
+    attempt_row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "dispatched", 2,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+    result_row = (
+        "result-1", "dispatch-1", "a" * 64, "b" * 64, "c" * 64,
+        "model_response", "success", {"accepted": True},
+        datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
+    )
+
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = attempt_row
+        elif "SELECT 1 FROM games" in normalized:
+            cursor.fetchone.return_value = (1,)
+        elif "FROM autonomous_dispatch_results" in normalized:
+            cursor.fetchone.return_value = result_row
+        else:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return cursor
+
+    connection.execute.side_effect = execute
+    result = _dispatch_result()
+
+    assert (
+        repository.record_result("dispatch-1", expected_version=2, result=result)
+        is DispatchResultDisposition.REPLAYED
+    )
+
+    with pytest.raises(DispatchResultConflict):
+        repository.record_result(
+            "dispatch-1",
+            expected_version=2,
+            result=_dispatch_result(
+                result_hash="d" * 64,
+                payload={"accepted": False},
+            ),
+        )
+
+    assert connection.rollback.call_count == 2
 
 
 def test_postgres_commit_smoke_replays_one_atomic_result() -> None:
