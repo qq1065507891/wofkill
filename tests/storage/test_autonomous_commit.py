@@ -4,17 +4,28 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import pytest
 
 from tests.player_agents.test_public_record_contracts import _record_payload
 from tests.player_agents.test_transaction_contracts import _request
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.player_agents.contracts.dispatch import (
+    DispatchAttempt,
+    DispatchOperationKind,
+    DispatchRecoveryPolicy,
+    DispatchResultDisposition,
+    DispatchResultOutcome,
+    DispatchResultRecord,
+    DispatchStatus,
+)
 from werewolf_agent.player_agents.contracts.errors import ValidationErrorCode
 from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
 from werewolf_agent.player_agents.contracts.transactions import (
@@ -30,8 +41,65 @@ from werewolf_agent.storage.autonomous_commit import (
     request_hash,
     require_autonomous_commit_repository,
 )
+from werewolf_agent.storage.durable_dispatch import (
+    DispatchIdempotencyConflict,
+    DispatchInvalidTransition,
+    DispatchLeaseMismatch,
+    DispatchNotFound,
+    DispatchRecoveryBlocked,
+    DispatchResultConflict,
+    DispatchStateConflict,
+)
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+DISPATCH_HASH = "a" * 64
+DISPATCH_NOW = datetime(2026, 7, 29, 11, tzinfo=timezone.utc)
+
+
+def _dispatch_attempt(**updates: object) -> DispatchAttempt:
+    data: dict[str, object] = {
+        "dispatch_id": "dispatch-1",
+        "game_id": "g1",
+        "turn_id": "turn-1",
+        "actor_id": "p01",
+        "operation_kind": DispatchOperationKind.MODEL,
+        "executor_id": "mock-provider",
+        "provider_idempotency_key": "provider-key-1",
+        "recovery_policy": DispatchRecoveryPolicy.IDEMPOTENT_LOOKUP_OR_REISSUE,
+        "request_hash": DISPATCH_HASH,
+        "lease_hash": DISPATCH_HASH,
+        "view_fingerprint": DISPATCH_HASH,
+        "deadline": datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
+        "created_at": DISPATCH_NOW,
+        "updated_at": DISPATCH_NOW,
+        "status": DispatchStatus.PENDING,
+        "state_version": 0,
+    }
+    data.update(updates)
+    return DispatchAttempt.model_validate(data)
+
+
+def _dispatch_result(**updates: object) -> DispatchResultRecord:
+    data: dict[str, object] = {
+        "result_id": "result-1",
+        "dispatch_id": "dispatch-1",
+        "request_hash": DISPATCH_HASH,
+        "lease_hash": DISPATCH_HASH,
+        "result_hash": DISPATCH_HASH,
+        "result_kind": "model_response",
+        "outcome": DispatchResultOutcome.SUCCESS,
+        "payload": {"accepted": True},
+        "recorded_at": datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
+    }
+    data.update(updates)
+    return DispatchResultRecord.model_validate(data)
+
+
+def _memory_dispatch_repository() -> InMemoryGameRepository:
+    repository = InMemoryGameRepository()
+    repository.save_game(GameState(game_id="g1"))
+    return repository
 
 
 def test_request_hash_is_sha256_hex() -> None:
@@ -302,3 +370,145 @@ def test_delete_game_removes_autonomous_state(autonomous_repository) -> None:
     assert autonomous_repository.load_game_revision("g1") == 0
     assert autonomous_repository.load_outbox("g1") == []
     assert autonomous_repository.commit_turn(_request()).committed_revision == 1
+
+
+def test_memory_dispatch_valid_transitions_increment_version_and_use_cas() -> None:
+    repository = _memory_dispatch_repository()
+
+    created = repository.create_dispatch(_dispatch_attempt())
+    assert created.status is DispatchStatus.PENDING
+    assert created.state_version == 0
+    assert repository.load_dispatch("dispatch-1") is not created
+
+    with pytest.raises(DispatchInvalidTransition):
+        repository.mark_dispatched("dispatch-1", expected_version=0)
+    with pytest.raises(DispatchStateConflict):
+        repository.mark_dispatching("dispatch-1", expected_version=99)
+
+    dispatching = repository.mark_dispatching("dispatch-1", expected_version=0)
+    assert dispatching.status is DispatchStatus.DISPATCHING
+    assert dispatching.state_version == 1
+    dispatched = repository.mark_dispatched("dispatch-1", expected_version=1)
+    assert dispatched.status is DispatchStatus.DISPATCHED
+    assert dispatched.state_version == 2
+
+    with pytest.raises(DispatchInvalidTransition):
+        repository.mark_dispatching("dispatch-1", expected_version=2)
+
+
+def test_memory_dispatch_create_enforces_idempotency_and_recovery_barrier() -> None:
+    repository = _memory_dispatch_repository()
+    repository.create_dispatch(_dispatch_attempt())
+
+    with pytest.raises(DispatchIdempotencyConflict):
+        repository.create_dispatch(_dispatch_attempt())
+    with pytest.raises(DispatchIdempotencyConflict):
+        repository.create_dispatch(
+            _dispatch_attempt(
+                dispatch_id="dispatch-2",
+                provider_idempotency_key="provider-key-1",
+            )
+        )
+    repository.assert_dispatch_allowed("g1")
+
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.mark_dispatched("dispatch-1", expected_version=1)
+    with pytest.raises(DispatchRecoveryBlocked):
+        repository.assert_dispatch_allowed("g1")
+    with pytest.raises(DispatchRecoveryBlocked):
+        repository.create_dispatch(
+            _dispatch_attempt(
+                dispatch_id="dispatch-3",
+                provider_idempotency_key="provider-key-3",
+            )
+        )
+    assert [
+        attempt.dispatch_id
+        for attempt in repository.list_recoverable_dispatches("g1")
+    ] == ["dispatch-1"]
+
+
+def test_memory_dispatch_records_result_replays_and_rejects_conflicts() -> None:
+    repository = _memory_dispatch_repository()
+    repository.create_dispatch(_dispatch_attempt())
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.mark_dispatched("dispatch-1", expected_version=1)
+    result = _dispatch_result()
+
+    assert (
+        repository.record_result("dispatch-1", expected_version=2, result=result)
+        is DispatchResultDisposition.RECORDED
+    )
+    stored = repository.load_dispatch("dispatch-1")
+    assert stored is not None
+    assert stored.status is DispatchStatus.RESULT_RECORDED
+    assert stored.state_version == 3
+
+    assert (
+        repository.record_result("dispatch-1", expected_version=3, result=result)
+        is DispatchResultDisposition.REPLAYED
+    )
+    assert repository.load_dispatch("dispatch-1").state_version == 3  # type: ignore[union-attr]
+
+    with pytest.raises(DispatchResultConflict):
+        repository.record_result(
+            "dispatch-1",
+            expected_version=3,
+            result=_dispatch_result(result_hash="b" * 64),
+        )
+    with pytest.raises(DispatchResultConflict):
+        repository.record_result(
+            "dispatch-1",
+            expected_version=3,
+            result=_dispatch_result(payload={"accepted": False}),
+        )
+    with pytest.raises(DispatchLeaseMismatch):
+        repository.record_result(
+            "dispatch-1",
+            expected_version=3,
+            result=_dispatch_result(lease_hash="b" * 64),
+        )
+
+
+def test_memory_dispatch_discards_late_results_after_cancel_and_unknown() -> None:
+    cancelled = _memory_dispatch_repository()
+    cancelled.create_dispatch(_dispatch_attempt())
+    cancelled.cancel_dispatch("dispatch-1", expected_version=0, reason_code="cancelled")
+    assert (
+        cancelled.record_result(
+            "dispatch-1", expected_version=1, result=_dispatch_result()
+        )
+        is DispatchResultDisposition.DISCARDED_LATE
+    )
+    assert cancelled.load_dispatch("dispatch-1").status is DispatchStatus.CANCELLED  # type: ignore[union-attr]
+
+    unknown = _memory_dispatch_repository()
+    unknown.create_dispatch(_dispatch_attempt())
+    unknown.mark_dispatching("dispatch-1", expected_version=0)
+    unknown.mark_unknown_outcome(
+        "dispatch-1", expected_version=1, reason_code="provider_timeout"
+    )
+    assert (
+        unknown.record_result(
+            "dispatch-1", expected_version=2, result=_dispatch_result()
+        )
+        is DispatchResultDisposition.DISCARDED_LATE
+    )
+    assert unknown.load_dispatch("dispatch-1").status is DispatchStatus.UNKNOWN_OUTCOME  # type: ignore[union-attr]
+
+
+def test_memory_dispatch_rejects_unknown_ids_and_cleans_up_on_delete() -> None:
+    repository = _memory_dispatch_repository()
+    with pytest.raises(DispatchNotFound):
+        repository.mark_dispatching("missing", expected_version=0)
+    with pytest.raises(DispatchNotFound):
+        repository.record_result("missing", expected_version=0, result=_dispatch_result())
+
+    repository.create_dispatch(_dispatch_attempt())
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.delete_game("g1")
+    assert repository.load_dispatch("dispatch-1") is None
+    assert repository.list_recoverable_dispatches("g1") == []
+    assert repository._dispatch_attempts == {}
+    assert repository._dispatch_results == {}
+    assert repository._dispatch_key_index == {}
