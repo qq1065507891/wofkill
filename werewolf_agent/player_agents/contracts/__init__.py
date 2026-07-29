@@ -6,6 +6,10 @@
 创建日期: 2026-07-29
 """
 
+from werewolf_agent.player_agents.contracts.errors import (
+    ProposalFailure,
+    ValidationErrorCode,
+)
 from werewolf_agent.player_agents.contracts.revisions import (
     ReadReference,
     RevisionContext,
@@ -24,8 +28,10 @@ __all__ = [
     "AgentTurnStatus",
     "ConflictClass",
     "LegalActionWindow",
+    "ProposalFailure",
     "ReadReference",
     "RevisionContext",
     "TurnBudget",
+    "ValidationErrorCode",
     "transition_turn",
 ]
