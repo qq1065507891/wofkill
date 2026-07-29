@@ -109,3 +109,59 @@ def test_failure_public_export_is_frozen_and_round_trips_json() -> None:
     assert ExportedProposalFailure.model_validate_json(
         failure.model_dump_json()
     ) == failure
+
+
+@pytest.mark.parametrize("copy_method", ("model_copy", "copy"))
+@pytest.mark.parametrize(
+    "update",
+    (
+        {"message": "hidden role is seer:p03"},
+        {"repairable": True},
+        {"field_path": "body.ref"},
+        {"hidden_value": "seer:p03"},
+    ),
+)
+def test_failure_copy_updates_are_fully_revalidated(
+    copy_method: str,
+    update: dict[str, object],
+) -> None:
+    failure = ProposalFailure.for_code(
+        code=ValidationErrorCode.INVISIBLE_REFERENCE,
+        field_path="/body/ref",
+        repairable=False,
+    )
+    with pytest.raises(ValidationError):
+        getattr(failure, copy_method)(update=update)
+
+
+def test_failure_copy_preserves_valid_updates_and_deep_copy() -> None:
+    failure = ProposalFailure.for_code(
+        code=ValidationErrorCode.INVISIBLE_REFERENCE,
+        field_path="/body/ref",
+        repairable=False,
+    )
+    update = {"field_path": "/body/alternate_ref"}
+
+    assert failure.model_copy(update=update).field_path == "/body/alternate_ref"
+    assert failure.copy(update=update).field_path == "/body/alternate_ref"
+
+    model_deep_copy = failure.model_copy(deep=True)
+    legacy_deep_copy = failure.copy(deep=True)
+    assert model_deep_copy == failure
+    assert model_deep_copy is not failure
+    assert legacy_deep_copy == failure
+    assert legacy_deep_copy is not failure
+
+
+@pytest.mark.parametrize("partial_argument", ("include", "exclude"))
+def test_failure_copy_rejects_partial_contracts(partial_argument: str) -> None:
+    failure = ProposalFailure.for_code(
+        code=ValidationErrorCode.INVISIBLE_REFERENCE,
+        field_path="/body/ref",
+        repairable=False,
+    )
+    with pytest.raises(TypeError, match="partial copies"):
+        if partial_argument == "include":
+            failure.copy(include={"code"})
+        else:
+            failure.copy(exclude={"message"})
