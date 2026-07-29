@@ -10,5 +10,22 @@ from werewolf_agent.player_agents.contracts.revisions import (
     ReadReference,
     RevisionContext,
 )
+from werewolf_agent.player_agents.contracts.turns import (
+    AgentTurn,
+    AgentTurnStatus,
+    ConflictClass,
+    LegalActionWindow,
+    TurnBudget,
+    transition_turn,
+)
 
-__all__ = ["ReadReference", "RevisionContext"]
+__all__ = [
+    "AgentTurn",
+    "AgentTurnStatus",
+    "ConflictClass",
+    "LegalActionWindow",
+    "ReadReference",
+    "RevisionContext",
+    "TurnBudget",
+    "transition_turn",
+]
