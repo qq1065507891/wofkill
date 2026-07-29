@@ -148,6 +148,7 @@ supports_autonomous_turns() -> bool
 create_serial_public_schedule(schedule) -> SerialPublicSchedule
 load_serial_public_schedule(schedule_id) -> SerialPublicSchedule | None
 load_active_serial_public_schedule(game_id) -> SerialPublicSchedule | None
+list_open_serial_public_schedules() -> tuple[SerialPublicSchedule, ...]
 admit_serial_public_turn(schedule_id, expected_schedule_version, admission) -> ManagedAgentTurn
 transition_active_turn(turn_id, expected_turn_version, next_status) -> ManagedAgentTurn
 finish_active_turn(
