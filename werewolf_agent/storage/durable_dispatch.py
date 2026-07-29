@@ -282,7 +282,7 @@ class DispatchReconciler:
 
             if kind is RecoveryResolutionKind.REISSUED:
                 # 重新交付必须复用原 provider key；resolver 不能借此伪造
-                # 已完成结果或推进 attempt。结果只能在后续 FOUND 扫描中记录。
+                # 已完成结果，仅允许将 DISPATCHING 推进为 DISPATCHED。
                 if attempt.status is DispatchStatus.DISPATCHING:
                     try:
                         dispatched = self._repository.mark_dispatched(
