@@ -68,6 +68,8 @@ class AutonomousCommitRepository(Protocol):
 - `autonomous_game_streams(game_id PRIMARY KEY, game_revision)`；
 - `autonomous_turn_commits(game_id, turn_id, idempotency_key, request_hash,
   result_json, committed_revision, UNIQUE(game_id, turn_id, idempotency_key))`；
+- `autonomous_public_records(record_id PRIMARY KEY, game_id, turn_id,
+  committed_revision, record_json)`；
 - `autonomous_audit_records(game_id, committed_revision, audit_id PRIMARY KEY,
   record_json)`；
 - `autonomous_projection_outbox(outbox_id PRIMARY KEY, game_id,
