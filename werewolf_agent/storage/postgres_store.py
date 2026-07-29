@@ -535,22 +535,6 @@ class PostgresGameRepository:
         payload = row[7]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        # 兼容返回完整结果对象的测试替身；生产表只保存 canonical payload。
-        # 业务 payload 也可以合法包含 result_id/payload，必须确认完整对象字段
-        # 均存在后才解包，避免破坏这类 payload 的回放等价性。
-        result_fields = {
-            "result_id",
-            "dispatch_id",
-            "request_hash",
-            "lease_hash",
-            "result_hash",
-            "result_kind",
-            "outcome",
-            "payload",
-            "recorded_at",
-        }
-        if isinstance(payload, dict) and result_fields.issubset(payload):
-            payload = payload["payload"]
         return DispatchResultRecord.model_validate(
             {
                 "result_id": row[0],

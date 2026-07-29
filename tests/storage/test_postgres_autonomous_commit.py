@@ -453,7 +453,14 @@ def test_postgres_record_result_replays_business_payload_with_result_fields() ->
     )
     business_payload = {
         "result_id": "business-result-id",
+        "dispatch_id": "business-dispatch-id",
+        "request_hash": "business-request-hash",
+        "lease_hash": "business-lease-hash",
+        "result_hash": "business-result-hash",
+        "result_kind": "business-result-kind",
+        "outcome": "business-outcome",
         "payload": {"accepted": True},
+        "recorded_at": "business-recorded-at",
     }
     result_row = (
         "result-1", "dispatch-1", "a" * 64, "b" * 64, "c" * 64,
