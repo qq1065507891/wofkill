@@ -1,0 +1,1147 @@
+{
+  "$defs": {
+    "AddressStyle": {
+      "enum": [
+        "room",
+        "targeted",
+        "mixed"
+      ],
+      "title": "AddressStyle",
+      "type": "string"
+    },
+    "Alignment": {
+      "enum": [
+        "good",
+        "wolf",
+        "uncertain"
+      ],
+      "title": "Alignment",
+      "type": "string"
+    },
+    "AlignmentRead": {
+      "additionalProperties": false,
+      "properties": {
+        "alignment": {
+          "$ref": "#/$defs/Alignment"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "alignment_read",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "strength": {
+          "$ref": "#/$defs/Strength"
+        },
+        "target_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "target_id",
+        "alignment",
+        "strength"
+      ],
+      "title": "AlignmentRead",
+      "type": "object"
+    },
+    "ClaimMode": {
+      "enum": [
+        "claim",
+        "deny",
+        "quote"
+      ],
+      "title": "ClaimMode",
+      "type": "string"
+    },
+    "CommitmentCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "condition_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Condition Id",
+          "type": "string"
+        },
+        "kind_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Kind Id",
+          "type": "string"
+        },
+        "record_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Record Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "condition_id",
+        "kind_id"
+      ],
+      "title": "CommitmentCondition",
+      "type": "object"
+    },
+    "CommitmentConsequence": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ConsequenceKind"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "CommitmentConsequence",
+      "type": "object"
+    },
+    "ComparisonAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "player_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Player Id",
+          "type": "string"
+        },
+        "value_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Value Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "player_id",
+        "value_id",
+        "evidence_refs"
+      ],
+      "title": "ComparisonAssessment",
+      "type": "object"
+    },
+    "ComparisonDimension": {
+      "enum": [
+        "claim",
+        "vote",
+        "evidence",
+        "commitment",
+        "timeline_consistency"
+      ],
+      "title": "ComparisonDimension",
+      "type": "string"
+    },
+    "ConditionalCommitment": {
+      "additionalProperties": false,
+      "properties": {
+        "condition": {
+          "$ref": "#/$defs/CommitmentCondition"
+        },
+        "consequence": {
+          "$ref": "#/$defs/CommitmentConsequence"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "expires_at_phase": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Expires At Phase",
+          "type": "string"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "conditional_commitment",
+          "title": "Move Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "condition",
+        "consequence",
+        "expires_at_phase"
+      ],
+      "title": "ConditionalCommitment",
+      "type": "object"
+    },
+    "ConfidenceBucket": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "ConfidenceBucket",
+      "type": "string"
+    },
+    "ConsequenceKind": {
+      "enum": [
+        "support",
+        "challenge",
+        "vote_position",
+        "self_disclosure"
+      ],
+      "title": "ConsequenceKind",
+      "type": "string"
+    },
+    "DeliveryPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "address_style": {
+          "$ref": "#/$defs/AddressStyle"
+        },
+        "connector_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Connector Ids",
+          "type": "array"
+        },
+        "emphasis_move_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Emphasis Move Ids",
+          "type": "array"
+        },
+        "length_class": {
+          "$ref": "#/$defs/LengthClass"
+        },
+        "move_order": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Move Order",
+          "type": "array"
+        },
+        "tone": {
+          "$ref": "#/$defs/Tone"
+        }
+      },
+      "required": [
+        "tone",
+        "length_class",
+        "address_style",
+        "move_order"
+      ],
+      "title": "DeliveryPlan",
+      "type": "object"
+    },
+    "EvidenceRelation": {
+      "enum": [
+        "supports",
+        "contradicts",
+        "contextualizes"
+      ],
+      "title": "EvidenceRelation",
+      "type": "string"
+    },
+    "LengthClass": {
+      "enum": [
+        "brief",
+        "standard",
+        "extended"
+      ],
+      "title": "LengthClass",
+      "type": "string"
+    },
+    "Modality": {
+      "enum": [
+        "asserted",
+        "suspected",
+        "conditional",
+        "hypothetical",
+        "quoted"
+      ],
+      "title": "Modality",
+      "type": "string"
+    },
+    "PlayerComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "assessments": {
+          "items": {
+            "$ref": "#/$defs/ComparisonAssessment"
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "title": "Assessments",
+          "type": "array"
+        },
+        "dimension": {
+          "$ref": "#/$defs/ComparisonDimension"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "player_comparison",
+          "title": "Move Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "dimension",
+        "assessments"
+      ],
+      "title": "PlayerComparison",
+      "type": "object"
+    },
+    "PrivateFactKind": {
+      "enum": [
+        "alignment_check",
+        "role_check",
+        "attack",
+        "ability_result"
+      ],
+      "title": "PrivateFactKind",
+      "type": "string"
+    },
+    "PrivateResultDisclosure": {
+      "additionalProperties": false,
+      "properties": {
+        "disclosure_grant_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Disclosure Grant Id",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "fact_kind": {
+          "$ref": "#/$defs/PrivateFactKind"
+        },
+        "fact_ref": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Fact Ref",
+          "type": "string"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "private_result_disclosure",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "result_value_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Result Value Id",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "timing_ref": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Timing Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "fact_kind",
+        "fact_ref",
+        "disclosure_grant_id",
+        "timing_ref",
+        "result_value_id"
+      ],
+      "title": "PrivateResultDisclosure",
+      "type": "object"
+    },
+    "PublicEvidenceCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "public_evidence_citation",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "relation": {
+          "$ref": "#/$defs/EvidenceRelation"
+        },
+        "subject_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Subject Ids",
+          "type": "array"
+        },
+        "supports_move_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Supports Move Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "relation",
+        "subject_ids",
+        "supports_move_ids"
+      ],
+      "title": "PublicEvidenceCitation",
+      "type": "object"
+    },
+    "QuestionMove": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "question",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "requested_fields": {
+          "items": {
+            "$ref": "#/$defs/RequestedField"
+          },
+          "minItems": 1,
+          "title": "Requested Fields",
+          "type": "array"
+        },
+        "target_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target Id",
+          "type": "string"
+        },
+        "topic": {
+          "$ref": "#/$defs/QuestionTopic"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "target_id",
+        "topic",
+        "requested_fields"
+      ],
+      "title": "QuestionMove",
+      "type": "object"
+    },
+    "QuestionTopic": {
+      "enum": [
+        "role_claim",
+        "alignment_read",
+        "vote_position",
+        "evidence",
+        "timeline",
+        "commitment"
+      ],
+      "title": "QuestionTopic",
+      "type": "string"
+    },
+    "RequestedField": {
+      "enum": [
+        "claim",
+        "evidence",
+        "reason",
+        "timeline",
+        "vote",
+        "confidence"
+      ],
+      "title": "RequestedField",
+      "type": "string"
+    },
+    "ResponseKind": {
+      "enum": [
+        "agree",
+        "disagree",
+        "clarify",
+        "challenge"
+      ],
+      "title": "ResponseKind",
+      "type": "string"
+    },
+    "ResponseMove": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "response",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "response_kind": {
+          "$ref": "#/$defs/ResponseKind"
+        },
+        "source_record_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Record Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "source_record_id",
+        "response_kind"
+      ],
+      "title": "ResponseMove",
+      "type": "object"
+    },
+    "RetractionMove": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "retraction",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "prior_public_move_ref": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Prior Public Move Ref",
+          "type": "string"
+        },
+        "replacement_move_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replacement Move Id"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "prior_public_move_ref"
+      ],
+      "title": "RetractionMove",
+      "type": "object"
+    },
+    "RoleClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_mode": {
+          "$ref": "#/$defs/ClaimMode"
+        },
+        "claimant_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Claimant Id",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "role_claim",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "role_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Role Id",
+          "type": "string"
+        },
+        "source_record_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Record Id"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "claimant_id",
+        "role_id",
+        "claim_mode"
+      ],
+      "title": "RoleClaim",
+      "type": "object"
+    },
+    "SpeechObjective": {
+      "enum": [
+        "state_case",
+        "challenge_claim",
+        "answer_question",
+        "ask_question",
+        "defend_self",
+        "declare_vote_position",
+        "retract_or_correct",
+        "express_uncertainty",
+        "no_new_information"
+      ],
+      "title": "SpeechObjective",
+      "type": "string"
+    },
+    "SpeechProposalBody": {
+      "additionalProperties": false,
+      "properties": {
+        "delivery_plan": {
+          "$ref": "#/$defs/DeliveryPlan"
+        },
+        "kind": {
+          "const": "speech",
+          "title": "Kind",
+          "type": "string"
+        },
+        "moves": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "alignment_read": "#/$defs/AlignmentRead",
+                "conditional_commitment": "#/$defs/ConditionalCommitment",
+                "player_comparison": "#/$defs/PlayerComparison",
+                "private_result_disclosure": "#/$defs/PrivateResultDisclosure",
+                "public_evidence_citation": "#/$defs/PublicEvidenceCitation",
+                "question": "#/$defs/QuestionMove",
+                "response": "#/$defs/ResponseMove",
+                "retraction": "#/$defs/RetractionMove",
+                "role_claim": "#/$defs/RoleClaim",
+                "uncertainty": "#/$defs/UncertaintyStatement",
+                "vote_position": "#/$defs/VotePosition"
+              },
+              "propertyName": "move_type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/AlignmentRead"
+              },
+              {
+                "$ref": "#/$defs/RoleClaim"
+              },
+              {
+                "$ref": "#/$defs/PrivateResultDisclosure"
+              },
+              {
+                "$ref": "#/$defs/PublicEvidenceCitation"
+              },
+              {
+                "$ref": "#/$defs/PlayerComparison"
+              },
+              {
+                "$ref": "#/$defs/QuestionMove"
+              },
+              {
+                "$ref": "#/$defs/ResponseMove"
+              },
+              {
+                "$ref": "#/$defs/VotePosition"
+              },
+              {
+                "$ref": "#/$defs/ConditionalCommitment"
+              },
+              {
+                "$ref": "#/$defs/RetractionMove"
+              },
+              {
+                "$ref": "#/$defs/UncertaintyStatement"
+              }
+            ]
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Moves",
+          "type": "array"
+        },
+        "objective": {
+          "$ref": "#/$defs/SpeechObjective"
+        },
+        "response_record_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Response Record Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "objective",
+        "moves",
+        "delivery_plan"
+      ],
+      "title": "SpeechProposalBody",
+      "type": "object"
+    },
+    "Strength": {
+      "enum": [
+        "leaning",
+        "probable",
+        "committed"
+      ],
+      "title": "Strength",
+      "type": "string"
+    },
+    "Tone": {
+      "enum": [
+        "calm",
+        "firm",
+        "skeptical",
+        "urgent",
+        "defensive",
+        "conciliatory"
+      ],
+      "title": "Tone",
+      "type": "string"
+    },
+    "UncertaintyAlternative": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/ConfidenceBucket"
+        },
+        "support_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Support Refs",
+          "type": "array"
+        },
+        "value_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Value Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value_id",
+        "confidence"
+      ],
+      "title": "UncertaintyAlternative",
+      "type": "object"
+    },
+    "UncertaintyDimension": {
+      "enum": [
+        "role",
+        "alignment",
+        "vote",
+        "claim",
+        "timeline"
+      ],
+      "title": "UncertaintyDimension",
+      "type": "string"
+    },
+    "UncertaintyStatement": {
+      "additionalProperties": false,
+      "properties": {
+        "alternatives": {
+          "items": {
+            "$ref": "#/$defs/UncertaintyAlternative"
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "dimension": {
+          "$ref": "#/$defs/UncertaintyDimension"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "uncertainty",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "subject_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Subject Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "subject_id",
+        "dimension",
+        "alternatives"
+      ],
+      "title": "UncertaintyStatement",
+      "type": "object"
+    },
+    "VoteCommitment": {
+      "enum": [
+        "leaning",
+        "provisional",
+        "committed"
+      ],
+      "title": "VoteCommitment",
+      "type": "string"
+    },
+    "VotePosition": {
+      "additionalProperties": false,
+      "properties": {
+        "commitment": {
+          "$ref": "#/$defs/VoteCommitment"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "modality": {
+          "$ref": "#/$defs/Modality"
+        },
+        "move_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Move Id",
+          "type": "string"
+        },
+        "move_type": {
+          "const": "vote_position",
+          "title": "Move Type",
+          "type": "string"
+        },
+        "target_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "move_type",
+        "modality",
+        "target_id",
+        "commitment"
+      ],
+      "title": "VotePosition",
+      "type": "object"
+    }
+  },
+  "$id": "urn:wofkill:speech-proposal:1.0.0",
+  "additionalProperties": false,
+  "properties": {
+    "base_revision": {
+      "minimum": 0,
+      "title": "Base Revision",
+      "type": "integer"
+    },
+    "body": {
+      "$ref": "#/$defs/SpeechProposalBody"
+    },
+    "player_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Player Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "turn_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Turn Id",
+      "type": "string"
+    },
+    "view_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "View Fingerprint",
+      "type": "string"
+    },
+    "window_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Window Id",
+      "type": "string"
+    },
+    "window_version": {
+      "minimum": 1,
+      "title": "Window Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "turn_id",
+    "player_id",
+    "window_id",
+    "window_version",
+    "base_revision",
+    "view_fingerprint",
+    "body"
+  ],
+  "title": "SpeechProposalEnvelope",
+  "type": "object",
+  "x-wofkill-content-hash": "f9ab927d8472926bdebbccab9570e417b706564e869335d6219e5559b40d9253",
+  "x-wofkill-schema-version": "1.0.0"
+}

@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 from werewolf_agent.player_agents.contracts.disclosure import DisclosureGrant
@@ -20,6 +21,11 @@ from werewolf_agent.player_agents.contracts.records import (
 from werewolf_agent.player_agents.contracts.revisions import (
     ReadReference,
     RevisionContext,
+)
+from werewolf_agent.player_agents.contracts.schema_catalog import (
+    SCHEMA_VERSION,
+    speech_proposal_schema,
+    speech_proposal_schema_hash,
 )
 from werewolf_agent.player_agents.contracts.speech import (
     AddressStyle,
@@ -64,6 +70,7 @@ from werewolf_agent.player_agents.contracts.turns import (
 )
 
 __all__ = [
+    "SCHEMA_VERSION",
     "AddressStyle",
     "AgentTurn",
     "AgentTurnStatus",
@@ -109,5 +116,7 @@ __all__ = [
     "ValidationErrorCode",
     "VoteCommitment",
     "VotePosition",
+    "speech_proposal_schema",
+    "speech_proposal_schema_hash",
     "transition_turn",
 ]
