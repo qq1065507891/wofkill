@@ -2063,7 +2063,7 @@ Expected: all tests pass; ruff and mypy report no errors.
 Run:
 
 ```bash
-conda run -n wofkill python -m pytest tests/agents/test_schemas.py tests/agents/test_speech_act_schemas.py tests/runtime/test_event_metadata_v2.py tests/storage/test_repository.py -v
+conda run -n wofkill python -m pytest tests/agents/test_schemas.py tests/agents/test_speech_intent_parser.py tests/runtime/test_event_metadata_v2.py tests/storage/test_repository.py -v
 ```
 
 Expected: PASS. This confirms the isolated new contracts did not change legacy
