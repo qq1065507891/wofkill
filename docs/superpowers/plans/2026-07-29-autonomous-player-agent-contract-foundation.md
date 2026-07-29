@@ -1055,6 +1055,25 @@ def test_speech_rejects_non_actor_role_claim() -> None:
     }
     with pytest.raises(ValidationError, match="role claim claimant must match player"):
         SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
+
+
+def test_speech_rejects_external_refs_to_proposal_moves() -> None:
+    payload = _payload()
+    payload["body"]["moves"][0] = {  # type: ignore[index]
+        "move_id": "m1",
+        "move_type": "role_claim",
+        "modality": "quoted",
+        "claimant_id": "p01",
+        "role_id": "seer",
+        "claim_mode": "quote",
+        "source_record_id": "m1",
+    }
+    payload["body"]["response_record_refs"] = ["m1"]  # type: ignore[index]
+    with pytest.raises(
+        ValidationError,
+        match="external record refs must not reference proposal moves",
+    ):
+        SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
 ```
 
 - [ ] **Step 2: Run tests and verify RED**
@@ -1459,6 +1478,10 @@ class SpeechProposalBody(StrictFrozenModel):
         }
         if set(self.response_record_refs) != external_refs:
             raise ValueError("response_record_refs must match referenced records")
+        if set(self.response_record_refs) & set(move_ids):
+            raise ValueError(
+                "external record refs must not reference proposal moves"
+            )
 
         graph: dict[str, set[str]] = {move_id: set() for move_id in move_ids}
         for move in self.moves:
