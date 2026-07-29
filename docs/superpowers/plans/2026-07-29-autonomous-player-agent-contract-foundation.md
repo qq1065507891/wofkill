@@ -926,6 +926,8 @@ The first test fixture must use the public API the provider gateway will use:
 创建日期: 2026-07-29
 """
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
