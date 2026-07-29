@@ -81,6 +81,7 @@ def test_imported_modules_resolves_relative_from_imports(tmp_path: Path) -> None
 
 def test_player_agents_package_exists_and_has_no_legacy_decision_imports() -> None:
     assert PACKAGE_ROOT.is_dir()
+    assert (PACKAGE_ROOT / "contracts" / "__init__.py").is_file()
     violations: list[str] = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         for module in sorted(_imported_modules(path)):
