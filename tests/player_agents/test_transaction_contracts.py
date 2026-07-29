@@ -12,6 +12,7 @@ import re
 import pytest
 from pydantic import ValidationError
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.player_agents.contracts.proposals import SpeechProposalEnvelope
 from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
 from werewolf_agent.player_agents.contracts.transactions import (
@@ -114,6 +115,17 @@ def test_commit_request_rejects_duplicate_audit_and_outbox_ids() -> None:
         _request(audit_ids=("audit-1", "audit-1"))
     with pytest.raises(ValidationError, match="outbox IDs must not contain duplicates"):
         _request(outbox_ids=("outbox-1", "outbox-1"))
+
+
+def test_event_candidate_requires_known_visibility_enum() -> None:
+    candidate = EventCandidate(
+        type="speech_submitted",
+        visibility=EventVisibility.PUBLIC,
+    )
+    assert candidate.visibility == EventVisibility.PUBLIC
+
+    with pytest.raises(ValidationError):
+        EventCandidate(type="speech_submitted", visibility="typo")
 
 
 def test_request_hash_is_order_independent_for_json_object_keys() -> None:

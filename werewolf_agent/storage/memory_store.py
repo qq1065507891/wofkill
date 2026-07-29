@@ -104,49 +104,95 @@ class InMemoryGameRepository:
 
     def commit_turn(self, request: CommitTurnRequest) -> CommitResult:
         with self._lock:
-            digest = request_hash(request)
-            key = (request.game_id, request.turn_id, request.idempotency_key)
-            existing = self._autonomous_commits.get(key)
-            if existing is not None:
-                if existing.request_hash != digest:
-                    raise IdempotencyConflictError(
-                        "idempotency key conflicts with an existing proposal",
+            events_snapshot = {
+                game_id: list(events) for game_id, events in self._events.items()
+            }
+            revision_snapshot = dict(self._autonomous_revision_by_game)
+            commits_snapshot = dict(self._autonomous_commits)
+            public_records_snapshot = dict(self._autonomous_public_records)
+            audits_snapshot = dict(self._autonomous_audits)
+            outbox_snapshot = dict(self._autonomous_outbox)
+            outbox_game_ids_snapshot = dict(self._autonomous_outbox_game_ids)
+
+            try:
+                digest = request_hash(request)
+                key = (request.game_id, request.turn_id, request.idempotency_key)
+                existing = self._autonomous_commits.get(key)
+                if existing is not None:
+                    if existing.request_hash != digest:
+                        raise IdempotencyConflictError(
+                            "idempotency key conflicts with an existing proposal",
+                        )
+                    return existing.model_copy(update={"replayed": True})
+
+                if request.game_id not in self._games:
+                    raise CommitTransactionError(
+                        f"game does not exist: {request.game_id}",
                     )
-                return existing.model_copy(update={"replayed": True})
-
-            if request.game_id not in self._games:
-                raise CommitTransactionError(f"game does not exist: {request.game_id}")
-            current = self._autonomous_revision(request.game_id)
-            event_head = self._autonomous_event_head(request.game_id)
-            if current != event_head:
-                raise CommitTransactionError(
-                    f"autonomous stream head {current} does not match event head {event_head}",
-                )
-            if request.base_game_revision != current:
-                raise StaleCommitError(
-                    f"expected revision {current}, got {request.base_game_revision}",
-                )
-            next_revision = current + 1
-            event = build_committed_event(request.game_id, request.event, next_revision)
-            record = bind_public_record(request.public_record, next_revision)
-            result = build_commit_result(request, digest, next_revision, event, record)
-            self._check_autonomous_ids(request, record)
-
-            # 所有唯一性和 revision 检查通过后才一次性发布内存记录。
-            self._events.setdefault(request.game_id, []).append(event)
-            self._autonomous_revision_by_game[request.game_id] = next_revision
-            if record is not None:
-                self._autonomous_public_records[record.record_id] = record
-            for audit in request.critical_audit_records:
-                self._autonomous_audits[audit.audit_id] = (
+                current = self._autonomous_revision(request.game_id)
+                event_head = self._autonomous_event_head(request.game_id)
+                if current != event_head:
+                    raise CommitTransactionError(
+                        "autonomous stream head "
+                        f"{current} does not match event head {event_head}",
+                    )
+                if request.base_game_revision != current:
+                    raise StaleCommitError(
+                        f"expected revision {current}, got {request.base_game_revision}",
+                    )
+                next_revision = current + 1
+                event = build_committed_event(
                     request.game_id,
-                    audit.model_dump(mode="json"),
+                    request.event,
+                    next_revision,
                 )
-            for outbox in request.projection_outbox_records:
-                self._autonomous_outbox[outbox.outbox_id] = outbox
-                self._autonomous_outbox_game_ids[outbox.outbox_id] = request.game_id
-            self._autonomous_commits[key] = result
-            return result
+                record = bind_public_record(request.public_record, next_revision)
+                result = build_commit_result(
+                    request,
+                    digest,
+                    next_revision,
+                    event,
+                    record,
+                )
+                self._check_autonomous_ids(request, record)
+
+                self._events.setdefault(request.game_id, []).append(event)
+                self._autonomous_revision_by_game[request.game_id] = next_revision
+                if record is not None:
+                    self._autonomous_public_records[record.record_id] = record
+                for audit in request.critical_audit_records:
+                    self._autonomous_audits[audit.audit_id] = (
+                        request.game_id,
+                        audit.model_dump(mode="json"),
+                    )
+                for outbox in request.projection_outbox_records:
+                    self._autonomous_outbox[outbox.outbox_id] = outbox
+                    self._autonomous_outbox_game_ids[outbox.outbox_id] = (
+                        request.game_id
+                    )
+                self._autonomous_commits[key] = result
+                return result
+            except Exception as exc:
+                # 内存仓储通过整体恢复事务快照实现零部分发布。
+                self._events = events_snapshot
+                self._autonomous_revision_by_game = revision_snapshot
+                self._autonomous_commits = commits_snapshot
+                self._autonomous_public_records = public_records_snapshot
+                self._autonomous_audits = audits_snapshot
+                self._autonomous_outbox = outbox_snapshot
+                self._autonomous_outbox_game_ids = outbox_game_ids_snapshot
+                if isinstance(
+                    exc,
+                    (
+                        StaleCommitError,
+                        IdempotencyConflictError,
+                        CommitTransactionError,
+                    ),
+                ):
+                    raise
+                raise CommitTransactionError(
+                    "autonomous CommitTurn transaction failed",
+                ) from exc
 
     def _autonomous_revision(self, game_id: str) -> int:
         current = self._autonomous_revision_by_game.get(game_id)

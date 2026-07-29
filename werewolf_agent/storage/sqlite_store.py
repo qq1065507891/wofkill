@@ -202,6 +202,37 @@ CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id);
 """ + _AUTONOMOUS_SCHEMA
 
 
+class SqliteSchemaMigrationError(RuntimeError):
+    """SQLite schema 升级因现存数据冲突而无法安全完成。"""
+
+
+def _ensure_event_sequence_integrity(conn: sqlite3.Connection) -> None:
+    """拒绝历史重复序号，并为后续 legacy/autonomous 混写建立约束。"""
+    duplicates = conn.execute(
+        """
+        SELECT game_id, seq, COUNT(*), GROUP_CONCAT(id)
+        FROM events
+        GROUP BY game_id, seq
+        HAVING COUNT(*) > 1
+        ORDER BY game_id, seq
+        LIMIT 20
+        """,
+    ).fetchall()
+    if duplicates:
+        details = " | ".join(
+            f"game_id={game_id}, seq={seq}, count={count}, rows={row_ids}"
+            for game_id, seq, count, row_ids in duplicates
+        )
+        raise SqliteSchemaMigrationError(
+            "SQLite event integrity migration blocked by duplicate event "
+            f"sequences; resolve or quarantine these rows before retrying: {details}",
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_seq "
+        "ON events (game_id, seq)",
+    )
+
+
 
 def _ensure_event_schema_v2(conn: sqlite3.Connection) -> None:
     """为旧 repository 数据库补齐 nullable event_json，并记录版本。"""
@@ -226,9 +257,15 @@ class SqliteGameRepository:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(_SCHEMA)
-        _ensure_event_schema_v2(self._conn)
-        self._conn.commit()
+        try:
+            self._conn.executescript(_SCHEMA)
+            _ensure_event_schema_v2(self._conn)
+            _ensure_event_sequence_integrity(self._conn)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            self._conn.close()
+            raise
 
     def close(self) -> None:
         with self._lock:

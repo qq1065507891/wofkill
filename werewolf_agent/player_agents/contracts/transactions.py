@@ -15,6 +15,7 @@ from typing import Any, Self
 
 from pydantic import Field, field_serializer, field_validator, model_validator
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.player_agents.contracts._base import (
     ContentHash,
     NonEmptyId,
@@ -63,7 +64,14 @@ class EventCandidate(StrictFrozenModel):
 
     type: NonEmptyId
     payload: Mapping[str, Any] = Field(default_factory=dict)
-    visibility: NonEmptyId | None = None
+    visibility: EventVisibility | None = None
+
+    @field_validator("visibility", mode="before")
+    @classmethod
+    def _known_visibility(cls, value: Any) -> EventVisibility | None:
+        if value is None or isinstance(value, EventVisibility):
+            return value
+        raise ValueError("visibility must be an EventVisibility value")
 
     @field_validator("payload")
     @classmethod

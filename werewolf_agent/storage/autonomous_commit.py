@@ -77,7 +77,7 @@ def build_committed_event(
 ) -> GameEvent:
     """为候选事件分配唯一身份和 authoritative revision。"""
     visibility = (
-        EventVisibility.from_legacy(candidate.visibility)
+        EventVisibility(candidate.visibility)
         if candidate.visibility is not None
         else event_visibility(
             GameEvent(type=candidate.type, payload=dict(candidate.payload)),

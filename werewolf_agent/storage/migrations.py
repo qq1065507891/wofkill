@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：SQLite schema 迁移系统，维护 legacy 和自主提交所需的基础表。
+功能描述：SQLite schema 迁移系统，版本化升级并为事件保留 V1 读取列。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-29
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -87,48 +87,6 @@ MIGRATIONS: list[Migration] = [
         );
         CREATE INDEX IF NOT EXISTS idx_reflections_game ON reflections (game_id);
         CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id);
-        CREATE TABLE IF NOT EXISTS autonomous_game_streams (
-            game_id TEXT PRIMARY KEY,
-            game_revision INTEGER NOT NULL,
-            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS autonomous_turn_commits (
-            game_id TEXT NOT NULL,
-            turn_id TEXT NOT NULL,
-            idempotency_key TEXT NOT NULL,
-            request_hash TEXT NOT NULL,
-            result_json TEXT NOT NULL,
-            committed_revision INTEGER NOT NULL,
-            PRIMARY KEY (game_id, turn_id, idempotency_key),
-            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS autonomous_public_records (
-            record_id TEXT PRIMARY KEY,
-            game_id TEXT NOT NULL,
-            turn_id TEXT NOT NULL,
-            committed_revision INTEGER NOT NULL,
-            record_json TEXT NOT NULL,
-            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS autonomous_audit_records (
-            audit_id TEXT PRIMARY KEY,
-            game_id TEXT NOT NULL,
-            committed_revision INTEGER NOT NULL,
-            record_json TEXT NOT NULL,
-            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS autonomous_projection_outbox (
-            outbox_id TEXT PRIMARY KEY,
-            game_id TEXT NOT NULL,
-            committed_revision INTEGER NOT NULL,
-            request_json TEXT NOT NULL,
-            delivered_at TEXT,
-            FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_autonomous_audit_revision
-            ON autonomous_audit_records (game_id, committed_revision);
-        CREATE INDEX IF NOT EXISTS idx_autonomous_outbox_revision
-            ON autonomous_projection_outbox (game_id, committed_revision);
         """,
     ),
     Migration(

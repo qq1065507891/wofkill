@@ -12,17 +12,46 @@ import re
 
 
 def test_sqlite_schema_matches_migration_v1():
-    """审查 U10: SqliteGameRepository._SCHEMA 与 migrations.py v1 表集合必须一致。"""
+    """legacy schema 必须保持与 MigrationManager v1 一致。"""
     from werewolf_agent.storage.migrations import MIGRATIONS
     from werewolf_agent.storage.sqlite_store import _SCHEMA
     v1 = next((m for m in MIGRATIONS if m.version == 1), None)
     assert v1 is not None, "no v1 migration"
     schema_tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", _SCHEMA))
     migration_tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", v1.sql))
-    assert schema_tables == migration_tables, (
-        f"schema drift:\n  in _SCHEMA only: {schema_tables - migration_tables}\n"
+    autonomous_tables = {
+        "autonomous_game_streams",
+        "autonomous_turn_commits",
+        "autonomous_public_records",
+        "autonomous_audit_records",
+        "autonomous_projection_outbox",
+    }
+    assert schema_tables - autonomous_tables == migration_tables, (
+        "legacy schema drift:\n"
+        f"  in _SCHEMA only: {schema_tables - autonomous_tables - migration_tables}\n"
         f"  in migration v1 only: {migration_tables - schema_tables}"
     )
+
+
+def test_migration_manager_does_not_apply_autonomous_schema(tmp_path) -> None:
+    from werewolf_agent.storage.migrations import MigrationManager
+
+    with MigrationManager(str(tmp_path / "legacy-migrations.db")) as manager:
+        manager.apply_all()
+        tables = {
+            row[0]
+            for row in manager._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'",
+            ).fetchall()
+        }
+
+    assert not {
+        "autonomous_game_streams",
+        "autonomous_turn_commits",
+        "autonomous_public_records",
+        "autonomous_audit_records",
+        "autonomous_projection_outbox",
+    } & tables
 
 
 def test_sqlite_schema_has_reflections_table():

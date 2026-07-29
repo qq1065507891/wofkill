@@ -7,6 +7,7 @@
 """
 
 import re
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -209,6 +210,55 @@ def test_existing_outbox_id_leaves_no_partial_memory_commit() -> None:
     assert repository.load_game_revision("g1") == 0
     assert repository.load_events("g1") == []
     assert repository._autonomous_commits == {}
+
+
+def test_memory_write_failure_rolls_back_and_wraps_cause() -> None:
+    class FailingAuditDict(dict):
+        def __setitem__(self, key, value):
+            raise OSError("injected audit write failure")
+
+    repository = InMemoryGameRepository()
+    repository.save_game(GameState(game_id="g1"))
+    repository._autonomous_audits = FailingAuditDict()
+
+    with pytest.raises(CommitTransactionError) as caught:
+        repository.commit_turn(_request())
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert repository.load_game_revision("g1") == 0
+    assert repository.load_events("g1") == []
+    assert repository._autonomous_commits == {}
+    assert repository._autonomous_public_records == {}
+    assert repository._autonomous_outbox == {}
+
+
+def test_sqlite_rejects_duplicate_legacy_event_sequences(tmp_path) -> None:
+    db_path = tmp_path / "duplicate-events.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE games (
+            game_id TEXT PRIMARY KEY,
+            state_json TEXT NOT NULL
+        );
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+        INSERT INTO games (game_id, state_json) VALUES ('g1', '{}');
+        INSERT INTO events (game_id, seq, event_type, payload_json)
+        VALUES ('g1', 1, 'legacy-a', '{}');
+        INSERT INTO events (game_id, seq, event_type, payload_json)
+        VALUES ('g1', 1, 'legacy-b', '{}');
+        """,
+    )
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="duplicate"):
+        SqliteGameRepository(str(db_path))
 
 
 def test_existing_legacy_event_sets_initial_revision(autonomous_repository) -> None:
