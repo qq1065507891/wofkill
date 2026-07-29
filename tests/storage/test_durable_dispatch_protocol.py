@@ -379,6 +379,25 @@ def test_reconciler_reissued_result_keeps_attempt_dispatched_and_reuses_key() ->
     assert store.results == {}
 
 
+def test_reconciler_reissued_dispatching_promotes_to_dispatched() -> None:
+    store = InMemoryDispatchFixture(
+        [_attempt(status=DispatchStatus.DISPATCHING, state_version=1)]
+    )
+    resolver = ReissuedResolver(_result())
+
+    report = DispatchReconciler(store, resolver=resolver).reconcile_game("game-1")
+
+    assert report.pending == 1
+    assert report.resolved == 0
+    assert report.errors == 0
+    attempt = store.load_dispatch("dispatch-1")
+    assert attempt is not None
+    assert attempt.status is DispatchStatus.DISPATCHED
+    assert attempt.state_version == 2
+    assert attempt.provider_idempotency_key == "provider-key-1"
+    assert store.results == {}
+
+
 def test_reconciler_leaves_pending_provider_and_keeps_barrier_closed() -> None:
     store = InMemoryDispatchFixture(
         [_attempt(status=DispatchStatus.DISPATCHING, state_version=1)]

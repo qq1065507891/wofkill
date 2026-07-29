@@ -19,6 +19,7 @@ from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchRecoveryPolicy,
     DispatchResultDisposition,
     DispatchResultRecord,
+    DispatchStatus,
 )
 
 
@@ -282,6 +283,26 @@ class DispatchReconciler:
             if kind is RecoveryResolutionKind.REISSUED:
                 # 重新交付必须复用原 provider key；resolver 不能借此伪造
                 # 已完成结果或推进 attempt。结果只能在后续 FOUND 扫描中记录。
+                if attempt.status is DispatchStatus.DISPATCHING:
+                    try:
+                        dispatched = self._repository.mark_dispatched(
+                            attempt.dispatch_id,
+                            expected_version=attempt.state_version,
+                        )
+                    except Exception:  # noqa: BLE001 - one attempt must not abort recovery
+                        errors += 1
+                        continue
+                    if not (
+                        isinstance(dispatched, DispatchAttempt)
+                        and dispatched.dispatch_id == attempt.dispatch_id
+                        and dispatched.status is DispatchStatus.DISPATCHED
+                        and dispatched.provider_idempotency_key
+                        == attempt.provider_idempotency_key
+                        and dispatched.request_hash == attempt.request_hash
+                        and dispatched.lease_hash == attempt.lease_hash
+                    ):
+                        errors += 1
+                        continue
                 pending += 1
                 continue
 
