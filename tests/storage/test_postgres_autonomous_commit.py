@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 import threading
@@ -187,6 +188,23 @@ def _dispatch_result(**updates: object) -> DispatchResultRecord:
     }
     data.update(updates)
     return DispatchResultRecord.model_validate(data)
+
+
+@pytest.mark.parametrize("status", tuple(DispatchStatus))
+def test_postgres_dispatch_row_decodes_every_status_enum(status: DispatchStatus) -> None:
+    from werewolf_agent.storage.postgres_store import PostgresGameRepository
+
+    row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), status.value, 0,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+
+    parsed = PostgresGameRepository._dispatch_from_row(row)
+
+    assert parsed.status is status
 
 
 def test_postgres_schema_contains_durable_dispatch_tables_and_indexes() -> None:
@@ -437,6 +455,43 @@ def test_postgres_record_result_decodes_psycopg_outcome_for_replay() -> None:
         )
 
     assert connection.rollback.call_count == 2
+
+
+def test_postgres_backend_rejects_direct_dispatching_result() -> None:
+    repository = _repository_without_connection()
+    connection = MagicMock()
+    repository._conn = connection
+    repository._autonomous_schema_ready = True
+    attempt_row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "dispatching", 1,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = attempt_row
+        elif normalized.startswith("SELECT 1 FROM games"):
+            cursor.fetchone.return_value = (1,)
+        elif "FROM autonomous_dispatch_results" in normalized:
+            cursor.fetchone.return_value = None
+        return cursor
+
+    connection.execute.side_effect = execute
+
+    with pytest.raises(DispatchInvalidTransition) as caught:
+        repository.record_result(
+            "dispatch-1",
+            expected_version=1,
+            result=_dispatch_result(),
+        )
+
+    assert caught.value.code == "dispatch_invalid_transition"
+    connection.rollback.assert_called_once()
 
 
 def test_postgres_record_result_replays_business_payload_with_result_fields() -> None:

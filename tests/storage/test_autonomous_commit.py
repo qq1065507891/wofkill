@@ -47,10 +47,13 @@ from werewolf_agent.storage.durable_dispatch import (
     DispatchInvalidTransition,
     DispatchLeaseMismatch,
     DispatchNotFound,
+    DispatchReconciler,
     DispatchRecoveryBlocked,
     DispatchResultConflict,
     DispatchStateConflict,
     DispatchTransactionError,
+    RecoveryResolution,
+    RecoveryResolutionKind,
 )
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 from werewolf_agent.storage.sqlite_store import SqliteGameRepository
@@ -679,3 +682,337 @@ def test_sqlite_dispatch_write_failures_roll_back_atomically(tmp_path) -> None:
         "SELECT COUNT(*) FROM autonomous_dispatch_results"
     ).fetchone()[0] == 0
     repository.close()
+
+
+@pytest.fixture(params=("memory", "sqlite"))
+def dispatch_repository(request, tmp_path):
+    """为 durable dispatch 合同提供统一的内存/SQLite 后端矩阵。"""
+    if request.param == "memory":
+        repository = InMemoryGameRepository()
+    else:
+        repository = SqliteGameRepository(str(tmp_path / "dispatch-matrix.db"))
+    repository.save_game(GameState(game_id="g1"))
+    yield repository
+    close = getattr(repository, "close", None)
+    if callable(close):
+        close()
+
+
+def test_dispatch_state_machine_is_identical_across_backends(
+    dispatch_repository,
+) -> None:
+    created = dispatch_repository.create_dispatch(_dispatch_attempt())
+    assert created.status is DispatchStatus.PENDING
+    assert created.state_version == 0
+
+    dispatching = dispatch_repository.mark_dispatching("dispatch-1", 0)
+    assert dispatching.status is DispatchStatus.DISPATCHING
+    assert dispatching.state_version == 1
+    dispatched = dispatch_repository.mark_dispatched("dispatch-1", 1)
+    assert dispatched.status is DispatchStatus.DISPATCHED
+    assert dispatched.state_version == 2
+
+    result = _dispatch_result()
+    assert (
+        dispatch_repository.record_result("dispatch-1", 2, result)
+        is DispatchResultDisposition.RECORDED
+    )
+    assert (
+        dispatch_repository.record_result("dispatch-1", 3, result)
+        is DispatchResultDisposition.REPLAYED
+    )
+    stored = dispatch_repository.load_dispatch("dispatch-1")
+    assert stored is not None
+    assert stored.status is DispatchStatus.RESULT_RECORDED
+    assert stored.state_version == 3
+
+    # 内存后端保留字典快照模拟崩溃后恢复；SQLite 通过 close/reopen 恢复。
+    if isinstance(dispatch_repository, InMemoryGameRepository):
+        attempts = dict(dispatch_repository._dispatch_attempts)
+        results = dict(dispatch_repository._dispatch_results)
+        recovered = InMemoryGameRepository()
+        recovered.save_game(GameState(game_id="g1"))
+        recovered._dispatch_attempts = attempts
+        recovered._dispatch_results = results
+        recovered._dispatch_key_index = dict(dispatch_repository._dispatch_key_index)
+    else:
+        db_path = dispatch_repository._db_path
+        dispatch_repository.close()
+        recovered = SqliteGameRepository(db_path)
+    try:
+        loaded = recovered.load_dispatch("dispatch-1")
+        assert loaded is not None
+        assert loaded.status is DispatchStatus.RESULT_RECORDED
+        assert loaded.state_version == 3
+    finally:
+        close = getattr(recovered, "close", None)
+        if callable(close):
+            close()
+
+
+def test_dispatching_cas_race_has_one_winner(dispatch_repository) -> None:
+    dispatch_repository.create_dispatch(_dispatch_attempt())
+
+    def transition() -> object:
+        try:
+            return dispatch_repository.mark_dispatching("dispatch-1", 0)
+        except Exception as exc:  # noqa: BLE001 - race outcomes are asserted below
+            return exc
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        outcomes = list(executor.map(lambda _: transition(), range(10)))
+
+    successes = [item for item in outcomes if isinstance(item, DispatchAttempt)]
+    failures = [item for item in outcomes if isinstance(item, Exception)]
+    assert len(successes) == 1
+    assert len(failures) == 9
+    assert all(isinstance(item, DispatchStateConflict) for item in failures)
+    current = dispatch_repository.load_dispatch("dispatch-1")
+    assert current is not None
+    assert current.status is DispatchStatus.DISPATCHING
+    assert current.state_version == 1
+
+
+def test_memory_result_write_failure_rolls_back_attempt_and_result() -> None:
+    class FailingResultDict(dict):
+        def __setitem__(self, key, value):
+            raise OSError("injected result write failure")
+
+    repository = _memory_dispatch_repository()
+    repository.create_dispatch(_dispatch_attempt())
+    repository.mark_dispatching("dispatch-1", 0)
+    repository.mark_dispatched("dispatch-1", 1)
+    repository._dispatch_results = FailingResultDict()
+
+    with pytest.raises(DispatchTransactionError) as caught:
+        repository.record_result("dispatch-1", 2, _dispatch_result())
+
+    assert isinstance(caught.value.__cause__, OSError)
+    current = repository.load_dispatch("dispatch-1")
+    assert current is not None
+    assert current.status is DispatchStatus.DISPATCHED
+    assert current.state_version == 2
+    assert repository._dispatch_results == {}
+
+
+def test_dispatch_listing_is_sorted_and_returns_defensive_copies(dispatch_repository) -> None:
+    for dispatch_id in ("dispatch-z", "dispatch-a", "dispatch-m"):
+        dispatch_repository.create_dispatch(
+            _dispatch_attempt(
+                dispatch_id=dispatch_id,
+                provider_idempotency_key=f"provider-{dispatch_id}",
+            ),
+        )
+    for dispatch_id in ("dispatch-z", "dispatch-a", "dispatch-m"):
+        dispatch_repository.mark_dispatching(dispatch_id, 0)
+
+    listed = dispatch_repository.list_recoverable_dispatches("g1")
+    assert [item.dispatch_id for item in listed] == [
+        "dispatch-a",
+        "dispatch-m",
+        "dispatch-z",
+    ]
+    listed[0] = listed[0].model_copy(update={"reason_code": "mutated"})
+    reloaded = dispatch_repository.load_dispatch("dispatch-a")
+    assert reloaded is not None
+    assert reloaded.reason_code is None
+
+
+def test_found_recovery_records_result_from_dispatching_state(dispatch_repository) -> None:
+    dispatch_repository.create_dispatch(_dispatch_attempt())
+    dispatch_repository.mark_dispatching("dispatch-1", 0)
+
+    class Resolver:
+        def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
+            assert attempt.dispatch_id == "dispatch-1"
+            return RecoveryResolution(
+                kind=RecoveryResolutionKind.FOUND,
+                result=_dispatch_result(),
+            )
+
+    report = DispatchReconciler(dispatch_repository, resolver=Resolver()).reconcile_game("g1")
+
+    assert report.resolved == 1
+    assert report.barrier_open is True
+    loaded = dispatch_repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is DispatchStatus.RESULT_RECORDED
+    assert loaded.state_version == 3
+
+
+def test_backends_reject_direct_result_from_dispatching_state(dispatch_repository) -> None:
+    dispatch_repository.create_dispatch(_dispatch_attempt())
+    dispatch_repository.mark_dispatching("dispatch-1", 0)
+
+    with pytest.raises(DispatchInvalidTransition) as caught:
+        dispatch_repository.record_result("dispatch-1", 1, _dispatch_result())
+
+    assert caught.value.code == "dispatch_invalid_transition"
+    loaded = dispatch_repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is DispatchStatus.DISPATCHING
+    assert loaded.state_version == 1
+
+
+@pytest.mark.parametrize(
+    ("resolution_kind", "start_dispatched", "expected_status", "expected_version"),
+    (
+        (RecoveryResolutionKind.REISSUED, False, DispatchStatus.DISPATCHED, 2),
+        (RecoveryResolutionKind.REISSUED, True, DispatchStatus.DISPATCHED, 2),
+        (RecoveryResolutionKind.PENDING, False, DispatchStatus.DISPATCHING, 1),
+        (RecoveryResolutionKind.UNAVAILABLE, False, DispatchStatus.DISPATCHING, 1),
+    ),
+)
+def test_recovery_fault_barriers_are_consistent_across_backends(
+    dispatch_repository,
+    resolution_kind,
+    start_dispatched,
+    expected_status,
+    expected_version,
+) -> None:
+    dispatch_repository.create_dispatch(_dispatch_attempt())
+    dispatch_repository.mark_dispatching("dispatch-1", 0)
+    if start_dispatched:
+        dispatch_repository.mark_dispatched("dispatch-1", 1)
+
+    class Resolver:
+        def __init__(self) -> None:
+            self.seen_keys: list[str] = []
+
+        def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
+            self.seen_keys.append(attempt.provider_idempotency_key)
+            return RecoveryResolution(kind=resolution_kind)
+
+    resolver = Resolver()
+    report = DispatchReconciler(dispatch_repository, resolver=resolver).reconcile_game("g1")
+
+    assert report.pending == 1
+    assert report.barrier_open is False
+    assert resolver.seen_keys == ["provider-key-1"]
+    loaded = dispatch_repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is expected_status
+    assert loaded.state_version == expected_version
+    assert loaded.provider_idempotency_key == "provider-key-1"
+
+
+def test_at_most_once_unknown_never_calls_resolver_across_backends(
+    dispatch_repository,
+) -> None:
+    dispatch_repository.create_dispatch(
+        _dispatch_attempt(recovery_policy=DispatchRecoveryPolicy.AT_MOST_ONCE_UNKNOWN),
+    )
+    dispatch_repository.mark_dispatching("dispatch-1", 0)
+
+    class NeverCalled:
+        def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
+            raise AssertionError("resolver must not run")
+
+    report = DispatchReconciler(
+        dispatch_repository,
+        resolver=NeverCalled(),
+    ).reconcile_game("g1")
+
+    assert report.unknown == 1
+    assert report.budget_consumption_required is True
+    assert report.barrier_open is True
+    loaded = dispatch_repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is DispatchStatus.UNKNOWN_OUTCOME
+    assert loaded.reason_code == "provider_not_idempotent"
+
+
+def test_cancel_unknown_late_results_are_discarded_across_backends(
+    dispatch_repository,
+) -> None:
+    dispatch_repository.create_dispatch(_dispatch_attempt())
+    dispatch_repository.cancel_dispatch("dispatch-1", 0, "cancelled")
+    assert (
+        dispatch_repository.record_result("dispatch-1", 1, _dispatch_result())
+        is DispatchResultDisposition.DISCARDED_LATE
+    )
+    cancelled = dispatch_repository.load_dispatch("dispatch-1")
+    assert cancelled is not None
+    assert cancelled.status is DispatchStatus.CANCELLED
+    assert cancelled.state_version == 1
+
+    dispatch_repository.create_dispatch(
+        _dispatch_attempt(
+            dispatch_id="dispatch-2",
+            provider_idempotency_key="provider-key-2",
+        ),
+    )
+    dispatch_repository.mark_dispatching("dispatch-2", 0)
+    dispatch_repository.mark_unknown_outcome("dispatch-2", 1, "provider_timeout")
+    assert (
+        dispatch_repository.record_result(
+            "dispatch-2",
+            2,
+            _dispatch_result(dispatch_id="dispatch-2", result_id="result-2"),
+        )
+        is DispatchResultDisposition.DISCARDED_LATE
+    )
+    unknown = dispatch_repository.load_dispatch("dispatch-2")
+    assert unknown is not None
+    assert unknown.status is DispatchStatus.UNKNOWN_OUTCOME
+    assert unknown.state_version == 2
+
+
+def test_request_and_lease_mismatch_leave_attempt_unchanged_across_backends(
+    dispatch_repository,
+) -> None:
+    dispatch_repository.create_dispatch(_dispatch_attempt())
+    dispatch_repository.mark_dispatching("dispatch-1", 0)
+    dispatch_repository.mark_dispatched("dispatch-1", 1)
+
+    with pytest.raises(DispatchResultConflict) as request_error:
+        dispatch_repository.record_result(
+            "dispatch-1",
+            2,
+            _dispatch_result(request_hash="b" * 64),
+        )
+    with pytest.raises(DispatchLeaseMismatch) as lease_error:
+        dispatch_repository.record_result(
+            "dispatch-1",
+            2,
+            _dispatch_result(lease_hash="b" * 64),
+        )
+
+    assert request_error.value.code == "dispatch_result_conflict"
+    assert lease_error.value.code == "dispatch_lease_mismatch"
+    loaded = dispatch_repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is DispatchStatus.DISPATCHED
+    assert loaded.state_version == 2
+
+
+def test_recovery_report_is_frozen() -> None:
+    report = DispatchReconciler(
+        InMemoryGameRepository(),
+        resolver=object(),
+    )
+    # Accessing the public report through an empty scan keeps this assertion
+    # coupled to the frozen dataclass rather than implementation internals.
+    result = report.reconcile_game("missing-game")
+    with pytest.raises((AttributeError, TypeError)):
+        result.errors = 99  # type: ignore[misc]
+
+
+def test_result_hash_conflict_is_stable_across_backends(dispatch_repository) -> None:
+    dispatch_repository.create_dispatch(_dispatch_attempt())
+    dispatch_repository.mark_dispatching("dispatch-1", 0)
+    dispatch_repository.mark_dispatched("dispatch-1", 1)
+    result = _dispatch_result()
+    dispatch_repository.record_result("dispatch-1", 2, result)
+
+    with pytest.raises(DispatchResultConflict) as caught:
+        dispatch_repository.record_result(
+            "dispatch-1",
+            3,
+            result.model_copy(update={"result_hash": "b" * 64}),
+        )
+
+    assert caught.value.code == "dispatch_result_conflict"
+    loaded = dispatch_repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.state_version == 3

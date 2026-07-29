@@ -6,6 +6,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 from __future__ import annotations
@@ -262,10 +263,33 @@ class DispatchReconciler:
                 if not self._result_matches_attempt(attempt, resolution.result):
                     errors += 1
                     continue
+                record_attempt = attempt
+                if attempt.status is DispatchStatus.DISPATCHING:
+                    # FOUND 结果仍须遵循持久化状态机：先完成已发出的
+                    # dispatch，再使用新版本原子记录结果。
+                    try:
+                        record_attempt = self._repository.mark_dispatched(
+                            attempt.dispatch_id,
+                            expected_version=attempt.state_version,
+                        )
+                    except Exception:  # noqa: BLE001 - one attempt must not abort recovery
+                        errors += 1
+                        continue
+                    if not (
+                        isinstance(record_attempt, DispatchAttempt)
+                        and record_attempt.dispatch_id == attempt.dispatch_id
+                        and record_attempt.status is DispatchStatus.DISPATCHED
+                        and record_attempt.provider_idempotency_key
+                        == attempt.provider_idempotency_key
+                        and record_attempt.request_hash == attempt.request_hash
+                        and record_attempt.lease_hash == attempt.lease_hash
+                    ):
+                        errors += 1
+                        continue
                 try:
                     disposition = self._repository.record_result(
                         attempt.dispatch_id,
-                        expected_version=attempt.state_version,
+                        expected_version=record_attempt.state_version,
                         result=cast(DispatchResultRecord, resolution.result),
                     )
                 except Exception:  # noqa: BLE001 - one attempt must not abort recovery

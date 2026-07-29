@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 from datetime import datetime, timezone
@@ -80,6 +81,7 @@ def test_dispatch_attempt_rejects_naive_deadline_and_invalid_hash() -> None:
 
 
 def test_dispatch_result_payload_is_deeply_immutable() -> None:
+    source_payload = {"nested": [{"safe": True}]}
     result = DispatchResultRecord(
         result_id="result-1",
         dispatch_id="dispatch-1",
@@ -88,9 +90,14 @@ def test_dispatch_result_payload_is_deeply_immutable() -> None:
         result_hash=HASH,
         result_kind="model_response",
         outcome=DispatchResultOutcome.SUCCESS,
-        payload={"nested": [{"safe": True}]},
+        payload=source_payload,
         recorded_at=datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
     )
+    source_payload["nested"].append({"safe": False})
     with pytest.raises(TypeError):
         result.payload["nested"] = []  # type: ignore[index]
+    with pytest.raises(TypeError):
+        result.payload["nested"][0]["safe"] = False  # type: ignore[index]
+    with pytest.raises((TypeError, AttributeError)):
+        result.payload["nested"].append({"safe": False})  # type: ignore[union-attr]
     assert result.payload["nested"] == ({"safe": True},)

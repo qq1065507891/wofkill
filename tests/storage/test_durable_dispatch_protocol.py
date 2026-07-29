@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
+from werewolf_agent.core.models import GameState
 from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchAttempt,
     DispatchOperationKind,
@@ -37,6 +39,7 @@ from werewolf_agent.storage.durable_dispatch import (
     RecoveryResolutionKind,
     require_durable_dispatch_repository,
 )
+from werewolf_agent.storage.memory_store import InMemoryGameRepository
 
 HASH = "a" * 64
 NOW = datetime(2026, 7, 29, 11, tzinfo=timezone.utc)
@@ -491,3 +494,56 @@ def test_reconciler_rejects_invalid_resolver_output_without_mutating_attempt() -
     report = DispatchReconciler(store, resolver=InvalidResolver()).reconcile_game("game-1")
     assert report.errors == 1
     assert store.load_dispatch("dispatch-1").status is DispatchStatus.DISPATCHED  # type: ignore[union-attr]
+
+
+def test_reconciler_found_dispatching_records_the_same_dispatch_id() -> None:
+    repository = InMemoryGameRepository()
+    repository.save_game(GameState(game_id="game-1"))
+    repository.create_dispatch(_attempt())
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+
+    class Resolver:
+        def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
+            assert attempt.dispatch_id == "dispatch-1"
+            return RecoveryResolution(
+                kind=RecoveryResolutionKind.FOUND,
+                result=_result(),
+            )
+
+    report = DispatchReconciler(repository, resolver=Resolver()).reconcile_game(
+        "game-1",
+    )
+
+    assert report.resolved == 1
+    assert report.barrier_open is True
+    loaded = repository.load_dispatch("dispatch-1")
+    assert loaded is not None
+    assert loaded.status is DispatchStatus.RESULT_RECORDED
+    assert loaded.state_version == 3
+
+
+def test_reconciler_counts_dispatching_found_promotion_failure() -> None:
+    class FailingPromotionStore(InMemoryDispatchFixture):
+        def __init__(self) -> None:
+            super().__init__([_attempt(status=DispatchStatus.DISPATCHING, state_version=1)])
+            self.calls: list[tuple[str, int]] = []
+
+        def mark_dispatched(self, dispatch_id: str, expected_version: int) -> DispatchAttempt:
+            self.calls.append((dispatch_id, expected_version))
+            raise DispatchStateConflict(dispatch_id)
+
+    store = FailingPromotionStore()
+    report = DispatchReconciler(
+        store,
+        resolver=FoundResolver(_result()),
+    ).reconcile_game("game-1")
+
+    assert report.errors == 1
+    assert report.resolved == 0
+    assert report.barrier_open is False
+    assert store.calls == [("dispatch-1", 1)]
+    assert store.results == {}
+    attempt = store.load_dispatch("dispatch-1")
+    assert attempt is not None
+    assert attempt.status is DispatchStatus.DISPATCHING
+    assert attempt.state_version == 1
