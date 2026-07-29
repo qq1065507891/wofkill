@@ -35,7 +35,7 @@
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 - Test: `tests/player_agents/test_dispatch_contracts.py`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Create a fixture using timezone-aware datetimes and 64-character hashes:
 
@@ -134,7 +134,7 @@ def test_dispatch_result_payload_is_deeply_immutable() -> None:
 - Create: werewolf_agent/storage/durable_dispatch.py
 - Test: tests/storage/test_durable_dispatch_protocol.py
 
-- [ ] **Step 1: Write failing protocol and recovery tests**
+- [x] **Step 1: Write failing protocol and recovery tests**
 
 Add a minimal fake repository and resolver in the test module. Verify that a
 plain object is rejected by the capability guard, that a resolver can return a
@@ -185,7 +185,7 @@ def test_reconciler_leaves_pending_provider_and_keeps_barrier_closed() -> None:
 The fixture may implement only the protocol methods required by the tests; it
 must preserve state_version and return defensive model copies.
 
-- [ ] **Step 2: Run the protocol tests and verify RED**
+- [x] **Step 2: Run the protocol tests and verify RED**
 
 Run:
 
@@ -196,7 +196,7 @@ conda run -n wofkill python -m pytest -q tests/storage/test_durable_dispatch_pro
 Expected: collection fails because the capability protocol, errors, resolver,
 and reconciler do not exist.
 
-- [ ] **Step 3: Implement stable errors and capability guard**
+- [x] **Step 3: Implement stable errors and capability guard**
 
 Define DurableDispatchUnsupported, DispatchNotFound,
 DispatchStateConflict, DispatchInvalidTransition,
@@ -215,7 +215,7 @@ def require_durable_dispatch_repository(repository: object) -> DurableDispatchRe
 The guard must never infer support from the presence of create_dispatch or
 commit_turn.
 
-- [ ] **Step 4: Implement resolver types and DispatchReconciler**
+- [x] **Step 4: Implement resolver types and DispatchReconciler**
 
 Use immutable dataclasses for resolver input/output:
 
@@ -248,7 +248,7 @@ a frozen RecoveryReport with resolved, unknown, pending, errors,
 budget_consumption_required, and barrier_open counts. A resolver cannot mutate
 an attempt or create a dispatch ID.
 
-- [ ] **Step 5: Run focused protocol tests and commit**
+- [x] **Step 5: Run focused protocol tests and commit**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/storage/test_durable_dispatch_protocol.py
@@ -264,7 +264,7 @@ git commit -m "feat: add durable dispatch capability protocol"
 - Modify: werewolf_agent/storage/memory_store.py
 - Modify: tests/storage/test_autonomous_commit.py
 
-- [ ] **Step 1: Add failing in-memory transition tests**
+- [x] **Step 1: Add failing in-memory transition tests**
 
 Add tests that create a game, insert a PENDING attempt, and assert every valid
 transition increments state_version. Add these negative cases:
@@ -283,7 +283,7 @@ cancel_dispatch, mark_unknown_outcome, and DISCARDED_LATE after each terminal
 status. Test assert_dispatch_allowed rejects a game containing a DISPATCHING
 or DISPATCHED attempt.
 
-- [ ] **Step 2: Run the in-memory tests and verify RED**
+- [x] **Step 2: Run the in-memory tests and verify RED**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/storage/test_autonomous_commit.py -k dispatch
@@ -291,7 +291,7 @@ conda run -n wofkill python -m pytest -q tests/storage/test_autonomous_commit.py
 
 Expected: InMemoryGameRepository has no durable dispatch methods.
 
-- [ ] **Step 3: Add isolated in-memory state**
+- [x] **Step 3: Add isolated in-memory state**
 
 Initialize these dictionaries beside the existing autonomous commit state:
 
@@ -305,7 +305,7 @@ Keep all durable dispatch methods under the existing RLock. Include dispatch
 state in delete_game cleanup and return model_copy(deep=True) from every read
 method.
 
-- [ ] **Step 4: Implement atomic transition helpers**
+- [x] **Step 4: Implement atomic transition helpers**
 
 Implement a private _transition_dispatch that:
 
@@ -323,7 +323,7 @@ version increment; a different result raises DispatchResultConflict. Before
 creating a new attempt, reject the game with DispatchRecoveryBlocked when any
 DISPATCHING or DISPATCHED attempt is present.
 
-- [ ] **Step 5: Verify in-memory behavior and commit**
+- [x] **Step 5: Verify in-memory behavior and commit**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/storage/test_autonomous_commit.py -k dispatch
@@ -340,7 +340,7 @@ git commit -m "feat: implement in-memory durable dispatch"
 - Modify: tests/storage/test_sqlite_migrations.py
 - Modify: tests/storage/test_autonomous_commit.py
 
-- [ ] **Step 1: Add failing schema/restart tests**
+- [x] **Step 1: Add failing schema/restart tests**
 
 Add a fresh-schema test asserting both tables and the (game_id, status,
 created_at) index. Create a database with only legacy games/events, open it
@@ -348,7 +348,7 @@ through SqliteGameRepository, insert an attempt, close it, reopen it, and
 assert list_recoverable_dispatches("game-1") returns the same attempt. Assert
 the existing MigrationManager still creates no autonomous dispatch tables.
 
-- [ ] **Step 2: Run the SQLite tests and verify RED**
+- [x] **Step 2: Run the SQLite tests and verify RED**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/storage/test_sqlite_migrations.py tests/storage/test_autonomous_commit.py -k dispatch
@@ -356,7 +356,7 @@ conda run -n wofkill python -m pytest -q tests/storage/test_sqlite_migrations.py
 
 Expected: dispatch tables and repository methods are missing.
 
-- [ ] **Step 3: Add idempotent SQLite schema outside MigrationManager**
+- [x] **Step 3: Add idempotent SQLite schema outside MigrationManager**
 
 Define _AUTONOMOUS_DISPATCH_SCHEMA with CREATE TABLE IF NOT EXISTS for:
 
@@ -406,7 +406,7 @@ to games(game_id) with ON DELETE CASCADE. Run this schema after the existing
 event schema upgrade and before the existing sequence integrity check; do not
 alter MIGRATIONS or its version numbers.
 
-- [ ] **Step 4: Implement SQLite CAS transitions**
+- [x] **Step 4: Implement SQLite CAS transitions**
 
 Use the existing repository lock and BEGIN IMMEDIATE. Every update must
 include the expected state version:
@@ -426,7 +426,7 @@ dispatch errors. The create operation must query for existing
 DISPATCHING/DISPATCHED rows for the same game and raise
 DispatchRecoveryBlocked before inserting a new attempt.
 
-- [ ] **Step 5: Verify SQLite behavior and commit**
+- [x] **Step 5: Verify SQLite behavior and commit**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/storage/test_sqlite_migrations.py tests/storage/test_autonomous_commit.py -k dispatch
@@ -442,14 +442,14 @@ git commit -m "feat: implement sqlite durable dispatch"
 - Modify: werewolf_agent/storage/postgres_store.py
 - Modify: tests/storage/test_postgres_autonomous_commit.py
 
-- [ ] **Step 1: Add failing PostgreSQL contract tests**
+- [x] **Step 1: Add failing PostgreSQL contract tests**
 
 Extend the existing mock connection to recognize dispatch DDL and row-lock
 queries. Assert supports_durable_dispatch() is false before schema setup and
 that _ensure_schema_transaction contains both dispatch tables, the executor
 key unique index, and the game/status/created index.
 
-- [ ] **Step 2: Run the PostgreSQL tests and verify RED**
+- [x] **Step 2: Run the PostgreSQL tests and verify RED**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/storage/test_postgres_autonomous_commit.py -k dispatch
@@ -457,14 +457,14 @@ conda run -n wofkill python -m pytest -q tests/storage/test_postgres_autonomous_
 
 Expected: the repository has no dispatch capability or dispatch schema.
 
-- [ ] **Step 3: Add PostgreSQL DDL to the existing schema transaction**
+- [x] **Step 3: Add PostgreSQL DDL to the existing schema transaction**
 
 Create the same two tables with JSONB result payloads, TIMESTAMPTZ timestamps,
 BIGINT state versions, foreign keys to games, and the two indexes. Keep
 _autonomous_schema_ready false if any DDL fails and preserve the existing
 rollback/retry behavior.
 
-- [ ] **Step 4: Implement row-locked state transitions**
+- [x] **Step 4: Implement row-locked state transitions**
 
 For every operation, acquire the game and dispatch rows with SELECT FOR UPDATE,
 validate state and hashes in Python, update with expected state version, and
@@ -476,7 +476,7 @@ check. The create operation must lock the game row, query for existing
 DISPATCHING/DISPATCHED rows, and raise DispatchRecoveryBlocked before inserting
 a new attempt.
 
-- [ ] **Step 5: Verify PostgreSQL mocks and commit**
+- [x] **Step 5: Verify PostgreSQL mocks and commit**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/storage/test_postgres_autonomous_commit.py -k dispatch
@@ -493,7 +493,7 @@ git commit -m "feat: implement postgres durable dispatch"
 - Modify: tests/storage/test_postgres_autonomous_commit.py
 - Modify: tests/player_agents/test_dispatch_contracts.py
 
-- [ ] **Step 1: Add the shared backend matrix**
+- [x] **Step 1: Add the shared backend matrix**
 
 Parameterize the memory and SQLite repositories with the same _attempt and
 _result fixtures. For each backend, verify:
@@ -511,7 +511,7 @@ Use a fresh SQLite repository after close/reopen to simulate a process restart;
 use the memory repository's retained dictionaries to simulate an in-process
 crash boundary.
 
-- [ ] **Step 2: Add recovery fault injection**
+- [x] **Step 2: Add recovery fault injection**
 
 Cover these exact cases for memory and SQLite:
 
@@ -525,14 +525,14 @@ Cover these exact cases for memory and SQLite:
 7. a mismatched lease or request hash raises the stable binding error and does
    not mutate the attempt or result table.
 
-- [ ] **Step 3: Add concurrency and rollback injection**
+- [x] **Step 3: Add concurrency and rollback injection**
 
 Use ThreadPoolExecutor(max_workers=10) to race two mark_dispatching calls with
 the same expected version and assert exactly one succeeds. Replace the memory
 result dictionary with a failing mapping and inject a SQLite insert failure;
 assert no partial result and no state-version increment remain.
 
-- [ ] **Step 4: Run focused cross-backend checks and commit**
+- [x] **Step 4: Run focused cross-backend checks and commit**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q tests/player_agents/test_dispatch_contracts.py tests/storage/test_durable_dispatch_protocol.py tests/storage/test_autonomous_commit.py tests/storage/test_postgres_autonomous_commit.py
@@ -547,7 +547,7 @@ git commit -m "test: verify durable dispatch recovery semantics"
 - No production files beyond Tasks 1-6.
 - Review all changed files against docs/superpowers/specs/2026-07-29-autonomous-player-durable-dispatch-design.md.
 
-- [ ] **Step 1: Run the full test suite**
+- [x] **Step 1: Run the full test suite**
 
 ~~~bash
 conda run -n wofkill python -m pytest -q
@@ -555,7 +555,7 @@ conda run -n wofkill python -m pytest -q
 
 Expected: exit code 0 with only the repository's known warnings/skips.
 
-- [ ] **Step 2: Run scoped Ruff and mypy**
+- [x] **Step 2: Run scoped Ruff and mypy**
 
 ~~~bash
 conda run -n wofkill python -m ruff check --ignore UP009 \
@@ -586,7 +586,7 @@ Expected: Ruff and isolated mypy pass for all changed implementation and test
 files. Existing unrelated full-package mypy errors must be reported rather
 than broadened into this stage.
 
-- [ ] **Step 3: Verify the runtime boundary**
+- [x] **Step 3: Verify the runtime boundary**
 
 Run:
 
@@ -597,7 +597,7 @@ rg -n "DurableDispatch|DispatchReconciler|DispatchAttempt" werewolf_agent/runtim
 Expected: no new live runtime import or call site. Only the new contracts,
 storage modules, and focused tests may reference the capability.
 
-- [ ] **Step 4: Request code review and inspect the worktree**
+- [x] **Step 4: Request code review and inspect the worktree**
 
 ~~~bash
 git diff --check
@@ -609,7 +609,7 @@ The feature worktree must be clean, all task commits must be present, and the
 review must confirm no scheduler, HostRuntime, ModelRouter, or feature-gate
 integration slipped into this stage.
 
-- [ ] **Step 5: Commit only documentation/checklist updates if needed**
+- [x] **Step 5: Commit only documentation/checklist updates if needed**
 
 ~~~bash
 git add docs/superpowers/plans/2026-07-29-autonomous-player-durable-dispatch.md
