@@ -655,39 +655,6 @@ def test_sqlite_dispatch_result_replay_preserves_payload(tmp_path) -> None:
     repository.close()
 
 
-def test_sqlite_dispatch_replays_legacy_full_result_envelope(tmp_path) -> None:
-    repository = SqliteGameRepository(str(tmp_path / "dispatch-legacy-envelope.db"))
-    repository.save_game(GameState(game_id="g1"))
-    repository.create_dispatch(_dispatch_attempt())
-    repository.mark_dispatching("dispatch-1", expected_version=0)
-    repository.mark_dispatched("dispatch-1", expected_version=1)
-    result = _dispatch_result()
-    repository._conn.execute(
-        "INSERT INTO autonomous_dispatch_results "
-        "(result_id, dispatch_id, request_hash, lease_hash, result_hash, "
-        "result_kind, outcome, result_json, recorded_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            result.result_id,
-            result.dispatch_id,
-            result.request_hash,
-            result.lease_hash,
-            result.result_hash,
-            result.result_kind,
-            result.outcome.value,
-            result.model_dump_json(),
-            result.recorded_at.isoformat(),
-        ),
-    )
-    repository._conn.commit()
-
-    assert (
-        repository.record_result("dispatch-1", expected_version=2, result=result)
-        is DispatchResultDisposition.REPLAYED
-    )
-    repository.close()
-
-
 def test_sqlite_dispatch_payload_with_full_fields_is_not_unwrapped(tmp_path) -> None:
     repository = SqliteGameRepository(str(tmp_path / "dispatch-business-payload.db"))
     repository.save_game(GameState(game_id="g1"))
@@ -695,18 +662,21 @@ def test_sqlite_dispatch_payload_with_full_fields_is_not_unwrapped(tmp_path) -> 
     repository.mark_dispatching("dispatch-1", expected_version=0)
     repository.mark_dispatched("dispatch-1", expected_version=1)
     payload = {
-        "result_id": "business-result-id",
-        "dispatch_id": "business-dispatch-id",
-        "request_hash": "b" * 64,
-        "lease_hash": "b" * 64,
-        "result_hash": "b" * 64,
-        "result_kind": "business-result",
-        "outcome": "business-outcome",
-        "recorded_at": "2026-07-29T13:00:00Z",
-        "payload": {"accepted": True},
+        "result_id": "result-1",
+        "dispatch_id": "dispatch-1",
+        "request_hash": DISPATCH_HASH,
+        "lease_hash": DISPATCH_HASH,
+        "result_hash": DISPATCH_HASH,
+        "result_kind": "model_response",
+        "outcome": "success",
+        "recorded_at": "2026-07-29T12:00:00Z",
+        "payload": {"accepted": True, "score": 2},
     }
     result = _dispatch_result(payload=payload)
-    repository.record_result("dispatch-1", expected_version=2, result=result)
+    assert (
+        repository.record_result("dispatch-1", expected_version=2, result=result)
+        is DispatchResultDisposition.RECORDED
+    )
     row = repository._conn.execute(
         "SELECT result_id, dispatch_id, request_hash, lease_hash, result_hash, "
         "result_kind, outcome, result_json, recorded_at "
@@ -715,8 +685,9 @@ def test_sqlite_dispatch_payload_with_full_fields_is_not_unwrapped(tmp_path) -> 
     ).fetchone()
     assert row is not None
 
+    assert json.loads(row[7]) == payload
     parsed = repository._result_from_row(row)
-    assert parsed.payload == payload
+    assert parsed == result
     repository.close()
 
 

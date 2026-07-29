@@ -3,7 +3,7 @@
 功能描述：SQLite 游戏仓库，支持事件兼容读写、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-29
+修改日期：2026-07-30
 使用示例：内部模块，无对外接口
 """
 
@@ -656,47 +656,13 @@ class SqliteGameRepository:
 
     @staticmethod
     def _result_from_row(row: sqlite3.Row | tuple[Any, ...]) -> DispatchResultRecord:
-        """从结果表的元数据列和 payload JSON 重建完整结果记录。"""
+        """从元数据列和 payload-only JSON 重建完整结果记录。"""
         payload = row[7]
         if isinstance(payload, str):
             payload = json.loads(payload)
         recorded_at = row[8]
         if not isinstance(recorded_at, datetime):
             recorded_at = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
-        envelope_fields = {
-            "result_id",
-            "dispatch_id",
-            "request_hash",
-            "lease_hash",
-            "result_hash",
-            "result_kind",
-            "outcome",
-            "payload",
-            "recorded_at",
-        }
-        if isinstance(payload, dict) and envelope_fields.issubset(payload):
-            envelope_recorded_at = payload["recorded_at"]
-            if not isinstance(envelope_recorded_at, datetime):
-                try:
-                    envelope_recorded_at = datetime.fromisoformat(
-                        str(envelope_recorded_at).replace("Z", "+00:00"),
-                    )
-                except (TypeError, ValueError):
-                    envelope_recorded_at = None
-            envelope_outcome = payload["outcome"]
-            if isinstance(envelope_outcome, DispatchResultOutcome):
-                envelope_outcome = envelope_outcome.value
-            if (
-                payload["result_id"] == row[0]
-                and payload["dispatch_id"] == row[1]
-                and payload["request_hash"] == row[2]
-                and payload["lease_hash"] == row[3]
-                and payload["result_hash"] == row[4]
-                and payload["result_kind"] == row[5]
-                and envelope_outcome == row[6]
-                and envelope_recorded_at == recorded_at
-            ):
-                payload = payload["payload"]
         return DispatchResultRecord.model_validate(
             {
                 "result_id": row[0],
