@@ -517,6 +517,8 @@ class PostgresGameRepository:
         return constraint_name in {
             "autonomous_dispatch_attempts_pkey",
             "uq_autonomous_dispatch_executor_provider_key",
+            "autonomous_dispatch_results_pkey",
+            "autonomous_dispatch_results_dispatch_id_key",
         }
 
     @staticmethod
@@ -528,7 +530,7 @@ class PostgresGameRepository:
         if len(row) == 1:
             raw = row[0]
             if isinstance(raw, str):
-                raw = json.loads(raw)
+                return DispatchResultRecord.model_validate_json(raw)
             return DispatchResultRecord.model_validate(raw)
         payload = row[7]
         if isinstance(payload, str):
@@ -887,6 +889,8 @@ class PostgresGameRepository:
                 raise
             except Exception as exc:
                 conn.rollback()
+                if self._is_unique_violation(exc):
+                    raise DispatchResultConflict(dispatch_id) from exc
                 raise DispatchTransactionError(
                     "durable dispatch result transaction failed",
                 ) from exc

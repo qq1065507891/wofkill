@@ -292,10 +292,10 @@ class _UniqueViolation(RuntimeError):
 
 
 class _NamedConstraintViolation(RuntimeError):
-    def __init__(self) -> None:
-        super().__init__("provider key raced")
+    def __init__(self, constraint_name: str = "uq_autonomous_dispatch_executor_provider_key") -> None:
+        super().__init__("unique constraint raced")
         self.diag = SimpleNamespace(
-            constraint_name="uq_autonomous_dispatch_executor_provider_key",
+            constraint_name=constraint_name,
         )
 
 
@@ -321,6 +321,69 @@ def test_postgres_create_dispatch_maps_unique_race_to_idempotency_conflict(
         repository.create_dispatch(_dispatch_attempt())
 
     repository._conn.rollback.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "unique_error",
+    (
+        _UniqueViolation("result row raced"),
+        _NamedConstraintViolation("autonomous_dispatch_results_pkey"),
+        _NamedConstraintViolation("autonomous_dispatch_results_dispatch_id_key"),
+    ),
+)
+def test_postgres_record_result_maps_unique_race_to_result_conflict(
+    unique_error: Exception,
+) -> None:
+    repository = _repository_without_connection()
+    connection = MagicMock()
+    repository._conn = connection
+    repository._autonomous_schema_ready = True
+    attempt_row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "dispatched", 2,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = attempt_row
+        elif normalized.startswith("SELECT 1 FROM games"):
+            cursor.fetchone.return_value = (1,)
+        elif (
+            "WHERE dispatch_id = %s" in normalized
+            or "WHERE result_id = %s" in normalized
+        ):
+            cursor.fetchone.return_value = None
+        elif normalized.startswith("INSERT INTO autonomous_dispatch_results"):
+            raise unique_error
+        else:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return cursor
+
+    connection.execute.side_effect = execute
+
+    with pytest.raises(DispatchResultConflict):
+        repository.record_result(
+            "dispatch-1",
+            expected_version=2,
+            result=_dispatch_result(),
+        )
+
+    connection.rollback.assert_called_once()
+
+
+def test_postgres_result_from_single_json_column_uses_json_validator() -> None:
+    from werewolf_agent.storage.postgres_store import PostgresGameRepository
+
+    result = _dispatch_result(outcome=DispatchResultOutcome.FAILURE)
+    parsed = PostgresGameRepository._result_from_row((result.model_dump_json(),))
+
+    assert parsed == result
+    assert parsed.outcome is DispatchResultOutcome.FAILURE
 
 
 def test_postgres_record_result_decodes_psycopg_outcome_for_replay() -> None:
