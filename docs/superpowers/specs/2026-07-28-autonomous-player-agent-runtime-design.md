@@ -1231,9 +1231,18 @@ rendered_utterance_hash
 terminal fallback. Private deliberation, rejected moves, working memory, RAG
 text, and reflection candidates never enter the public record.
 
+The record enforces every provenance relation that is locally provable: move
+IDs are unique; `source_evidence_refs` is a unique superset of every move's
+direct `evidence_refs` (the Host may add other verified provenance); and
+`disclosure_grant_refs` is the unique exact set of grant IDs used by
+`PrivateResultDisclosure` moves. Record existence, visibility, grant field
+matching, expiry, and one-time transactional consumption remain Host checks.
+
 `RenderedUtterance` contains `record_id`, sentence-plan version, renderer
 version, text, content hash, and fallback status. It carries no independent
 semantic fields and cannot be consumed as evidence.
+Its text must contain at least one non-whitespace character; validation does
+not trim or otherwise rewrite text because the exact bytes are hash input.
 
 Other player agents, beliefs, summaries, relations, vote reasoning, and game
 documents consume `PublicSpeechRecord`, never `RenderedUtterance`.

@@ -1631,7 +1631,7 @@ def test_disclosure_grant_requires_aware_expiry_and_exact_fact_hash() -> None:
         })
 
 
-def test_public_record_keeps_semantics_separate_from_rendered_text() -> None:
+def _record() -> PublicSpeechRecord:
     moves = (
         AlignmentRead(
             move_id="m1",
@@ -1651,7 +1651,7 @@ def test_public_record_keeps_semantics_separate_from_rendered_text() -> None:
             commitment=VoteCommitment.PROVISIONAL,
         ),
     )
-    record = PublicSpeechRecord(
+    return PublicSpeechRecord(
         record_id="speech-5",
         schema_version="1.0.0",
         game_id="game-1",
@@ -1667,6 +1667,10 @@ def test_public_record_keeps_semantics_separate_from_rendered_text() -> None:
         renderer_contract_version="speech-renderer-1",
         rendered_utterance_hash=HASH,
     )
+
+
+def test_public_record_keeps_semantics_separate_from_rendered_text() -> None:
+    record = _record()
     rendered = RenderedUtterance(
         record_id=record.record_id,
         sentence_plan_version="1.0.0",
@@ -1677,7 +1681,41 @@ def test_public_record_keeps_semantics_separate_from_rendered_text() -> None:
     )
     assert "text" not in PublicSpeechRecord.model_fields
     assert rendered.record_id == record.record_id
+
+
+def test_public_record_rejects_inconsistent_local_provenance() -> None:
+    record = _record()
+    record_data = record.model_dump()
+    duplicate_move = record.normalized_moves[0].model_copy(
+        update={"move_id": record.normalized_moves[1].move_id}
+    )
+    with pytest.raises(ValidationError, match="move IDs must not contain duplicates"):
+        PublicSpeechRecord.model_validate({
+            **record_data,
+            "normalized_moves": (duplicate_move, record.normalized_moves[1]),
+        })
+    with pytest.raises(ValidationError, match="every move evidence ref"):
+        PublicSpeechRecord.model_validate({
+            **record_data,
+            "source_evidence_refs": (),
+        })
+
+
+def test_rendered_utterance_rejects_whitespace_only_text() -> None:
+    with pytest.raises(ValidationError, match="non-whitespace"):
+        RenderedUtterance(
+            record_id="speech-5",
+            sentence_plan_version="1.0.0",
+            renderer_version="speech-renderer-1",
+            text="   ",
+            content_hash=HASH,
+            fallback_status="none",
+        )
 ```
+
+The implementation test must also construct a `PrivateResultDisclosure` and
+verify that its `disclosure_grant_id` is present exactly once in
+`disclosure_grant_refs`.
 
 - [ ] **Step 2: Run tests and verify RED**
 
@@ -1752,7 +1790,7 @@ Create `records.py`:
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from werewolf_agent.player_agents.contracts._base import (
     ContentHash,
@@ -1760,7 +1798,10 @@ from werewolf_agent.player_agents.contracts._base import (
     StrictFrozenModel,
     require_unique,
 )
-from werewolf_agent.player_agents.contracts.speech import SpeechMove
+from werewolf_agent.player_agents.contracts.speech import (
+    PrivateResultDisclosure,
+    SpeechMove,
+)
 
 
 class RecordOrigin(StrEnum):
@@ -1786,9 +1827,29 @@ class PublicSpeechRecord(StrictFrozenModel):
     rendered_utterance_hash: ContentHash
 
     @model_validator(mode="after")
-    def _unique_refs(self) -> "PublicSpeechRecord":
+    def _consistent_provenance(self) -> "PublicSpeechRecord":
+        require_unique(
+            (move.move_id for move in self.normalized_moves),
+            field_name="move IDs",
+        )
         require_unique(self.source_evidence_refs, field_name="source_evidence_refs")
         require_unique(self.disclosure_grant_refs, field_name="disclosure_grant_refs")
+        move_evidence_refs = {
+            evidence_ref
+            for move in self.normalized_moves
+            for evidence_ref in move.evidence_refs
+        }
+        if not move_evidence_refs <= set(self.source_evidence_refs):
+            raise ValueError("source_evidence_refs must include every move evidence ref")
+        used_grant_refs = {
+            move.disclosure_grant_id
+            for move in self.normalized_moves
+            if isinstance(move, PrivateResultDisclosure)
+        }
+        if set(self.disclosure_grant_refs) != used_grant_refs:
+            raise ValueError(
+                "disclosure_grant_refs must match private disclosure moves"
+            )
         return self
 
 
@@ -1799,6 +1860,13 @@ class RenderedUtterance(StrictFrozenModel):
     text: Annotated[str, StringConstraints(min_length=1, max_length=2000)]
     content_hash: ContentHash
     fallback_status: Literal["none", "template_fallback"]
+
+    @field_validator("text")
+    @classmethod
+    def _non_whitespace_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must contain a non-whitespace character")
+        return value
 ```
 
 - [ ] **Step 5: Export, verify, and commit**
