@@ -26,6 +26,7 @@ from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchOperationKind,
     DispatchRecoveryPolicy,
     DispatchResultDisposition,
+    DispatchResultOutcome,
     DispatchResultRecord,
     DispatchStatus,
 )
@@ -653,6 +654,29 @@ class SqliteGameRepository:
             },
         )
 
+    @staticmethod
+    def _result_from_row(row: sqlite3.Row | tuple[Any, ...]) -> DispatchResultRecord:
+        """从结果表的元数据列和 payload JSON 重建完整结果记录。"""
+        payload = row[7]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        recorded_at = row[8]
+        if not isinstance(recorded_at, datetime):
+            recorded_at = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
+        return DispatchResultRecord.model_validate(
+            {
+                "result_id": row[0],
+                "dispatch_id": row[1],
+                "request_hash": row[2],
+                "lease_hash": row[3],
+                "result_hash": row[4],
+                "result_kind": row[5],
+                "outcome": DispatchResultOutcome(row[6]),
+                "payload": payload,
+                "recorded_at": recorded_at,
+            },
+        )
+
     def _load_dispatch_unlocked(self, dispatch_id: str) -> DispatchAttempt | None:
         row = self._conn.execute(
             "SELECT dispatch_id, game_id, turn_id, actor_id, operation_kind, "
@@ -892,12 +916,14 @@ class SqliteGameRepository:
                     raise DispatchLeaseMismatch(dispatch_id)
 
                 prior_row = self._conn.execute(
-                    "SELECT result_json FROM autonomous_dispatch_results "
+                    "SELECT result_id, dispatch_id, request_hash, lease_hash, "
+                    "result_hash, result_kind, outcome, result_json, recorded_at "
+                    "FROM autonomous_dispatch_results "
                     "WHERE dispatch_id = ?",
                     (dispatch_id,),
                 ).fetchone()
                 if prior_row is not None:
-                    prior = DispatchResultRecord.model_validate_json(prior_row[0])
+                    prior = self._result_from_row(prior_row)
                     if prior == result:
                         self._conn.rollback()
                         return DispatchResultDisposition.REPLAYED
@@ -930,7 +956,7 @@ class SqliteGameRepository:
                         result.result_kind,
                         result.outcome.value,
                         json.dumps(
-                            result.model_dump(mode="json"),
+                            result.model_dump(mode="json")["payload"],
                             ensure_ascii=False,
                             sort_keys=True,
                             separators=(",", ":"),

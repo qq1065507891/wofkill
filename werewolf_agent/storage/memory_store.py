@@ -271,6 +271,10 @@ class InMemoryGameRepository:
                 raise DispatchInvalidTransition(
                     "new dispatch must start in PENDING at version 0",
                 )
+            if attempt.game_id not in self._games:
+                raise DispatchTransactionError(
+                    f"game does not exist: {attempt.game_id}",
+                )
             if attempt.dispatch_id in self._dispatch_attempts:
                 raise DispatchIdempotencyConflict(attempt.dispatch_id)
             key = (attempt.executor_id, attempt.provider_idempotency_key)

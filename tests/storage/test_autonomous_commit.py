@@ -616,7 +616,7 @@ def test_sqlite_dispatch_result_json_is_canonical_utf8(tmp_path) -> None:
     first = record_json({"z": "终", "a": {"y": 2, "x": 1}}, "canonical-a.db")
     second = record_json({"a": {"x": 1, "y": 2}, "z": "终"}, "canonical-b.db")
     expected = json.dumps(
-        json.loads(first),
+        {"a": {"x": 1, "y": 2}, "z": "终"},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -625,6 +625,43 @@ def test_sqlite_dispatch_result_json_is_canonical_utf8(tmp_path) -> None:
     assert first == expected
     assert "终" in first
     assert "\\u7ec8" not in first
+
+
+def test_sqlite_dispatch_result_replay_preserves_payload(tmp_path) -> None:
+    repository = SqliteGameRepository(str(tmp_path / "dispatch-replay.db"))
+    repository.save_game(GameState(game_id="g1"))
+    repository.create_dispatch(_dispatch_attempt())
+    repository.mark_dispatching("dispatch-1", expected_version=0)
+    repository.mark_dispatched("dispatch-1", expected_version=1)
+    result = _dispatch_result(payload={"终": {"accepted": True, "score": 2}})
+
+    assert (
+        repository.record_result("dispatch-1", expected_version=2, result=result)
+        is DispatchResultDisposition.RECORDED
+    )
+    assert (
+        repository.record_result("dispatch-1", expected_version=3, result=result)
+        is DispatchResultDisposition.REPLAYED
+    )
+    row = repository._conn.execute(
+        "SELECT result_id, dispatch_id, request_hash, lease_hash, result_hash, "
+        "result_kind, outcome, result_json, recorded_at "
+        "FROM autonomous_dispatch_results WHERE dispatch_id = ?",
+        ("dispatch-1",),
+    ).fetchone()
+    assert row is not None
+    parsed = repository._result_from_row(row)
+    assert parsed.payload == result.payload
+    repository.close()
+
+
+def test_memory_create_dispatch_requires_existing_game() -> None:
+    repository = InMemoryGameRepository()
+
+    with pytest.raises(DispatchTransactionError, match="game does not exist: g1"):
+        repository.create_dispatch(_dispatch_attempt())
+
+    assert repository._dispatch_attempts == {}
 
 
 def test_sqlite_dispatch_write_failures_roll_back_atomically(tmp_path) -> None:
