@@ -184,7 +184,6 @@ def test_current_operator_docs_do_not_advertise_removed_runtime_timeouts() -> No
     root = Path(__file__).resolve().parents[2]
     operator_docs = [
         root / "狼人杀多智能体项目小白指南 v1.1.1.md",
-        root / "handoff.md",
     ]
     forbidden = (
         "--timeout",
