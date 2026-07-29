@@ -207,6 +207,7 @@ create_schedule(schedule) -> SerialPublicSchedule
 recover_game(game_id) -> RecoveryReport
 admit_next_turn(schedule_id, admission) -> ManagedAgentTurn
 transition_active_turn(turn_id, expected_turn_version, next_status) -> ManagedAgentTurn
+complete_active_turn(schedule_id) -> SerialPublicSchedule
 cancel_active_turn(schedule_id, reason_code, disposition) -> SerialPublicSchedule
 expire_due_turns(now) -> tuple[SerialPublicSchedule, ...]
 load_active_turn(game_id) -> ManagedAgentTurn | None
@@ -217,6 +218,12 @@ load_active_turn(game_id) -> ManagedAgentTurn | None
 `assert_dispatch_allowed(game_id)` before authorizing work. The runtime tracks
 successful recovery only in process memory; durable dispatch remains the source
 of truth after another restart.
+
+`complete_active_turn` performs no game commit. It is the lifecycle notification
+that a later caller may invoke only after its authoritative `CommitTurn`
+succeeds; it finishes the managed turn as `COMMITTED` with disposition
+`advance`. Cancellation and expiry retain their dedicated paths so unresolved
+dispatches are cancelled before the terminal schedule transaction.
 
 The host exposes no generic repository object to callers and never accepts a
 model callback. This keeps future model/tool dispatch integration explicit and
