@@ -378,6 +378,8 @@ class SpeechProposalBody(StrictFrozenModel):
         }
         if set(self.response_record_refs) != external_refs:
             raise ValueError("response_record_refs must match referenced records")
+        if set(self.response_record_refs) & set(move_ids):
+            raise ValueError("external record refs must not reference proposal moves")
 
         graph: dict[str, set[str]] = {move_id: set() for move_id in move_ids}
         for move in self.moves:

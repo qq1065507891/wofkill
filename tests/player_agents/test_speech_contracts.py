@@ -122,3 +122,47 @@ def test_speech_rejects_duplicate_response_record_refs() -> None:
         match="response_record_refs must not contain duplicates",
     ):
         SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
+
+
+def test_speech_rejects_role_claim_by_other_player() -> None:
+    payload = _payload()
+    payload["body"]["moves"] = [  # type: ignore[index]
+        {
+            "move_id": "m1",
+            "move_type": "role_claim",
+            "modality": "asserted",
+            "claimant_id": "p02",
+            "role_id": "seer",
+            "claim_mode": "claim",
+        },
+    ]
+    payload["body"]["delivery_plan"]["move_order"] = ["m1"]  # type: ignore[index]
+    payload["body"]["delivery_plan"]["emphasis_move_ids"] = []  # type: ignore[index]
+    with pytest.raises(
+        ValidationError,
+        match="role claim claimant must match player",
+    ):
+        SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
+
+
+def test_speech_rejects_external_record_ref_to_proposal_move() -> None:
+    payload = _payload()
+    payload["body"]["moves"] = [  # type: ignore[index]
+        {
+            "move_id": "m1",
+            "move_type": "role_claim",
+            "modality": "quoted",
+            "claimant_id": "p01",
+            "role_id": "seer",
+            "claim_mode": "quote",
+            "source_record_id": "m1",
+        },
+    ]
+    payload["body"]["response_record_refs"] = ["m1"]  # type: ignore[index]
+    payload["body"]["delivery_plan"]["move_order"] = ["m1"]  # type: ignore[index]
+    payload["body"]["delivery_plan"]["emphasis_move_ids"] = []  # type: ignore[index]
+    with pytest.raises(
+        ValidationError,
+        match="external record refs must not reference proposal moves",
+    ):
+        SpeechProposalEnvelope.model_validate_json(json.dumps(payload))

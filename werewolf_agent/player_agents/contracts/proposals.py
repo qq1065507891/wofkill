@@ -4,18 +4,23 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-29
 """
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from werewolf_agent.player_agents.contracts._base import (
     ContentHash,
     NonEmptyId,
     StrictFrozenModel,
 )
-from werewolf_agent.player_agents.contracts.speech import SpeechProposalBody
+from werewolf_agent.player_agents.contracts.speech import (
+    ClaimMode,
+    RoleClaim,
+    SpeechProposalBody,
+)
 
 
 class SpeechProposalEnvelope(StrictFrozenModel):
@@ -27,3 +32,14 @@ class SpeechProposalEnvelope(StrictFrozenModel):
     base_revision: int = Field(ge=0)
     view_fingerprint: ContentHash
     body: SpeechProposalBody
+
+    @model_validator(mode="after")
+    def _bind_role_claim_actor(self) -> Self:
+        for move in self.body.moves:
+            if (
+                isinstance(move, RoleClaim)
+                and move.claim_mode in (ClaimMode.CLAIM, ClaimMode.DENY)
+                and move.claimant_id != self.player_id
+            ):
+                raise ValueError("role claim claimant must match player")
+        return self
