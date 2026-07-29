@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses, SQLite WAL transactions, PostgreSQL JSONB/advisory locks, pytest, ruff, mypy; all Python commands use `conda run -n wofkill`.
 
+**Progress:** Complete (`28/28` implementation steps). Merged into `master` before the durable-dispatch stage; runtime integration remains intentionally deferred.
+
 ---
 
 ## File Map
@@ -30,7 +32,7 @@
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 - Test: `tests/player_agents/test_transaction_contracts.py`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Add tests that construct a valid request from the existing speech envelope fixture and assert:
 
@@ -59,7 +61,7 @@ The helper must create a two-move `SpeechProposalEnvelope`, one `EventCandidate`
 one `CriticalAuditRecord`, and one `ProjectionOutboxRecord`; it must not import
 legacy `SpeechAct`, `PlayerAction`, or strategy modules.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run:
 
@@ -69,7 +71,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_transaction_contr
 
 Expected: collection fails because `transactions.py` and `request_hash` do not exist.
 
-- [ ] **Step 3: Implement the immutable transaction models**
+- [x] **Step 3: Implement the immutable transaction models**
 
 Implement these exact public models:
 
@@ -123,7 +125,7 @@ Use `model_validator` to bind `proposal.turn_id`, public record game/turn IDs,
 and enforce unique read, audit, and outbox IDs. Export all five classes from
 `contracts/__init__.py`.
 
-- [ ] **Step 4: Run focused contract checks**
+- [x] **Step 4: Run focused contract checks**
 
 Run:
 
@@ -134,7 +136,7 @@ conda run -n wofkill python -m ruff check --ignore UP009 werewolf_agent/player_a
 
 Expected: all focused tests and Ruff checks pass.
 
-- [ ] **Step 5: Commit the contract layer**
+- [x] **Step 5: Commit the contract layer**
 
 ```bash
 git add werewolf_agent/player_agents/contracts tests/player_agents/test_transaction_contracts.py
@@ -147,7 +149,7 @@ git commit -m "feat: add autonomous commit transaction contracts"
 - Create: `werewolf_agent/storage/autonomous_commit.py`
 - Test: `tests/storage/test_autonomous_commit.py`
 
-- [ ] **Step 1: Write failing protocol and helper tests**
+- [x] **Step 1: Write failing protocol and helper tests**
 
 Cover stable exceptions, canonical hashes, event identity, and capability rejection:
 
@@ -170,7 +172,7 @@ def test_build_event_assigns_authoritative_identity() -> None:
     assert event.schema_version == "2"
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py -k "hash or capability or identity" -v
@@ -178,7 +180,7 @@ conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py -k
 
 Expected: import errors for the new helpers.
 
-- [ ] **Step 3: Implement protocol, exceptions, hashing, and identity helpers**
+- [x] **Step 3: Implement protocol, exceptions, hashing, and identity helpers**
 
 Implement:
 
@@ -208,7 +210,7 @@ separators=(",", ":"))` and SHA-256. `build_committed_event` uses UTC-aware
 method returning `True`; it never treats the presence of `commit_turn` alone as
 support.
 
-- [ ] **Step 4: Run helper checks and commit**
+- [x] **Step 4: Run helper checks and commit**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py -k "hash or capability or identity" -v
@@ -222,7 +224,7 @@ git commit -m "feat: add autonomous commit repository protocol"
 - Modify: `werewolf_agent/storage/memory_store.py`
 - Test: `tests/storage/test_autonomous_commit.py`
 
-- [ ] **Step 1: Add failing in-memory behavior tests**
+- [x] **Step 1: Add failing in-memory behavior tests**
 
 Parameterize the tests with `InMemoryGameRepository` and a temporary
 `SqliteGameRepository` placeholder. Cover first commit, stale CAS, replay,
@@ -258,7 +260,7 @@ def test_stale_submit_and_idempotency_conflict_are_distinct(repo) -> None:
         repo.commit_turn(_request(game_id="g1", base_revision=0, event_type="other"))
 ```
 
-- [ ] **Step 2: Run the behavior tests and verify RED**
+- [x] **Step 2: Run the behavior tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py -v
@@ -266,7 +268,7 @@ conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py -v
 
 Expected: the in-memory repository lacks capability and commit methods.
 
-- [ ] **Step 3: Implement in-memory commit with prepare-then-publish semantics**
+- [x] **Step 3: Implement in-memory commit with prepare-then-publish semantics**
 
 Add autonomous state dictionaries initialized in `__init__` and implement:
 
@@ -300,7 +302,7 @@ def commit_turn(self, request: CommitTurnRequest) -> CommitResult:
 Keep the helper calls private and make all copies defensive when returning
 outbox data. Existing `save_game` and `append_events` behavior remains unchanged.
 
-- [ ] **Step 4: Run in-memory tests and commit**
+- [x] **Step 4: Run in-memory tests and commit**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py -k "not sqlite and not postgres" -v
@@ -315,14 +317,14 @@ git commit -m "feat: implement in-memory autonomous commit"
 - Modify: `tests/storage/test_sqlite_migrations.py`
 - Test: `tests/storage/test_autonomous_commit.py`
 
-- [ ] **Step 1: Add failing SQLite schema and rollback tests**
+- [x] **Step 1: Add failing SQLite schema and rollback tests**
 
 Assert all autonomous tables exist for a fresh database and a database created
 with only legacy `games/events` tables. Inject a conflicting existing outbox ID
 and verify no revision, event, audit, public record, commit, or outbox row is
 left behind.
 
-- [ ] **Step 2: Run the SQLite tests and verify RED**
+- [x] **Step 2: Run the SQLite tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_sqlite_migrations.py tests/storage/test_autonomous_commit.py -k sqlite -v
@@ -330,7 +332,7 @@ conda run -n wofkill python -m pytest tests/storage/test_sqlite_migrations.py te
 
 Expected: missing autonomous tables and `commit_turn` implementation.
 
-- [ ] **Step 3: Add idempotent SQLite tables**
+- [x] **Step 3: Add idempotent SQLite tables**
 
 Extend `_SCHEMA` with the four stream tables plus `autonomous_public_records`,
 and call a focused `_ensure_autonomous_schema` after `_ensure_event_schema_v2`.
@@ -339,7 +341,7 @@ primary keys for audit/outbox/record IDs, a unique `(game_id, turn_id,
 idempotency_key)` constraint, and an index on `(game_id, committed_revision)`.
 Do not change `MigrationManager`'s existing version numbering.
 
-- [ ] **Step 4: Implement SQLite `commit_turn`**
+- [x] **Step 4: Implement SQLite `commit_turn`**
 
 Use `BEGIN IMMEDIATE` inside `self._lock`. In order: validate game existence,
 compute the request hash, return an exact stored replay, create or lock the
@@ -349,7 +351,7 @@ insert event/public/audit/outbox/idempotency rows, update the stream revision,
 and commit. Catch `StaleCommitError` and `IdempotencyConflictError` unchanged;
 rollback and wrap every other failure in `CommitTransactionError`.
 
-- [ ] **Step 5: Run SQLite behavior and migration checks**
+- [x] **Step 5: Run SQLite behavior and migration checks**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_sqlite_migrations.py tests/storage/test_autonomous_commit.py -k sqlite -v
@@ -358,7 +360,7 @@ conda run -n wofkill python -m pytest tests/storage/test_sqlite_migrations.py te
 Expected: all SQLite transaction, replay, stale, conflict, concurrency, and
 rollback tests pass.
 
-- [ ] **Step 6: Commit SQLite support**
+- [x] **Step 6: Commit SQLite support**
 
 ```bash
 git add werewolf_agent/storage/sqlite_store.py tests/storage/test_sqlite_migrations.py tests/storage/test_autonomous_commit.py
@@ -371,7 +373,7 @@ git commit -m "feat: add sqlite autonomous commit transaction"
 - Modify: `werewolf_agent/storage/postgres_store.py`
 - Create: `tests/storage/test_postgres_autonomous_commit.py`
 
-- [ ] **Step 1: Add failing PostgreSQL capability/schema tests**
+- [x] **Step 1: Add failing PostgreSQL capability/schema tests**
 
 Construct the repository with `initialize=False` and assert it reports
 unsupported until a connection exists. Inspect `_ensure_schema_transaction`
@@ -379,7 +381,7 @@ source for every autonomous table and test the SQL placeholder style uses `%s`
 and JSONB casts. Use the existing fake connection/cursor fixtures for a commit
 smoke test; no live PostgreSQL service is required.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_postgres_autonomous_commit.py -v
@@ -387,14 +389,14 @@ conda run -n wofkill python -m pytest tests/storage/test_postgres_autonomous_com
 
 Expected: missing capability method, tables, and transaction implementation.
 
-- [ ] **Step 3: Add PostgreSQL tables to `_ensure_schema_transaction`**
+- [x] **Step 3: Add PostgreSQL tables to `_ensure_schema_transaction`**
 
 Create the same stream, commit, public-record, audit, and outbox tables using
 `JSONB`, `TIMESTAMP`, `BIGINT`, `PRIMARY KEY`, `UNIQUE`, and the game/revision
 index. Keep the operation inside the existing schema transaction and do not
 change the legacy event migration behavior.
 
-- [ ] **Step 4: Implement PostgreSQL `commit_turn`**
+- [x] **Step 4: Implement PostgreSQL `commit_turn`**
 
 Acquire the existing advisory transaction lock for the game, lock/create the
 stream row, query idempotency before CAS, and perform the same inserts and
@@ -403,7 +405,7 @@ every failure and preserve stable exception types. `supports_autonomous_commit`
 returns `True` only when the repository has an initialized connection and the
 autonomous schema initialization completed.
 
-- [ ] **Step 5: Run PostgreSQL tests and commit**
+- [x] **Step 5: Run PostgreSQL tests and commit**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_postgres_autonomous_commit.py tests/storage/test_postgres_store.py -q
@@ -417,7 +419,7 @@ git commit -m "feat: add postgres autonomous commit transaction"
 - Modify: `tests/storage/test_autonomous_commit.py`
 - Modify: `tests/storage/test_repository.py`
 
-- [ ] **Step 1: Add the shared atomicity matrix**
+- [x] **Step 1: Add the shared atomicity matrix**
 
 Run the same cases for memory and SQLite: successful commit, replay, stale
 revision, request-hash conflict, missing game, duplicate existing outbox ID,
@@ -425,13 +427,13 @@ duplicate audit ID, and 50 concurrent identical submissions. Assert exactly one
 event, one revision, one idempotency result, one public record, all requested
 audit records, and all requested outbox records.
 
-- [ ] **Step 2: Add explicit capability assertions**
+- [x] **Step 2: Add explicit capability assertions**
 
 Assert memory and SQLite return `True`, an uninitialized PostgreSQL repository
 returns `False`, and a plain legacy stub is rejected by
 `require_autonomous_commit_repository`.
 
-- [ ] **Step 3: Run the complete verification set**
+- [x] **Step 3: Run the complete verification set**
 
 ```bash
 conda run -n wofkill python -m pytest tests/player_agents tests/storage/test_autonomous_commit.py tests/storage/test_sqlite_migrations.py tests/storage/test_postgres_autonomous_commit.py -v
@@ -444,7 +446,7 @@ Expected: all focused and adjacent tests pass; the scoped Ruff and mypy checks
 report no errors. The existing full-repository lint baseline is not part of
 this plan because it contains unrelated historical findings.
 
-- [ ] **Step 4: Run the full test suite and commit the integrated slice**
+- [x] **Step 4: Run the full test suite and commit the integrated slice**
 
 ```bash
 conda run -n wofkill python -m pytest -q

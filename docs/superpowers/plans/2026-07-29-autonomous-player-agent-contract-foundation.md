@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, pytest, ruff, mypy, standard-library `ast`, `enum`, `hashlib`, and `json`; all Python commands use `conda run -n wofkill`.
 
+**Progress:** Complete (`40/40` implementation steps). Merged into `master` before the durable-dispatch stage; the live runtime remains intentionally unchanged by this plan.
+
 ---
 
 ## Scope and Follow-Up Plans
@@ -54,7 +56,7 @@ fallbacks in this plan.
 - Create: `werewolf_agent/player_agents/__init__.py`
 - Create: `werewolf_agent/player_agents/contracts/__init__.py`
 
-- [ ] **Step 1: Write the failing import-boundary test**
+- [x] **Step 1: Write the failing import-boundary test**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -118,7 +120,7 @@ consistently with existing test packages:
 """
 ```
 
-- [ ] **Step 2: Run the boundary test and verify RED**
+- [x] **Step 2: Run the boundary test and verify RED**
 
 Run:
 
@@ -129,7 +131,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_import_boundary.p
 Expected: FAIL at `assert PACKAGE_ROOT.is_dir()` because the new package does
 not exist.
 
-- [ ] **Step 3: Add minimal namespace modules**
+- [x] **Step 3: Add minimal namespace modules**
 
 Create both package modules with the project-required header and no legacy
 imports:
@@ -156,7 +158,7 @@ Use this contract-package variant for `contracts/__init__.py`:
 """
 ```
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run:
 
@@ -166,7 +168,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_import_boundary.p
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the isolated namespace**
+- [x] **Step 5: Commit the isolated namespace**
 
 ```bash
 git add werewolf_agent/player_agents tests/player_agents
@@ -181,7 +183,7 @@ git commit -m "feat: establish autonomous player package boundary"
 - Create: `tests/player_agents/test_revision_contracts.py`
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 
-- [ ] **Step 1: Write failing revision-contract tests**
+- [x] **Step 1: Write failing revision-contract tests**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -247,7 +249,7 @@ def test_read_reference_accepts_revision_zero() -> None:
     assert reference.revision == 0
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -257,7 +259,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_revision_contract
 
 Expected: collection ERROR because `contracts.revisions` does not exist.
 
-- [ ] **Step 3: Implement the shared strict base types**
+- [x] **Step 3: Implement the shared strict base types**
 
 Create `_base.py`:
 
@@ -330,7 +332,7 @@ def require_unique(values: Iterable[T], *, field_name: str) -> tuple[T, ...]:
     return items
 ```
 
-- [ ] **Step 4: Implement revision models**
+- [x] **Step 4: Implement revision models**
 
 Create `revisions.py`:
 
@@ -371,7 +373,7 @@ class RevisionContext(StrictFrozenModel):
     view_fingerprint: ContentHash
 ```
 
-- [ ] **Step 5: Export and verify the revision contracts**
+- [x] **Step 5: Export and verify the revision contracts**
 
 Add imports and `__all__` entries in `contracts/__init__.py`:
 
@@ -392,7 +394,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_revision_contract
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit revision contracts**
+- [x] **Step 6: Commit revision contracts**
 
 ```bash
 git add werewolf_agent/player_agents/contracts tests/player_agents
@@ -406,7 +408,7 @@ git commit -m "feat: define autonomous player revision contracts"
 - Create: `tests/player_agents/test_turn_contracts.py`
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 
-- [ ] **Step 1: Write failing window and transition tests**
+- [x] **Step 1: Write failing window and transition tests**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -508,7 +510,7 @@ def test_transition_turn_allows_only_declared_edges() -> None:
         transition_turn(thinking, AgentTurnStatus.COMMITTED)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -518,7 +520,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_turn_contracts.py
 
 Expected: collection ERROR because `contracts.turns` does not exist.
 
-- [ ] **Step 3: Implement turn contracts and transition graph**
+- [x] **Step 3: Implement turn contracts and transition graph**
 
 Create `turns.py` with the following public API and validation:
 
@@ -664,7 +666,7 @@ def transition_turn(turn: AgentTurn, next_status: AgentTurnStatus) -> AgentTurn:
     return AgentTurn.model_validate({**turn.model_dump(), "status": next_status})
 ```
 
-- [ ] **Step 4: Export and verify turn contracts**
+- [x] **Step 4: Export and verify turn contracts**
 
 Export `AgentTurn`, `AgentTurnStatus`, `ConflictClass`, `LegalActionWindow`,
 `TurnBudget`, and `transition_turn` from `contracts/__init__.py`.
@@ -677,7 +679,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_turn_contracts.py
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit turn contracts**
+- [x] **Step 5: Commit turn contracts**
 
 ```bash
 git add werewolf_agent/player_agents/contracts tests/player_agents
@@ -691,7 +693,7 @@ git commit -m "feat: define autonomous player turn state"
 - Create: `tests/player_agents/test_contract_errors.py`
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 
-- [ ] **Step 1: Write failing safe-error tests**
+- [x] **Step 1: Write failing safe-error tests**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -780,7 +782,7 @@ def test_failure_copy_updates_are_fully_revalidated() -> None:
             failure.copy(update=update)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -790,7 +792,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_contract_errors.p
 
 Expected: collection ERROR because `contracts.errors` does not exist.
 
-- [ ] **Step 3: Implement stable failures**
+- [x] **Step 3: Implement stable failures**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -893,7 +895,7 @@ contents, player or role identifiers, observed values, or tool output into the
 path. The contract model enforces the closed safe-message catalog and repair
 eligibility; the validator boundary owns the provenance of the JSON Pointer.
 
-- [ ] **Step 4: Export, run tests, and commit**
+- [x] **Step 4: Export, run tests, and commit**
 
 Export `ProposalFailure` and `ValidationErrorCode`. Then run:
 
@@ -913,7 +915,7 @@ Expected: PASS, followed by a successful commit.
 - Create: `tests/player_agents/test_speech_contracts.py`
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 
-- [ ] **Step 1: Write failing happy-path and strictness tests**
+- [x] **Step 1: Write failing happy-path and strictness tests**
 
 The first test fixture must use the public API the provider gateway will use:
 
@@ -1076,7 +1078,7 @@ def test_speech_rejects_external_refs_to_proposal_moves() -> None:
         SpeechProposalEnvelope.model_validate_json(json.dumps(payload))
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -1086,7 +1088,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_speech_contracts.
 
 Expected: collection ERROR because the speech/proposal modules do not exist.
 
-- [ ] **Step 3: Implement speech enums, common fields, and the full move union**
+- [x] **Step 3: Implement speech enums, common fields, and the full move union**
 
 Create `speech.py` with this header, imports, enums, and move models:
 
@@ -1409,7 +1411,7 @@ SpeechMove = Annotated[
 `kind_id` and `value_id` are catalog IDs, not free text. The later Host semantic
 validator resolves them against the ruleset/schema snapshot pinned by the turn.
 
-- [ ] **Step 4: Implement speech-body cross-field validation**
+- [x] **Step 4: Implement speech-body cross-field validation**
 
 Add `DeliveryPlan` and `SpeechProposalBody`:
 
@@ -1495,7 +1497,7 @@ class SpeechProposalBody(StrictFrozenModel):
         return self
 ```
 
-- [ ] **Step 5: Implement the host-bound speech envelope**
+- [x] **Step 5: Implement the host-bound speech envelope**
 
 Create `proposals.py`:
 
@@ -1546,7 +1548,7 @@ class SpeechProposalEnvelope(StrictFrozenModel):
         return self
 ```
 
-- [ ] **Step 6: Export contracts and verify GREEN**
+- [x] **Step 6: Export contracts and verify GREEN**
 
 Export `SpeechProposalEnvelope`, `SpeechProposalBody`, `SpeechMove`, all move
 classes, and the bounded speech enums from `contracts/__init__.py`.
@@ -1559,7 +1561,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_speech_contracts.
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit the speech contract**
+- [x] **Step 7: Commit the speech contract**
 
 ```bash
 git add werewolf_agent/player_agents/contracts tests/player_agents
@@ -1574,7 +1576,7 @@ git commit -m "feat: add strict autonomous speech proposal"
 - Create: `tests/player_agents/test_public_record_contracts.py`
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 
-- [ ] **Step 1: Write failing disclosure and record tests**
+- [x] **Step 1: Write failing disclosure and record tests**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -1717,7 +1719,7 @@ The implementation test must also construct a `PrivateResultDisclosure` and
 verify that its `disclosure_grant_id` is present exactly once in
 `disclosure_grant_refs`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -1727,7 +1729,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_public_record_con
 
 Expected: collection ERROR because disclosure/record modules do not exist.
 
-- [ ] **Step 3: Implement the disclosure grant**
+- [x] **Step 3: Implement the disclosure grant**
 
 Create `disclosure.py`:
 
@@ -1774,7 +1776,7 @@ class DisclosureGrant(StrictFrozenModel):
         return value
 ```
 
-- [ ] **Step 4: Implement public and rendered records**
+- [x] **Step 4: Implement public and rendered records**
 
 Create `records.py`:
 
@@ -1869,7 +1871,7 @@ class RenderedUtterance(StrictFrozenModel):
         return value
 ```
 
-- [ ] **Step 5: Export, verify, and commit**
+- [x] **Step 5: Export, verify, and commit**
 
 Export `DisclosureGrant`, `PublicSpeechRecord`, `RecordOrigin`, and
 `RenderedUtterance`. Run:
@@ -1896,7 +1898,7 @@ tests belong to the later tool-gateway plan.
 - Create: `tests/fixtures/player_agents/speech_proposal_schema_v1.json`
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 
-- [ ] **Step 1: Write a failing schema snapshot test**
+- [x] **Step 1: Write a failing schema snapshot test**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -1927,7 +1929,7 @@ def test_speech_schema_matches_checked_in_fixture_and_hash() -> None:
     assert len(expected["x-wofkill-content-hash"]) == 64
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -1937,7 +1939,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_schema_catalog.py
 
 Expected: collection ERROR because `schema_catalog` does not exist.
 
-- [ ] **Step 3: Implement canonical schema generation**
+- [x] **Step 3: Implement canonical schema generation**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -1986,7 +1988,7 @@ def speech_proposal_schema() -> dict[str, Any]:
     return schema
 ```
 
-- [ ] **Step 4: Implement the deterministic exporter**
+- [x] **Step 4: Implement the deterministic exporter**
 
 ```python
 # -*- coding: utf-8 -*-
@@ -2032,7 +2034,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 5: Generate the fixture and verify GREEN**
+- [x] **Step 5: Generate the fixture and verify GREEN**
 
 Run:
 
@@ -2043,7 +2045,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_schema_catalog.py
 
 Expected: fixture is created and the test passes.
 
-- [ ] **Step 6: Export schema helpers and run all contract checks**
+- [x] **Step 6: Export schema helpers and run all contract checks**
 
 Export `SCHEMA_VERSION`, `speech_proposal_schema`, and
 `speech_proposal_schema_hash` from `contracts/__init__.py`.
@@ -2058,7 +2060,7 @@ conda run -n wofkill python -m mypy werewolf_agent/player_agents
 
 Expected: all tests pass; ruff and mypy report no errors.
 
-- [ ] **Step 7: Run preserved contract-adjacent regression tests**
+- [x] **Step 7: Run preserved contract-adjacent regression tests**
 
 Run:
 
@@ -2069,7 +2071,7 @@ conda run -n wofkill python -m pytest tests/agents/test_schemas.py tests/agents/
 Expected: PASS. This confirms the isolated new contracts did not change legacy
 runtime, event metadata, or repository behavior.
 
-- [ ] **Step 8: Commit the pinned schema catalog**
+- [x] **Step 8: Commit the pinned schema catalog**
 
 ```bash
 git add werewolf_agent/player_agents/contracts scripts/export_player_agent_schemas.py tests/player_agents tests/fixtures/player_agents
