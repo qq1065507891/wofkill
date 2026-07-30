@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** In progress (`6/52` implementation steps).
+**Progress:** In progress (`12/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -267,7 +267,7 @@ git commit -m "feat: define serial public scheduling contracts"
 - Create: `werewolf_agent/storage/autonomous_turns.py`
 - Test: `tests/storage/test_autonomous_turns.py`
 
-- [ ] **Step 1: Write failing capability and state-preparation tests**
+- [x] **Step 1: Write failing capability and state-preparation tests**
 
 Use the fixtures from Task 1 and assert explicit capability rejection plus the
 three pure transitions:
@@ -309,7 +309,7 @@ def test_prepare_finish_advance_consumes_slot_atomically() -> None:
 Also assert that `REPLACE` retains the current ordinal and `CLOSE` produces a
 cancelled schedule.
 
-- [ ] **Step 2: Run the helper tests and verify RED**
+- [x] **Step 2: Run the helper tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py -k "capability or prepare" -v
@@ -317,7 +317,7 @@ conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py -k 
 
 Expected: import error for `storage.autonomous_turns`.
 
-- [ ] **Step 3: Implement stable errors and the explicit protocol**
+- [x] **Step 3: Implement stable errors and the explicit protocol**
 
 Define these stable errors and signatures:
 
@@ -400,7 +400,7 @@ class AutonomousTurnRepository(Protocol):
 `require_autonomous_turn_repository` accepts only a callable capability method
 that returns true, mirroring the completed commit and dispatch guards.
 
-- [ ] **Step 4: Implement shared pure preparation helpers**
+- [x] **Step 4: Implement shared pure preparation helpers**
 
 Implement `prepare_serial_public_admission`,
 `prepare_active_transition`, and `prepare_active_finish`. The admission
@@ -456,7 +456,7 @@ else:
 Translate Pydantic or transition failures to `InvalidTurnAdmission` or
 `InvalidScheduleTransition` without leaking payload data.
 
-- [ ] **Step 5: Verify helper edge cases and static checks**
+- [x] **Step 5: Verify helper edge cases and static checks**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py -k "capability or prepare" -v
@@ -466,7 +466,7 @@ conda run -n wofkill python -m mypy werewolf_agent/storage/autonomous_turns.py
 
 Expected: focused tests pass and both static checks report no errors.
 
-- [ ] **Step 6: Commit protocol and shared lifecycle logic**
+- [x] **Step 6: Commit protocol and shared lifecycle logic**
 
 ```bash
 git add werewolf_agent/storage/autonomous_turns.py tests/storage/test_autonomous_turns.py
