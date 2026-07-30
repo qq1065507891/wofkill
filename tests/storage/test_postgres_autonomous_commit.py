@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-验证 PostgreSQL 串行公开调度、自主 CommitTurn、durable dispatch schema 与结果幂等契约。
+验证 PostgreSQL 串行公开调度、自主 CommitTurn、活动回合围栏与 durable dispatch 契约。
 
 作者: Project contributors
 创建日期: 2026-07-29
-修改日期: 2026-07-30
+修改日期: 2026-07-31
 """
 
 import copy
@@ -17,12 +17,22 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.player_agents.test_transaction_contracts import _request
+from tests.storage.test_active_turn_fence import (
+    NOW as FENCE_NOW,
+)
+from tests.storage.test_active_turn_fence import (
+    _active_turn as _fence_active_turn,
+)
+from tests.storage.test_active_turn_fence import (
+    _attempt_for as _fence_attempt_for,
+)
 from tests.storage.test_autonomous_turns import (
     _admission,
     _admitted_validating,
     _schedule,
 )
 from werewolf_agent.player_agents.contracts.dispatch import (
+    ActiveTurnDispatchFence,
     DispatchAttempt,
     DispatchOperationKind,
     DispatchRecoveryPolicy,
@@ -36,6 +46,10 @@ from werewolf_agent.player_agents.contracts.scheduling import (
     TerminalDisposition,
 )
 from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
+from werewolf_agent.storage.active_turn_fence import (
+    ActiveTurnFenceRejected,
+    ActiveTurnFenceTransactionError,
+)
 from werewolf_agent.storage.autonomous_turns import (
     AutonomousTurnTransactionError,
     InvalidScheduleTransition,
@@ -47,6 +61,7 @@ from werewolf_agent.storage.durable_dispatch import (
     DispatchIdempotencyConflict,
     DispatchInvalidTransition,
     DispatchNotFound,
+    DispatchRecoveryBlocked,
     DispatchResultConflict,
     DispatchStateConflict,
 )
@@ -329,6 +344,395 @@ def _turn_repository(connection: _TurnConnection):
     repository._conn = connection
     repository._autonomous_schema_ready = True
     return repository
+
+
+class _FenceConnection(_TurnConnection):
+    """用可回滚的 attempt 快照模拟 PostgreSQL 围栏事务。"""
+
+    def __init__(
+        self,
+        *,
+        attempts: dict[str, object] | None = None,
+        fail_on_attempt_insert: bool = False,
+        attempt_insert_error: BaseException | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.attempts = copy.deepcopy(attempts or {})
+        self.fail_on_attempt_insert = fail_on_attempt_insert
+        self.attempt_insert_error = attempt_insert_error
+        self._snapshot: tuple[
+            dict[str, object],
+            dict[str, object],
+            dict[str, object],
+        ] | None = None
+
+    @property
+    def normalized_statements(self) -> list[str]:
+        return [" ".join(statement.split()).lower() for statement, _ in self.executed]
+
+    def _begin(self) -> None:
+        if self._snapshot is None:
+            self._snapshot = (
+                copy.deepcopy(self.schedules),
+                copy.deepcopy(self.turns),
+                copy.deepcopy(self.attempts),
+            )
+
+    @classmethod
+    def _attempt_row(cls, value: object) -> tuple[object, ...]:
+        payload = cls._payload(value)
+        return (
+            payload["dispatch_id"],
+            payload["game_id"],
+            payload["turn_id"],
+            payload["actor_id"],
+            payload["operation_kind"],
+            payload["executor_id"],
+            payload["provider_idempotency_key"],
+            payload["recovery_policy"],
+            payload["request_hash"],
+            payload["lease_hash"],
+            payload["view_fingerprint"],
+            payload["deadline"],
+            payload["status"],
+            payload["state_version"],
+            payload.get("reason_code"),
+            payload["created_at"],
+            payload["updated_at"],
+            payload.get("active_turn_fence"),
+        )
+
+    def execute(self, sql: str, params=()):
+        normalized = " ".join(sql.split())
+        bound = tuple(params)
+        if normalized.startswith("SELECT ") and (
+            "FROM autonomous_dispatch_attempts" in normalized
+        ):
+            self._begin()
+            self.executed.append((normalized, bound))
+            if "WHERE dispatch_id = %s" in normalized:
+                value = self.attempts.get(str(bound[0]))
+                return _TurnCursor(
+                    None if value is None else self._attempt_row(value),
+                )
+            if "WHERE executor_id = %s" in normalized:
+                for value in self.attempts.values():
+                    payload = self._payload(value)
+                    if (
+                        payload["executor_id"],
+                        payload["provider_idempotency_key"],
+                    ) == bound:
+                        return _TurnCursor((payload["dispatch_id"],))
+                return _TurnCursor()
+            if "WHERE game_id = %s AND turn_id = %s" in normalized:
+                rows = [
+                    self._attempt_row(value)
+                    for value in self.attempts.values()
+                    if (
+                        self._payload(value)["game_id"],
+                        self._payload(value)["turn_id"],
+                    ) == bound
+                ]
+                return _TurnCursor(rows=rows)
+            if "WHERE game_id = %s AND status IN" in normalized:
+                statuses = set(bound[1:])
+                for value in self.attempts.values():
+                    payload = self._payload(value)
+                    if (
+                        payload["game_id"] == bound[0]
+                        and payload["status"] in statuses
+                    ):
+                        return _TurnCursor((payload["dispatch_id"],))
+                return _TurnCursor()
+        if normalized.startswith("INSERT INTO autonomous_dispatch_attempts"):
+            self._begin()
+            self.executed.append((normalized, bound))
+            if self.attempt_insert_error is not None:
+                raise self.attempt_insert_error
+            if self.fail_on_attempt_insert:
+                raise RuntimeError("forced attempt insert failure")
+            attempt = DispatchAttempt.model_validate(
+                {
+                    "dispatch_id": bound[0],
+                    "game_id": bound[1],
+                    "turn_id": bound[2],
+                    "actor_id": bound[3],
+                    "operation_kind": DispatchOperationKind(bound[4]),
+                    "executor_id": bound[5],
+                    "provider_idempotency_key": bound[6],
+                    "recovery_policy": DispatchRecoveryPolicy(bound[7]),
+                    "request_hash": bound[8],
+                    "lease_hash": bound[9],
+                    "view_fingerprint": bound[10],
+                    "deadline": bound[11],
+                    "status": DispatchStatus(bound[12]),
+                    "state_version": bound[13],
+                    "reason_code": bound[14],
+                    "created_at": bound[15],
+                    "updated_at": bound[16],
+                    "active_turn_fence": (
+                        None if bound[17] is None else json.loads(bound[17])
+                    ),
+                },
+            )
+            self.attempts[attempt.dispatch_id] = attempt.model_dump(mode="json")
+            return _TurnCursor()
+        if normalized.startswith(
+            "UPDATE autonomous_dispatch_attempts SET status = %s, state_version = %s"
+        ):
+            self._begin()
+            self.executed.append((normalized, bound))
+            current = self.attempts.get(str(bound[4]))
+            if current is None or self._payload(current)["state_version"] != bound[5]:
+                return _TurnCursor(rowcount=0)
+            updated = self._payload(current)
+            updated.update(
+                {
+                    "status": bound[0],
+                    "state_version": bound[1],
+                    "reason_code": bound[2],
+                    "updated_at": bound[3],
+                },
+            )
+            self.attempts[str(bound[4])] = updated
+            return _TurnCursor()
+        return super().execute(sql, params)
+
+    def rollback(self) -> None:
+        self.rolled_back += 1
+        if self._snapshot is not None:
+            self.schedules, self.turns, self.attempts = self._snapshot
+        self._snapshot = None
+
+
+def _postgres_active_turn(
+    *,
+    fail_on_schedule_update: bool = False,
+    fail_on_attempt_insert: bool = False,
+    attempt_insert_error: BaseException | None = None,
+) -> tuple[_FenceConnection, object, object]:
+    schedule, managed = _fence_active_turn(turn_version=0)
+    connection = _FenceConnection(
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+        turns={managed.turn.turn_id: managed.model_dump(mode="json")},
+        fail_on_schedule_update=fail_on_schedule_update,
+        fail_on_attempt_insert=fail_on_attempt_insert,
+        attempt_insert_error=attempt_insert_error,
+    )
+    return connection, schedule, managed
+
+
+def test_postgres_fenced_create_commits_attempt_and_turn_version_once() -> None:
+    connection, schedule, managed = _postgres_active_turn()
+    repository = _turn_repository(connection)
+
+    attempt = repository.create_active_turn_dispatch(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        _fence_attempt_for(managed),
+        FENCE_NOW,
+    )
+
+    assert repository.supports_active_turn_fence() is True
+    assert connection.committed == 1
+    assert connection.rolled_back == 0
+    assert connection._payload(connection.turns[managed.turn.turn_id])["state_version"] == 1
+    assert connection._payload(connection.attempts[attempt.dispatch_id])["active_turn_fence"] == {
+        "schedule_id": schedule.schedule_id,
+        "schedule_state_version": schedule.state_version,
+        "turn_state_version": 1,
+        "window_id": managed.turn.window.window_id,
+        "window_version": managed.turn.window.version,
+        "base_game_revision": managed.turn.revision.base_revision,
+    }
+    statements = connection.normalized_statements
+    advisory_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "pg_advisory_xact_lock" in statement
+    )
+    game_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from games" in statement and "for update" in statement
+    )
+    schedule_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from autonomous_serial_public_schedules" in statement
+        and "for update" in statement
+    )
+    turn_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from autonomous_managed_turns" in statement and "for update" in statement
+    )
+    dispatch_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from autonomous_dispatch_attempts" in statement
+        and "for update" in statement
+    )
+    assert advisory_index < game_index < schedule_lock_index < turn_lock_index
+    assert turn_lock_index < dispatch_lock_index
+
+
+def test_postgres_fenced_create_rolls_back_attempt_on_turn_cas_miss() -> None:
+    connection, schedule, managed = _postgres_active_turn()
+    connection.force_turn_cas_miss = True
+    repository = _turn_repository(connection)
+
+    with pytest.raises(TurnStateConflict):
+        repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            _fence_attempt_for(managed),
+            FENCE_NOW,
+        )
+
+    assert connection.attempts == {}
+    assert connection._payload(connection.turns[managed.turn.turn_id]) == (
+        managed.model_dump(mode="json")
+    )
+    assert connection.rolled_back == 1
+
+
+def test_postgres_fenced_create_validates_context_before_idempotency_checks() -> None:
+    connection, schedule, managed = _postgres_active_turn()
+    existing = _fence_attempt_for(managed)
+    connection.attempts[existing.dispatch_id] = existing.model_dump(mode="json")
+    repository = _turn_repository(connection)
+
+    with pytest.raises(ActiveTurnFenceRejected):
+        repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            _fence_attempt_for(managed, actor_id="p02"),
+            FENCE_NOW,
+        )
+
+    assert connection.attempts == {existing.dispatch_id: existing.model_dump(mode="json")}
+
+
+class _ExactDispatchUniqueViolation(RuntimeError):
+    sqlstate = "23505"
+
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__("private postgres failure")
+        self.diag = SimpleNamespace(constraint_name=constraint_name)
+
+
+def test_postgres_fenced_create_maps_only_exact_dispatch_unique_constraint() -> None:
+    known_error = _ExactDispatchUniqueViolation(
+        "uq_autonomous_dispatch_executor_provider_key",
+    )
+    known_connection, schedule, managed = _postgres_active_turn(
+        attempt_insert_error=known_error,
+    )
+    known_repository = _turn_repository(known_connection)
+
+    with pytest.raises(DispatchIdempotencyConflict):
+        known_repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            _fence_attempt_for(managed),
+            FENCE_NOW,
+        )
+
+    unknown_error = _ExactDispatchUniqueViolation("unrelated_unique_constraint")
+    unknown_connection, schedule, managed = _postgres_active_turn(
+        attempt_insert_error=unknown_error,
+    )
+    unknown_repository = _turn_repository(unknown_connection)
+
+    with pytest.raises(ActiveTurnFenceTransactionError) as exc_info:
+        unknown_repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            _fence_attempt_for(managed),
+            FENCE_NOW,
+        )
+
+    assert unknown_connection.rolled_back == 1
+    assert exc_info.value.__cause__ is None
+    assert "private postgres failure" not in str(exc_info.value)
+
+
+def test_postgres_fenced_finish_rolls_back_cancel_and_turn_on_schedule_failure() -> None:
+    connection, schedule, managed = _postgres_active_turn()
+    repository = _turn_repository(connection)
+    attempt = repository.create_active_turn_dispatch(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        _fence_attempt_for(managed),
+        FENCE_NOW,
+    )
+    current = repository.load_managed_turn(managed.turn.turn_id)
+    assert current is not None
+    connection.fail_on_schedule_update = True
+
+    with pytest.raises(ActiveTurnFenceTransactionError):
+        repository.finish_active_turn_fenced(
+            schedule.schedule_id,
+            schedule.state_version,
+            current.turn.turn_id,
+            current.state_version,
+            AgentTurnStatus.CANCELLED,
+            TerminalDisposition.ADVANCE,
+            "operator_cancelled",
+        )
+
+    assert connection.rolled_back == 1
+    assert connection._payload(connection.attempts[attempt.dispatch_id])["status"] == "pending"
+    assert connection._payload(connection.turns[managed.turn.turn_id])["turn"]["status"] != "cancelled"
+
+
+def test_postgres_fenced_completion_rejects_unresolved_attempt() -> None:
+    schedule, managed = _fence_active_turn(
+        status=AgentTurnStatus.VALIDATING,
+        turn_version=0,
+    )
+    connection = _FenceConnection(
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+        turns={managed.turn.turn_id: managed.model_dump(mode="json")},
+    )
+    repository = _turn_repository(connection)
+    repository.create_active_turn_dispatch(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        _fence_attempt_for(managed),
+        FENCE_NOW,
+    )
+    current = repository.load_managed_turn(managed.turn.turn_id)
+    assert current is not None
+
+    with pytest.raises(DispatchRecoveryBlocked):
+        repository.finish_active_turn_fenced(
+            schedule.schedule_id,
+            schedule.state_version,
+            current.turn.turn_id,
+            current.state_version,
+            AgentTurnStatus.COMMITTED,
+            TerminalDisposition.ADVANCE,
+            None,
+        )
+
+    assert connection._payload(connection.turns[managed.turn.turn_id])["turn"]["status"] == "validating"
 
 
 def test_uninitialized_postgres_reports_autonomous_commit_unsupported() -> None:
@@ -838,6 +1242,31 @@ def test_postgres_dispatch_row_decodes_every_status_enum(status: DispatchStatus)
     assert parsed.status is status
 
 
+def test_postgres_dispatch_row_decodes_nullable_active_turn_fence() -> None:
+    from werewolf_agent.storage.postgres_store import PostgresGameRepository
+
+    fence = ActiveTurnDispatchFence(
+        schedule_id="schedule-1",
+        schedule_state_version=1,
+        turn_state_version=2,
+        window_id="speech-d1",
+        window_version=1,
+        base_game_revision=4,
+    )
+    row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "pending", 0,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        fence.model_dump(mode="json"),
+    )
+
+    parsed = PostgresGameRepository._dispatch_from_row(row)
+
+    assert parsed.active_turn_fence == fence
+
+
 def test_postgres_schema_contains_durable_dispatch_tables_and_indexes() -> None:
     repository = _repository_without_connection()
     connection = _clean_schema_connection()
@@ -857,6 +1286,22 @@ def test_postgres_schema_contains_durable_dispatch_tables_and_indexes() -> None:
     assert "on autonomous_dispatch_attempts (game_id, status, created_at)" in sql
     assert "idx_autonomous_dispatch_game_turn_created" in sql
     assert "on autonomous_dispatch_attempts (game_id, turn_id, created_at)" in sql
+
+
+def test_postgres_schema_adds_nullable_active_turn_fence_jsonb() -> None:
+    repository = _repository_without_connection()
+    connection = _clean_schema_connection()
+
+    repository._ensure_schema_transaction(connection)
+
+    sql = " ".join(
+        call.args[0].lower() for call in connection.execute.call_args_list
+    )
+    assert "active_turn_fence_json jsonb" in sql
+    assert (
+        "alter table autonomous_dispatch_attempts "
+        "add column if not exists active_turn_fence_json jsonb"
+    ) in sql
 
 
 def test_postgres_dispatches_for_turn_binds_game_and_turn() -> None:
@@ -899,12 +1344,20 @@ def test_postgres_dispatch_transition_locks_game_and_attempt_rows() -> None:
         None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
         datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
     )
-    repository._conn.execute.side_effect = [
-        MagicMock(fetchone=MagicMock(return_value=row)),
-        MagicMock(fetchone=MagicMock(return_value=(1,))),
-        MagicMock(fetchone=MagicMock(return_value=row)),
-        MagicMock(rowcount=1),
-    ]
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = row
+        elif "FROM games" in normalized:
+            cursor.fetchone.return_value = (1,)
+        elif normalized.startswith("UPDATE autonomous_dispatch_attempts"):
+            cursor.rowcount = 1
+        elif "pg_advisory_xact_lock" not in normalized:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return cursor
+
+    repository._conn.execute.side_effect = execute
 
     updated = repository.mark_dispatching("dispatch-1", 0)
 
@@ -914,6 +1367,61 @@ def test_postgres_dispatch_transition_locks_game_and_attempt_rows() -> None:
     assert "FOR UPDATE" in statements
     assert "FROM GAMES" in statements
     repository._conn.commit.assert_called_once()
+
+
+def test_postgres_fenced_dispatch_transition_locks_advisory_game_before_attempt() -> None:
+    repository = _repository_without_connection()
+    repository._conn = MagicMock()
+    repository._autonomous_schema_ready = True
+    fence = ActiveTurnDispatchFence(
+        schedule_id="schedule-1",
+        schedule_state_version=1,
+        turn_state_version=1,
+        window_id="speech-d1",
+        window_version=1,
+        base_game_revision=4,
+    )
+    row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "pending", 0,
+        None, datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        fence.model_dump(mode="json"),
+    )
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = row
+        elif "FROM games" in normalized:
+            cursor.fetchone.return_value = (1,)
+        elif normalized.startswith("UPDATE autonomous_dispatch_attempts"):
+            cursor.rowcount = 1
+        elif "pg_advisory_xact_lock" not in normalized:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return cursor
+
+    repository._conn.execute.side_effect = execute
+
+    repository.mark_dispatching("dispatch-1", 0)
+
+    statements = [
+        " ".join(call.args[0].split()).lower()
+        for call in repository._conn.execute.call_args_list
+    ]
+    assert any("pg_advisory_xact_lock" in statement for statement in statements)
+    advisory_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "pg_advisory_xact_lock" in statement
+    )
+    locked_attempt_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from autonomous_dispatch_attempts" in statement and "for update" in statement
+    )
+    assert advisory_index < locked_attempt_index
 
 
 @pytest.mark.parametrize(
@@ -946,13 +1454,22 @@ def test_postgres_dispatch_transition_reloads_after_cas_miss(
     current_row = list(initial_row)
     current_row[12] = current_row_updates["status"]
     current_row[13] = current_row_updates["state_version"]
-    repository._conn.execute.side_effect = [
-        MagicMock(fetchone=MagicMock(return_value=initial_row)),
-        MagicMock(fetchone=MagicMock(return_value=(1,))),
-        MagicMock(fetchone=MagicMock(return_value=initial_row)),
-        MagicMock(rowcount=0),
-        MagicMock(fetchone=MagicMock(return_value=tuple(current_row))),
-    ]
+    attempt_rows = [initial_row, initial_row, tuple(current_row)]
+
+    def execute(sql: str, _params=()):
+        normalized = " ".join(sql.split())
+        cursor = MagicMock()
+        if "FROM autonomous_dispatch_attempts" in normalized:
+            cursor.fetchone.return_value = attempt_rows.pop(0)
+        elif "FROM games" in normalized:
+            cursor.fetchone.return_value = (1,)
+        elif normalized.startswith("UPDATE autonomous_dispatch_attempts"):
+            cursor.rowcount = 0
+        elif "pg_advisory_xact_lock" not in normalized:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return cursor
+
+    repository._conn.execute.side_effect = execute
 
     with pytest.raises(expected_error):
         repository.mark_dispatching("dispatch-1", expected_version=0)
@@ -963,9 +1480,7 @@ def test_postgres_dispatch_transition_reloads_after_cas_miss(
 class _UniqueViolation(RuntimeError):
     sqlstate = "23505"
 
-
-class _NamedConstraintViolation(RuntimeError):
-    def __init__(self, constraint_name: str = "uq_autonomous_dispatch_executor_provider_key") -> None:
+    def __init__(self, constraint_name: str) -> None:
         super().__init__("unique constraint raced")
         self.diag = SimpleNamespace(
             constraint_name=constraint_name,
@@ -974,7 +1489,10 @@ class _NamedConstraintViolation(RuntimeError):
 
 @pytest.mark.parametrize(
     "unique_error",
-    (_UniqueViolation("provider key raced"), _NamedConstraintViolation()),
+    (
+        _UniqueViolation("autonomous_dispatch_attempts_pkey"),
+        _UniqueViolation("uq_autonomous_dispatch_executor_provider_key"),
+    ),
 )
 def test_postgres_create_dispatch_maps_unique_race_to_idempotency_conflict(
     unique_error: Exception,
@@ -983,6 +1501,7 @@ def test_postgres_create_dispatch_maps_unique_race_to_idempotency_conflict(
     repository._conn = MagicMock()
     repository._autonomous_schema_ready = True
     repository._conn.execute.side_effect = [
+        MagicMock(),
         MagicMock(fetchone=MagicMock(return_value=(1,))),
         MagicMock(fetchone=MagicMock(return_value=None)),
         MagicMock(fetchone=MagicMock(return_value=None)),
@@ -999,9 +1518,8 @@ def test_postgres_create_dispatch_maps_unique_race_to_idempotency_conflict(
 @pytest.mark.parametrize(
     "unique_error",
     (
-        _UniqueViolation("result row raced"),
-        _NamedConstraintViolation("autonomous_dispatch_results_pkey"),
-        _NamedConstraintViolation("autonomous_dispatch_results_dispatch_id_key"),
+        _UniqueViolation("autonomous_dispatch_results_pkey"),
+        _UniqueViolation("autonomous_dispatch_results_dispatch_id_key"),
     ),
 )
 def test_postgres_record_result_maps_unique_race_to_result_conflict(
@@ -1024,6 +1542,8 @@ def test_postgres_record_result_maps_unique_race_to_result_conflict(
         cursor = MagicMock()
         if "FROM autonomous_dispatch_attempts" in normalized:
             cursor.fetchone.return_value = attempt_row
+        elif "pg_advisory_xact_lock" in normalized:
+            pass
         elif normalized.startswith("SELECT 1 FROM games"):
             cursor.fetchone.return_value = (1,)
         elif (
@@ -1082,6 +1602,8 @@ def test_postgres_record_result_decodes_psycopg_outcome_for_replay() -> None:
         cursor = MagicMock()
         if "FROM autonomous_dispatch_attempts" in normalized:
             cursor.fetchone.return_value = attempt_row
+        elif "pg_advisory_xact_lock" in normalized:
+            pass
         elif "SELECT 1 FROM games" in normalized:
             cursor.fetchone.return_value = (1,)
         elif "FROM autonomous_dispatch_results" in normalized:
@@ -1129,6 +1651,8 @@ def test_postgres_backend_rejects_direct_dispatching_result() -> None:
         cursor = MagicMock()
         if "FROM autonomous_dispatch_attempts" in normalized:
             cursor.fetchone.return_value = attempt_row
+        elif "pg_advisory_xact_lock" in normalized:
+            pass
         elif normalized.startswith("SELECT 1 FROM games"):
             cursor.fetchone.return_value = (1,)
         elif "FROM autonomous_dispatch_results" in normalized:
@@ -1182,6 +1706,8 @@ def test_postgres_record_result_replays_business_payload_with_result_fields() ->
         cursor = MagicMock()
         if "FROM autonomous_dispatch_attempts" in normalized:
             cursor.fetchone.return_value = attempt_row
+        elif "pg_advisory_xact_lock" in normalized:
+            pass
         elif "SELECT 1 FROM games" in normalized:
             cursor.fetchone.return_value = (1,)
         elif "FROM autonomous_dispatch_results" in normalized:
@@ -1238,6 +1764,8 @@ def test_postgres_record_result_reloads_after_cas_miss(
         cursor = MagicMock()
         if "FROM autonomous_dispatch_attempts" in normalized:
             cursor.fetchone.return_value = attempt_rows.pop(0)
+        elif "pg_advisory_xact_lock" in normalized:
+            pass
         elif normalized.startswith("SELECT 1 FROM games"):
             cursor.fetchone.return_value = (1,)
         elif "FROM autonomous_dispatch_results" in normalized:

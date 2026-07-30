@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：PostgreSQL 游戏仓库，支持事件兼容读写、串行公开调度持久化、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
+功能描述：PostgreSQL 游戏仓库，支持事件兼容读写、串行公开调度、活动回合围栏与 durable dispatch 状态机。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-30
+修改日期：2026-07-31
 使用示例：内部模块，无对外接口
 """
 
@@ -21,6 +21,7 @@ from werewolf_agent.core.resolution_batches import (
     serialize_resolution_batch_fields,
 )
 from werewolf_agent.player_agents.contracts.dispatch import (
+    ActiveTurnDispatchFence,
     DispatchAttempt,
     DispatchOperationKind,
     DispatchRecoveryPolicy,
@@ -50,6 +51,12 @@ from werewolf_agent.runtime.event_metadata import (
 from werewolf_agent.runtime.game_termination import (
     validate_game_aborted_append,
     validate_game_state_save,
+)
+from werewolf_agent.storage.active_turn_fence import (
+    ActiveTurnFenceRejected,
+    ActiveTurnFenceTransactionError,
+    prepare_active_turn_dispatch,
+    prepare_fenced_active_finish,
 )
 from werewolf_agent.storage.autonomous_commit import (
     AutonomousCommitUnsupported,
@@ -323,7 +330,7 @@ class PostgresGameRepository:
         return None if row is None else self._managed_turn_from_jsonb(row[0])
 
     def _lock_schedule_transaction(self, conn: Any, schedule_id: str) -> str:
-        """定位所属游戏并用现有 advisory lock 串行化跨实例写入。"""
+        """定位所属游戏后锁定 game，再锁定后续 schedule/turn 行。"""
         row = conn.execute(
             "SELECT game_id FROM autonomous_serial_public_schedules "
             "WHERE schedule_id = %s",
@@ -332,7 +339,7 @@ class PostgresGameRepository:
         if row is None:
             raise ScheduleNotFound("schedule not found")
         game_id = str(row[0])
-        self._lock_game_transaction(conn, game_id)
+        self._lock_dispatch_game(conn, game_id)
         return game_id
 
     def _lock_managed_turn_transaction(
@@ -349,7 +356,7 @@ class PostgresGameRepository:
         if row is None:
             raise ManagedTurnNotFound("managed turn not found")
         schedule_id, game_id = str(row[0]), str(row[1])
-        self._lock_game_transaction(conn, game_id)
+        self._lock_dispatch_game(conn, game_id)
         return schedule_id, game_id
 
     def _update_schedule_row(
@@ -924,6 +931,10 @@ class PostgresGameRepository:
             getattr(self, "_autonomous_schema_ready", False),
         )
 
+    def supports_active_turn_fence(self) -> bool:
+        """仅在围栏所需调度与 durable dispatch schema 均就绪后报告支持。"""
+        return self.supports_autonomous_turns() and self.supports_durable_dispatch()
+
     @staticmethod
     def _dispatch_copy(attempt: DispatchAttempt) -> DispatchAttempt:
         """从 ORM/数据库值重建防御性副本，避免泄露冻结映射内部对象。"""
@@ -934,6 +945,19 @@ class PostgresGameRepository:
         if isinstance(value, datetime):
             return value
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+    @staticmethod
+    def _active_turn_fence_json(attempt: DispatchAttempt) -> str | None:
+        """将可选围栏编码为稳定 JSONB 输入，保留历史 NULL 行。"""
+
+        if attempt.active_turn_fence is None:
+            return None
+        return json.dumps(
+            attempt.active_turn_fence.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     @classmethod
     def _dispatch_from_row(cls, row: Any) -> DispatchAttempt:
@@ -956,6 +980,11 @@ class PostgresGameRepository:
                 "reason_code": row[14],
                 "created_at": cls._dispatch_datetime(row[15]),
                 "updated_at": cls._dispatch_datetime(row[16]),
+                "active_turn_fence": (
+                    None
+                    if len(row) <= 17 or row[17] is None
+                    else ActiveTurnDispatchFence.model_validate(row[17])
+                ),
             },
         )
 
@@ -965,7 +994,7 @@ class PostgresGameRepository:
             "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
             "executor_id, provider_idempotency_key, recovery_policy, request_hash, "
             "lease_hash, view_fingerprint, deadline, status, state_version, "
-            "reason_code, created_at, updated_at"
+            "reason_code, created_at, updated_at, active_turn_fence_json"
         )
 
     def _load_dispatch_row(
@@ -985,8 +1014,10 @@ class PostgresGameRepository:
         ).fetchone()
         return None if row is None else self._dispatch_from_row(row)
 
-    @staticmethod
-    def _lock_dispatch_game(conn: Any, game_id: str) -> None:
+    def _lock_dispatch_game(self, conn: Any, game_id: str) -> None:
+        """先获取游戏 advisory lock，再验证并锁定 games 行。"""
+
+        self._lock_game_transaction(conn, game_id)
         row = conn.execute(
             "SELECT 1 FROM games WHERE game_id = %s FOR UPDATE",
             (game_id,),
@@ -1000,12 +1031,9 @@ class PostgresGameRepository:
         return not isinstance(rowcount, int) or rowcount == 1
 
     @staticmethod
-    def _is_unique_violation(exc: BaseException) -> bool:
-        """识别 psycopg 不同版本暴露的唯一约束冲突。"""
-        if getattr(exc, "sqlstate", None) == "23505":
-            return True
-        if getattr(exc, "pgcode", None) == "23505":
-            return True
+    def _unique_constraint_name(exc: BaseException) -> str | None:
+        """从 psycopg 版本差异中读取唯一约束名。"""
+
         constraint_name = getattr(exc, "constraint_name", None)
         if constraint_name is None:
             constraint_name = getattr(
@@ -1013,12 +1041,20 @@ class PostgresGameRepository:
                 "constraint_name",
                 None,
             )
-        return constraint_name in {
-            "autonomous_dispatch_attempts_pkey",
-            "uq_autonomous_dispatch_executor_provider_key",
-            "autonomous_dispatch_results_pkey",
-            "autonomous_dispatch_results_dispatch_id_key",
-        }
+        return str(constraint_name) if constraint_name is not None else None
+
+    @classmethod
+    def _is_unique_violation(
+        cls,
+        exc: BaseException,
+        *known_constraints: str,
+    ) -> bool:
+        """仅将精确 23505 约束映射为稳定业务冲突。"""
+
+        code = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+        return code == "23505" and cls._unique_constraint_name(exc) in set(
+            known_constraints,
+        )
 
     @staticmethod
     def _dispatch_result_copy(result: DispatchResultRecord) -> DispatchResultRecord:
@@ -1065,11 +1101,49 @@ class PostgresGameRepository:
         ).fetchone()
         return None if row is None else self._result_from_row(row)
 
+    def _insert_dispatch_row(self, conn: Any, attempt: DispatchAttempt) -> None:
+        """插入已通过调用方状态校验的 dispatch，并保留 nullable 围栏。"""
+
+        conn.execute(
+            "INSERT INTO autonomous_dispatch_attempts ("
+            "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
+            "executor_id, provider_idempotency_key, recovery_policy, "
+            "request_hash, lease_hash, view_fingerprint, deadline, status, "
+            "state_version, reason_code, created_at, updated_at, "
+            "active_turn_fence_json) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "%s, %s, %s, %s, %s, %s::jsonb)",
+            (
+                attempt.dispatch_id,
+                attempt.game_id,
+                attempt.turn_id,
+                attempt.actor_id,
+                attempt.operation_kind.value,
+                attempt.executor_id,
+                attempt.provider_idempotency_key,
+                attempt.recovery_policy.value,
+                attempt.request_hash,
+                attempt.lease_hash,
+                attempt.view_fingerprint,
+                attempt.deadline,
+                attempt.status.value,
+                attempt.state_version,
+                attempt.reason_code,
+                attempt.created_at,
+                attempt.updated_at,
+                self._active_turn_fence_json(attempt),
+            ),
+        )
+
     def create_dispatch(self, attempt: DispatchAttempt) -> DispatchAttempt:
         """在外部网络 I/O 前原子持久化一个 PENDING dispatch 意图。"""
         with self._lock:
             conn = self._ensure_connection()
             try:
+                if attempt.active_turn_fence is not None:
+                    raise DispatchInvalidTransition(
+                        "plain dispatch cannot include an active turn fence",
+                    )
                 if (
                     attempt.status is not DispatchStatus.PENDING
                     or attempt.state_version != 0
@@ -1102,34 +1176,7 @@ class PostgresGameRepository:
                 ).fetchone()
                 if barrier_row is not None:
                     raise DispatchRecoveryBlocked(attempt.game_id)
-                conn.execute(
-                    "INSERT INTO autonomous_dispatch_attempts ("
-                    "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
-                    "executor_id, provider_idempotency_key, recovery_policy, "
-                    "request_hash, lease_hash, view_fingerprint, deadline, status, "
-                    "state_version, reason_code, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                    "%s, %s, %s, %s, %s)",
-                    (
-                        attempt.dispatch_id,
-                        attempt.game_id,
-                        attempt.turn_id,
-                        attempt.actor_id,
-                        attempt.operation_kind.value,
-                        attempt.executor_id,
-                        attempt.provider_idempotency_key,
-                        attempt.recovery_policy.value,
-                        attempt.request_hash,
-                        attempt.lease_hash,
-                        attempt.view_fingerprint,
-                        attempt.deadline,
-                        attempt.status.value,
-                        attempt.state_version,
-                        attempt.reason_code,
-                        attempt.created_at,
-                        attempt.updated_at,
-                    ),
-                )
+                self._insert_dispatch_row(conn, attempt)
                 conn.commit()
                 return self._dispatch_copy(attempt)
             except (
@@ -1142,11 +1189,213 @@ class PostgresGameRepository:
                 raise
             except Exception as exc:
                 conn.rollback()
-                if self._is_unique_violation(exc):
+                if self._is_unique_violation(
+                    exc,
+                    "autonomous_dispatch_attempts_pkey",
+                    "uq_autonomous_dispatch_executor_provider_key",
+                ):
                     raise DispatchIdempotencyConflict(attempt.dispatch_id) from exc
                 raise DispatchTransactionError(
                     "durable dispatch create transaction failed",
                 ) from exc
+
+    def create_active_turn_dispatch(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        attempt: DispatchAttempt,
+        observed_at: datetime,
+    ) -> DispatchAttempt:
+        """在同一 PG 事务中预约活动回合并持久化其受围栏 dispatch。"""
+
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                self._lock_schedule_transaction(conn, schedule_id)
+                schedule = self._load_schedule_row(
+                    conn,
+                    schedule_id,
+                    for_update=True,
+                )
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
+                if schedule.state_version != expected_schedule_version:
+                    raise ScheduleStateConflict("schedule state version conflict")
+                managed = self._load_managed_turn_row(
+                    conn,
+                    turn_id,
+                    for_update=True,
+                )
+                if managed is None:
+                    raise ManagedTurnNotFound("managed turn not found")
+                if managed.state_version != expected_turn_version:
+                    raise TurnStateConflict("managed turn state version conflict")
+                updated_managed, fenced_attempt = prepare_active_turn_dispatch(
+                    schedule,
+                    managed,
+                    attempt,
+                    observed_at,
+                )
+                if self._load_dispatch_row(conn, attempt.dispatch_id, for_update=True):
+                    raise DispatchIdempotencyConflict(attempt.dispatch_id)
+                key_row = conn.execute(
+                    "SELECT dispatch_id FROM autonomous_dispatch_attempts "
+                    "WHERE executor_id = %s AND provider_idempotency_key = %s "
+                    "FOR UPDATE",
+                    (attempt.executor_id, attempt.provider_idempotency_key),
+                ).fetchone()
+                if key_row is not None:
+                    raise DispatchIdempotencyConflict(
+                        "provider idempotency key already exists",
+                    )
+                barrier_row = conn.execute(
+                    "SELECT dispatch_id FROM autonomous_dispatch_attempts "
+                    "WHERE game_id = %s AND status IN (%s, %s) FOR UPDATE",
+                    (
+                        attempt.game_id,
+                        DispatchStatus.DISPATCHING.value,
+                        DispatchStatus.DISPATCHED.value,
+                    ),
+                ).fetchone()
+                if barrier_row is not None:
+                    raise DispatchRecoveryBlocked(attempt.game_id)
+                self._insert_dispatch_row(conn, fenced_attempt)
+                self._update_managed_turn_row(
+                    conn,
+                    updated_managed,
+                    expected_turn_version,
+                )
+                conn.commit()
+                return self._dispatch_copy(fenced_attempt)
+            except (
+                ScheduleNotFound,
+                ScheduleStateConflict,
+                ManagedTurnNotFound,
+                TurnStateConflict,
+                ActiveTurnFenceRejected,
+                DispatchIdempotencyConflict,
+                DispatchRecoveryBlocked,
+                DispatchTransactionError,
+            ):
+                conn.rollback()
+                raise
+            except Exception as exc:  # noqa: BLE001 - 后端异常必须净化为稳定事务边界。
+                conn.rollback()
+                if self._is_unique_violation(
+                    exc,
+                    "autonomous_dispatch_attempts_pkey",
+                    "uq_autonomous_dispatch_executor_provider_key",
+                ):
+                    raise DispatchIdempotencyConflict(attempt.dispatch_id) from None
+                raise ActiveTurnFenceTransactionError(
+                    "active turn fence transaction failed",
+                ) from None
+
+    def finish_active_turn_fenced(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        terminal_status: AgentTurnStatus,
+        disposition: TerminalDisposition,
+        reason_code: str | None,
+    ) -> SerialPublicSchedule:
+        """在同一 PG 事务内取消可撤销 dispatch 并终结活动回合。"""
+
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                self._lock_schedule_transaction(conn, schedule_id)
+                schedule = self._load_schedule_row(
+                    conn,
+                    schedule_id,
+                    for_update=True,
+                )
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
+                if schedule.state_version != expected_schedule_version:
+                    raise ScheduleStateConflict("schedule state version conflict")
+                managed = self._load_managed_turn_row(
+                    conn,
+                    turn_id,
+                    for_update=True,
+                )
+                if managed is None:
+                    raise ManagedTurnNotFound("managed turn not found")
+                if managed.state_version != expected_turn_version:
+                    raise TurnStateConflict("managed turn state version conflict")
+                rows = conn.execute(
+                    "SELECT "
+                    f"{self._dispatch_select_columns()} "
+                    "FROM autonomous_dispatch_attempts "
+                    "WHERE game_id = %s AND turn_id = %s "
+                    "ORDER BY created_at, dispatch_id FOR UPDATE",
+                    (schedule.game_id, turn_id),
+                ).fetchall()
+                attempts = tuple(self._dispatch_from_row(row) for row in rows)
+                now = max(datetime.now(timezone.utc), schedule.updated_at)
+                updated_schedule, updated_managed, updated_attempts = (
+                    prepare_fenced_active_finish(
+                        schedule,
+                        managed,
+                        attempts,
+                        terminal_status,
+                        disposition,
+                        reason_code=reason_code,
+                        now=now,
+                    )
+                )
+                for existing, updated in zip(attempts, updated_attempts):
+                    if updated == existing:
+                        continue
+                    cursor = conn.execute(
+                        "UPDATE autonomous_dispatch_attempts SET status = %s, "
+                        "state_version = %s, reason_code = %s, updated_at = %s "
+                        "WHERE dispatch_id = %s AND state_version = %s",
+                        (
+                            updated.status.value,
+                            updated.state_version,
+                            updated.reason_code,
+                            updated.updated_at,
+                            updated.dispatch_id,
+                            existing.state_version,
+                        ),
+                    )
+                    if not self._rowcount_is_one(cursor):
+                        raise DispatchStateConflict(updated.dispatch_id)
+                self._update_managed_turn_row(
+                    conn,
+                    updated_managed,
+                    expected_turn_version,
+                )
+                self._update_schedule_row(
+                    conn,
+                    updated_schedule,
+                    expected_schedule_version,
+                )
+                conn.commit()
+                return updated_schedule.model_copy(deep=True)
+            except (
+                ScheduleNotFound,
+                ScheduleStateConflict,
+                ManagedTurnNotFound,
+                TurnStateConflict,
+                DispatchStateConflict,
+                ActiveTurnFenceRejected,
+                DispatchRecoveryBlocked,
+                InvalidScheduleTransition,
+                DispatchTransactionError,
+            ):
+                conn.rollback()
+                raise
+            except Exception:  # noqa: BLE001 - 后端异常必须净化为稳定事务边界。
+                conn.rollback()
+                raise ActiveTurnFenceTransactionError(
+                    "active turn fence transaction failed",
+                ) from None
 
     def _transition_dispatch(
         self,
@@ -1392,7 +1641,11 @@ class PostgresGameRepository:
                 raise
             except Exception as exc:
                 conn.rollback()
-                if self._is_unique_violation(exc):
+                if self._is_unique_violation(
+                    exc,
+                    "autonomous_dispatch_results_pkey",
+                    "autonomous_dispatch_results_dispatch_id_key",
+                ):
                     raise DispatchResultConflict(dispatch_id) from exc
                 raise DispatchTransactionError(
                     "durable dispatch result transaction failed",
@@ -2025,9 +2278,14 @@ class PostgresGameRepository:
                 state_version BIGINT NOT NULL,
                 reason_code TEXT,
                 created_at TIMESTAMPTZ NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL
+                updated_at TIMESTAMPTZ NOT NULL,
+                active_turn_fence_json JSONB
             )
         """)
+        conn.execute(
+            "ALTER TABLE autonomous_dispatch_attempts "
+            "ADD COLUMN IF NOT EXISTS active_turn_fence_json JSONB"
+        )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS autonomous_dispatch_results (
                 result_id TEXT PRIMARY KEY,

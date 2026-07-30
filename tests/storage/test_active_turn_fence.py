@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-31
+修改日期: 2026-07-31
 """
 
 import threading
@@ -252,6 +253,41 @@ def _sqlite_active_turn(
     current_schedule = repository.load_serial_public_schedule(created.schedule_id)
     assert current_schedule is not None
     return repository, current_schedule, admitted
+
+
+def test_postgres_plain_create_rejects_caller_supplied_fence() -> None:
+    from werewolf_agent.storage.postgres_store import PostgresGameRepository
+
+    class Connection:
+        def __init__(self) -> None:
+            self.rolled_back = 0
+
+        def execute(self, _sql: str, _params=()):
+            raise AssertionError("plain fenced create must not query PostgreSQL")
+
+        def rollback(self) -> None:
+            self.rolled_back += 1
+
+    schedule, managed = _active_turn()
+    connection = Connection()
+    repository = PostgresGameRepository.__new__(PostgresGameRepository)
+    repository._dsn = "postgresql://unused"
+    repository._conn = connection
+    repository._lock = threading.Lock()
+    repository._autonomous_schema_ready = True
+    fence = ActiveTurnDispatchFence(
+        schedule_id=schedule.schedule_id,
+        schedule_state_version=schedule.state_version,
+        turn_state_version=managed.state_version,
+        window_id=managed.turn.window.window_id,
+        window_version=managed.turn.window.version,
+        base_game_revision=managed.turn.revision.base_revision,
+    )
+
+    with pytest.raises(DispatchInvalidTransition):
+        repository.create_dispatch(_attempt_for(managed, active_turn_fence=fence))
+
+    assert connection.rolled_back == 1
 
 
 def test_sqlite_fenced_create_round_trips_attempt_and_turn_version(tmp_path) -> None:
