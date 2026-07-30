@@ -38,6 +38,7 @@ from werewolf_agent.player_agents.contracts.scheduling import (
 from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
 from werewolf_agent.storage.autonomous_turns import (
     AutonomousTurnTransactionError,
+    InvalidScheduleTransition,
     ScheduleStateConflict,
     TurnStateConflict,
 )
@@ -396,6 +397,38 @@ def test_postgres_autonomous_turn_reads_are_ordered_and_defensive() -> None:
         "schedule-2",
     )
     assert all(item is not first and item is not later for item in open_schedules)
+
+
+@pytest.mark.parametrize(
+    "schedule_updates",
+    (
+        {"status": SerialPublicScheduleStatus.CANCELLED},
+        {"next_slot_ordinal": 1},
+        {"active_turn_id": "existing-turn"},
+        {"state_version": 7},
+    ),
+    ids=("terminal-status", "advanced-cursor", "active-turn", "advanced-version"),
+)
+def test_postgres_schedule_creation_rejects_non_fresh_initial_state(
+    schedule_updates: dict[str, object],
+) -> None:
+    connection = _TurnConnection()
+    repository = _turn_repository(connection)
+    invalid_schedule = _schedule(**schedule_updates)
+
+    with pytest.raises(InvalidScheduleTransition) as exc_info:
+        repository.create_serial_public_schedule(invalid_schedule)
+
+    insert_statements = [
+        statement
+        for statement, _ in connection.executed
+        if statement.startswith("INSERT INTO autonomous_serial_public_schedules")
+    ]
+    assert exc_info.value.code == "invalid_schedule_transition"
+    assert str(exc_info.value) == "invalid autonomous turn transition"
+    assert insert_statements == []
+    assert connection.schedules == {}
+    assert connection.committed == 0
 
 
 def test_postgres_autonomous_turn_lifecycle_persists_with_cas() -> None:

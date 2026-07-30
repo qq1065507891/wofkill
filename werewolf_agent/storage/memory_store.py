@@ -59,6 +59,7 @@ from werewolf_agent.storage.autonomous_turns import (
     prepare_active_finish,
     prepare_active_transition,
     prepare_serial_public_admission,
+    require_fresh_serial_public_schedule,
 )
 from werewolf_agent.storage.durable_dispatch import (
     DispatchIdempotencyConflict,
@@ -138,6 +139,7 @@ class InMemoryGameRepository:
         schedule: SerialPublicSchedule,
     ) -> SerialPublicSchedule:
         """创建一个新的公开调度并建立游戏级活动索引。"""
+        require_fresh_serial_public_schedule(schedule)
         with self._lock:
             if schedule.game_id not in self._games:
                 raise AutonomousTurnTransactionError(
@@ -153,13 +155,6 @@ class InMemoryGameRepository:
             ):
                 raise AutonomousTurnTransactionError(
                     "game already has an open schedule",
-                )
-            if (
-                schedule.status is SerialPublicScheduleStatus.OPEN
-                and schedule.active_turn_id is not None
-            ):
-                raise InvalidScheduleTransition(
-                    "invalid autonomous turn transition",
                 )
             stored = schedule.model_copy(deep=True)
             self._serial_public_schedules[stored.schedule_id] = stored

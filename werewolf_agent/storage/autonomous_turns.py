@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-30
+修改日期: 2026-07-30
 """
 
 from __future__ import annotations
@@ -166,6 +167,18 @@ def _invalid_transition() -> InvalidScheduleTransition:
     """构造不含内部状态详情的稳定迁移错误。"""
 
     return InvalidScheduleTransition("invalid autonomous turn transition")
+
+
+def require_fresh_serial_public_schedule(schedule: SerialPublicSchedule) -> None:
+    """要求待创建的公开调度处于精确的新建初始状态。"""
+
+    if (
+        schedule.status is not SerialPublicScheduleStatus.OPEN
+        or schedule.next_slot_ordinal != 0
+        or schedule.active_turn_id is not None
+        or schedule.state_version != 0
+    ):
+        raise _invalid_transition()
 
 
 def _require_active_identity(
@@ -346,4 +359,5 @@ __all__ = [
     "prepare_active_transition",
     "prepare_serial_public_admission",
     "require_autonomous_turn_repository",
+    "require_fresh_serial_public_schedule",
 ]

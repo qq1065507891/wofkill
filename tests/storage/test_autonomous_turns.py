@@ -325,8 +325,20 @@ def test_prepare_finish_advance_consumes_slot_atomically() -> None:
 
 
 def test_prepare_finish_last_advance_closes_schedule() -> None:
-    schedule = _schedule(next_slot_ordinal=1)
-    admission = _admission(player_id="p02", turn_id="turn-2", idempotency_key="turn-2:submit")
+    schedule, first_managed = _admitted_validating()
+    schedule, _ = prepare_active_finish(
+        schedule,
+        first_managed,
+        AgentTurnStatus.COMMITTED,
+        TerminalDisposition.ADVANCE,
+        reason_code=None,
+        now=NOW,
+    )
+    admission = _admission(
+        player_id="p02",
+        turn_id="turn-2",
+        idempotency_key="turn-2:submit",
+    )
     schedule, managed = prepare_serial_public_admission(schedule, admission, NOW)
     updated_schedule, updated_turn = prepare_active_finish(
         schedule,
@@ -1174,6 +1186,38 @@ def test_shared_schedule_creation_and_current_slot_admission(
 
 
 @pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+@pytest.mark.parametrize(
+    "schedule_updates",
+    (
+        {"status": SerialPublicScheduleStatus.CANCELLED},
+        {"next_slot_ordinal": 1},
+        {"active_turn_id": "existing-turn"},
+        {"state_version": 7},
+    ),
+    ids=("terminal-status", "advanced-cursor", "active-turn", "advanced-version"),
+)
+def test_shared_schedule_creation_rejects_non_fresh_initial_state(
+    repository_kind: str,
+    schedule_updates: dict[str, object],
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    invalid_schedule = _schedule(**schedule_updates)
+    try:
+        with pytest.raises(InvalidScheduleTransition) as exc_info:
+            repository.create_serial_public_schedule(invalid_schedule)
+
+        assert exc_info.value.code == "invalid_schedule_transition"
+        assert str(exc_info.value) == "invalid autonomous turn transition"
+        assert repository.load_serial_public_schedule(invalid_schedule.schedule_id) is None
+        assert repository.load_active_serial_public_schedule("game-1") is None
+    finally:
+        _close_shared_repository(repository)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
 def test_shared_stale_cas_never_publishes_partial_state(
     repository_kind: str,
     tmp_path,
@@ -1373,18 +1417,40 @@ def test_shared_final_slot_advance_closes_schedule(
 ) -> None:
     _freeze_repository_clocks(monkeypatch)
     repository = _shared_repository(repository_kind, tmp_path)
-    final_schedule = _schedule(next_slot_ordinal=1)
     final_admission = _admission(
         turn_id="turn-2",
         player_id="p02",
         idempotency_key="turn-2:submit",
     )
     try:
-        schedule, managed = _shared_admit_to_validating(
-            repository,
-            schedule=final_schedule,
-            admission=final_admission,
+        schedule, first_managed = _shared_admit_to_validating(repository)
+        schedule = repository.finish_active_turn(
+            schedule.schedule_id,
+            schedule.state_version,
+            first_managed.turn.turn_id,
+            first_managed.state_version,
+            AgentTurnStatus.COMMITTED,
+            TerminalDisposition.ADVANCE,
+            None,
         )
+        managed = repository.admit_serial_public_turn(
+            schedule.schedule_id,
+            schedule.state_version,
+            final_admission,
+        )
+        for next_status in (
+            AgentTurnStatus.OBSERVING,
+            AgentTurnStatus.THINKING,
+            AgentTurnStatus.SUBMITTED,
+            AgentTurnStatus.VALIDATING,
+        ):
+            managed = repository.transition_active_turn(
+                managed.turn.turn_id,
+                managed.state_version,
+                next_status,
+            )
+        schedule = repository.load_serial_public_schedule(schedule.schedule_id)
+        assert schedule is not None
         closed = repository.finish_active_turn(
             schedule.schedule_id,
             schedule.state_version,

@@ -73,6 +73,7 @@ from werewolf_agent.storage.autonomous_turns import (
     prepare_active_finish,
     prepare_active_transition,
     prepare_serial_public_admission,
+    require_fresh_serial_public_schedule,
 )
 from werewolf_agent.storage.durable_dispatch import (
     DispatchIdempotencyConflict,
@@ -611,6 +612,7 @@ class SqliteGameRepository:
         schedule: SerialPublicSchedule,
     ) -> SerialPublicSchedule:
         """创建一个公开调度并通过数据库唯一索引建立游戏级互斥。"""
+        require_fresh_serial_public_schedule(schedule)
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -623,13 +625,6 @@ class SqliteGameRepository:
                     )
                 if self._load_schedule_unlocked(schedule.schedule_id) is not None:
                     raise AutonomousTurnTransactionError("schedule already exists")
-                if (
-                    schedule.status is SerialPublicScheduleStatus.OPEN
-                    and schedule.active_turn_id is not None
-                ):
-                    raise InvalidScheduleTransition(
-                        "invalid autonomous turn transition",
-                    )
                 self._conn.execute(
                     "INSERT INTO autonomous_serial_public_schedules "
                     "(schedule_id, game_id, window_id, status, next_slot_ordinal, "
