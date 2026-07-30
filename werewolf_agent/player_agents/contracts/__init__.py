@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
-修改日期: 2026-07-29
+修改日期: 2026-07-30
 """
 
 from werewolf_agent.player_agents.contracts.disclosure import DisclosureGrant
@@ -30,6 +30,14 @@ from werewolf_agent.player_agents.contracts.records import (
 from werewolf_agent.player_agents.contracts.revisions import (
     ReadReference,
     RevisionContext,
+)
+from werewolf_agent.player_agents.contracts.scheduling import (
+    ManagedAgentTurn,
+    SerialPublicSchedule,
+    SerialPublicScheduleStatus,
+    SerialPublicSlot,
+    TerminalDisposition,
+    TurnAdmission,
 )
 from werewolf_agent.player_agents.contracts.schema_catalog import (
     SCHEMA_VERSION,
@@ -113,6 +121,7 @@ __all__ = [
     "EvidenceRelation",
     "LegalActionWindow",
     "LengthClass",
+    "ManagedAgentTurn",
     "Modality",
     "PlayerComparison",
     "PrivateFactKind",
@@ -132,12 +141,17 @@ __all__ = [
     "RetractionMove",
     "RevisionContext",
     "RoleClaim",
+    "SerialPublicSchedule",
+    "SerialPublicScheduleStatus",
+    "SerialPublicSlot",
     "SpeechMove",
     "SpeechObjective",
     "SpeechProposalBody",
     "SpeechProposalEnvelope",
     "Strength",
+    "TerminalDisposition",
     "Tone",
+    "TurnAdmission",
     "TurnBudget",
     "UncertaintyDimension",
     "UncertaintyStatement",
