@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-验证串行公开调度门面与主机托管回合的恢复和生命周期语义。
+验证串行公开调度门面与主机托管回合的恢复、围栏与生命周期语义。
 
 作者: Project contributors
 创建日期: 2026-07-30
-修改日期: 2026-07-30
+修改日期: 2026-07-31
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import pytest
 
 from werewolf_agent.core.models import GameState
 from werewolf_agent.player_agents.contracts.dispatch import (
+    ActiveTurnDispatchFence,
     DispatchAttempt,
     DispatchOperationKind,
     DispatchRecoveryPolicy,
@@ -45,6 +46,10 @@ from werewolf_agent.player_agents.runtime.host import (
     HostRuntimeError,
 )
 from werewolf_agent.player_agents.runtime.serial_public import SerialPublicScheduler
+from werewolf_agent.storage.active_turn_fence import (
+    ActiveTurnFenceRejected,
+    ActiveTurnFenceUnsupported,
+)
 from werewolf_agent.storage.autonomous_turns import (
     InvalidScheduleTransition,
     InvalidTurnAdmission,
@@ -62,6 +67,8 @@ from werewolf_agent.storage.memory_store import InMemoryGameRepository
 HASH = "a" * 64
 NOW = datetime(2026, 7, 30, 10, tzinfo=timezone.utc)
 DEADLINE = NOW + timedelta(hours=1)
+FENCE_NOW = datetime(2030, 7, 30, 10, tzinfo=timezone.utc)
+FENCE_DEADLINE = FENCE_NOW + timedelta(hours=1)
 
 
 class PendingResolver:
@@ -80,6 +87,58 @@ class UnsafeResolver:
 class ErrorResolver:
     def resolve(self, attempt: DispatchAttempt) -> RecoveryResolution:
         raise RuntimeError("resolver failed")
+
+
+class FenceSpyRepository(InMemoryGameRepository):
+    """记录 Host 是否绕过活动回合围栏。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dispatch_scan_calls = 0
+        self.fenced_finish_calls = 0
+        self.unfenced_finish_calls = 0
+
+    def list_dispatches_for_turn(
+        self,
+        game_id: str,
+        turn_id: str,
+    ) -> list[DispatchAttempt]:
+        self.dispatch_scan_calls += 1
+        raise AssertionError("HostRuntime must not pre-scan dispatches")
+
+    def finish_active_turn(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        terminal_status: AgentTurnStatus,
+        disposition: TerminalDisposition,
+        reason_code: str | None,
+    ) -> SerialPublicSchedule:
+        self.unfenced_finish_calls += 1
+        raise AssertionError("HostRuntime must use the fenced terminal call")
+
+    def finish_active_turn_fenced(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        terminal_status: AgentTurnStatus,
+        disposition: TerminalDisposition,
+        reason_code: str | None,
+    ) -> SerialPublicSchedule:
+        self.fenced_finish_calls += 1
+        return super().finish_active_turn_fenced(
+            schedule_id,
+            expected_schedule_version,
+            turn_id,
+            expected_turn_version,
+            terminal_status,
+            disposition,
+            reason_code,
+        )
 
 
 def _window(
@@ -231,6 +290,40 @@ def _host_with_active_turn() -> tuple[
     return repository, host, managed
 
 
+def _host_with_fenceable_active_turn(
+    *,
+    repository_type: type[InMemoryGameRepository] = InMemoryGameRepository,
+) -> tuple[
+    InMemoryGameRepository,
+    HostRuntime,
+    ManagedAgentTurn,
+]:
+    repository = repository_type()
+    schedule = _schedule(deadline=FENCE_DEADLINE)
+    repository.save_game(GameState(game_id=schedule.game_id))
+    host = _host(repository, now=FENCE_NOW)
+    created = host.create_schedule(schedule)
+    managed = host.admit_next_turn(
+        created.schedule_id,
+        _admission(schedule=created),
+    )
+    return repository, host, managed
+
+
+def _reserve(
+    host: HostRuntime,
+    managed: ManagedAgentTurn,
+    *,
+    dispatch_id: str = "dispatch-1",
+) -> DispatchAttempt:
+    """通过 Host 的生产围栏路径预约活动回合 dispatch。"""
+
+    return host.create_active_turn_dispatch(
+        managed.schedule_id,
+        _attempt(managed, dispatch_id=dispatch_id),
+    )
+
+
 def _to_validating(host: HostRuntime, managed: ManagedAgentTurn) -> ManagedAgentTurn:
     for status in (
         AgentTurnStatus.OBSERVING,
@@ -287,6 +380,110 @@ def test_host_errors_expose_stable_codes() -> None:
     assert HostRuntimeError.code == "host_runtime_error"
     assert HostRecoveryRequired.code == "host_recovery_required"
     assert HostRecoveryBlocked.code == "host_recovery_blocked"
+
+
+def test_host_requires_one_physical_active_turn_fence_repository() -> None:
+    turn_repository = _repository(_schedule())
+    dispatch_repository = _repository(_schedule(game_id="other-game"))
+    reconciler = DispatchReconciler(dispatch_repository, PendingResolver())
+
+    with pytest.raises(ActiveTurnFenceUnsupported):
+        HostRuntime(
+            turn_repository,
+            dispatch_repository,
+            reconciler,
+            clock=lambda: NOW,
+        )
+
+
+def test_host_creates_repository_generated_fenced_attempt() -> None:
+    repository, host, managed = _host_with_fenceable_active_turn()
+
+    attempt = host.create_active_turn_dispatch(
+        managed.schedule_id,
+        _attempt(managed),
+    )
+
+    current = repository.load_managed_turn(managed.turn.turn_id)
+    assert current is not None
+    assert attempt.active_turn_fence is not None
+    assert attempt.active_turn_fence.turn_state_version == current.state_version
+
+
+def test_active_turn_dispatch_requires_recovered_game() -> None:
+    repository, _active_host, managed = _host_with_fenceable_active_turn()
+    restarted = _host(repository, now=FENCE_NOW)
+
+    with pytest.raises(HostRecoveryRequired):
+        restarted.create_active_turn_dispatch(
+            managed.schedule_id,
+            _attempt(managed),
+        )
+
+
+def test_active_turn_dispatch_requires_open_recovery_barrier() -> None:
+    repository, host, managed = _host_with_fenceable_active_turn()
+    pending = repository.create_dispatch(_attempt(managed))
+    repository.mark_dispatching(pending.dispatch_id, pending.state_version)
+    host.recover_game(managed.turn.game_id)
+
+    with pytest.raises(HostRecoveryBlocked):
+        host.create_active_turn_dispatch(
+            managed.schedule_id,
+            _attempt(managed, dispatch_id="blocked-dispatch"),
+        )
+
+
+def test_active_turn_dispatch_rejects_expired_deadline() -> None:
+    repository, _active_host, managed = _host_with_fenceable_active_turn()
+    expired_host = _host(repository, now=FENCE_DEADLINE)
+    expired_host.recover_game(managed.turn.game_id)
+
+    with pytest.raises(ActiveTurnFenceRejected):
+        expired_host.create_active_turn_dispatch(
+            managed.schedule_id,
+            _attempt(managed),
+        )
+
+
+def test_active_turn_dispatch_rejects_caller_supplied_fence() -> None:
+    _repository, host, managed = _host_with_fenceable_active_turn()
+    caller_fence = ActiveTurnDispatchFence(
+        schedule_id=managed.schedule_id,
+        schedule_state_version=1,
+        turn_state_version=1,
+        window_id=managed.turn.window.window_id,
+        window_version=managed.turn.window.version,
+        base_game_revision=managed.turn.revision.base_revision,
+    )
+    attempt = _attempt(managed).model_copy(
+        update={"active_turn_fence": caller_fence},
+    )
+
+    with pytest.raises(ActiveTurnFenceRejected):
+        host.create_active_turn_dispatch(managed.schedule_id, attempt)
+
+
+def test_active_turn_dispatch_keeps_captured_identity_across_replace_interleaving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, host, managed = _host_with_fenceable_active_turn()
+    original_require = host._require_active_schedule_turn
+
+    def interleave(
+        schedule_id: str,
+    ) -> tuple[SerialPublicSchedule, ManagedAgentTurn]:
+        captured = original_require(schedule_id)
+        _replace_with_validating_turn(repository, *captured)
+        return captured
+
+    monkeypatch.setattr(host, "_require_active_schedule_turn", interleave)
+
+    with pytest.raises(ScheduleStateConflict):
+        host.create_active_turn_dispatch(
+            managed.schedule_id,
+            _attempt(managed),
+        )
 
 
 def test_scheduler_raises_stable_errors_for_missing_or_inactive_turns() -> None:
@@ -442,6 +639,19 @@ def test_complete_active_turn_does_not_bypass_turn_lifecycle() -> None:
     assert repository.load_managed_turn(managed.turn.turn_id) == managed
 
 
+def test_host_complete_uses_one_fenced_terminal_call_without_prescan() -> None:
+    repository, host, managed = _host_with_fenceable_active_turn(
+        repository_type=FenceSpyRepository,
+    )
+    _to_validating(host, managed)
+
+    host.complete_active_turn(managed.schedule_id)
+
+    assert repository.fenced_finish_calls == 1
+    assert repository.dispatch_scan_calls == 0
+    assert repository.unfenced_finish_calls == 0
+
+
 def test_complete_keeps_captured_turn_identity_across_replace_interleaving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -487,9 +697,9 @@ def test_cancel_active_turn_cancels_unresolved_dispatches_and_applies_dispositio
     expected_status: SerialPublicScheduleStatus,
     expected_ordinal: int,
 ) -> None:
-    repository, host, managed = _host_with_active_turn()
-    pending = repository.create_dispatch(_attempt(managed, dispatch_id="pending"))
-    dispatching = repository.create_dispatch(_attempt(managed, dispatch_id="dispatching"))
+    repository, host, managed = _host_with_fenceable_active_turn()
+    pending = _reserve(host, managed, dispatch_id="pending")
+    dispatching = _reserve(host, managed, dispatch_id="dispatching")
     repository.mark_dispatching(dispatching.dispatch_id, dispatching.state_version)
 
     schedule = host.cancel_active_turn(
@@ -508,11 +718,28 @@ def test_cancel_active_turn_cancels_unresolved_dispatches_and_applies_dispositio
     assert stored.terminal_reason == "operator_cancelled"
 
 
+def test_host_cancel_uses_one_fenced_terminal_call_without_prescan() -> None:
+    repository, host, managed = _host_with_fenceable_active_turn(
+        repository_type=FenceSpyRepository,
+    )
+    _reserve(host, managed)
+
+    host.cancel_active_turn(
+        managed.schedule_id,
+        "operator_cancelled",
+        TerminalDisposition.ADVANCE,
+    )
+
+    assert repository.fenced_finish_calls == 1
+    assert repository.dispatch_scan_calls == 0
+    assert repository.unfenced_finish_calls == 0
+
+
 def test_dispatch_block_after_recovery_still_allows_active_turn_cancel() -> None:
-    repository, _active_host, managed = _host_with_active_turn()
-    restarted = _host(repository)
+    repository, _active_host, managed = _host_with_fenceable_active_turn()
+    restarted = _host(repository, now=FENCE_NOW)
     report = restarted.recover_game(managed.turn.game_id)
-    attempt = repository.create_dispatch(_attempt(managed))
+    attempt = _reserve(restarted, managed)
     attempt = repository.mark_dispatching(
         attempt.dispatch_id,
         attempt.state_version,
@@ -575,8 +802,8 @@ def test_cancel_keeps_captured_turn_identity_across_replace_interleaving(
 
 
 def test_dispatched_attempt_survives_cancel_and_blocks_replacement_until_recovery() -> None:
-    repository, host, managed = _host_with_active_turn()
-    attempt = repository.create_dispatch(_attempt(managed))
+    repository, host, managed = _host_with_fenceable_active_turn()
+    attempt = _reserve(host, managed)
     attempt = repository.mark_dispatching(attempt.dispatch_id, attempt.state_version)
     attempt = repository.mark_dispatched(attempt.dispatch_id, attempt.state_version)
     replaced = host.cancel_active_turn(
@@ -626,20 +853,20 @@ def test_expire_due_turns_is_aware_recovered_and_deterministic() -> None:
     schedule_b = _schedule(
         game_id="game-b",
         schedule_id="schedule-b",
-        deadline=NOW,
+        deadline=FENCE_NOW,
     )
     schedule_a = _schedule(
         game_id="game-a",
         schedule_id="schedule-a",
-        deadline=NOW,
+        deadline=FENCE_NOW,
     )
     schedule_future = _schedule(
         game_id="game-c",
         schedule_id="schedule-c",
-        deadline=NOW + timedelta(hours=2),
+        deadline=FENCE_NOW + timedelta(hours=2),
     )
     repository = InMemoryGameRepository()
-    host = _host(repository, now=NOW - timedelta(minutes=1))
+    host = _host(repository, now=FENCE_NOW - timedelta(minutes=1))
     managed_by_schedule: dict[str, ManagedAgentTurn] = {}
     for schedule in (schedule_b, schedule_a, schedule_future):
         repository.save_game(GameState(game_id=schedule.game_id))
@@ -651,14 +878,16 @@ def test_expire_due_turns_is_aware_recovered_and_deterministic() -> None:
                 turn_id=f"turn-{schedule.game_id}",
             ),
         )
-    pending = repository.create_dispatch(
-        _attempt(managed_by_schedule["schedule-a"], dispatch_id="expire-pending"),
+    pending = _reserve(
+        host,
+        managed_by_schedule["schedule-a"],
+        dispatch_id="expire-pending",
     )
 
     with pytest.raises(ValueError, match="timezone-aware"):
         host.expire_due_turns(datetime(2026, 7, 30, 10))  # noqa: DTZ001
 
-    changed = host.expire_due_turns(NOW)
+    changed = host.expire_due_turns(FENCE_NOW)
 
     assert tuple(schedule.schedule_id for schedule in changed) == (
         "schedule-a",
@@ -679,17 +908,33 @@ def test_expire_due_turns_is_aware_recovered_and_deterministic() -> None:
     assert future.turn.status is AgentTurnStatus.OPEN
 
 
+def test_host_expiry_uses_one_fenced_terminal_call_without_prescan() -> None:
+    repository, host, managed = _host_with_fenceable_active_turn(
+        repository_type=FenceSpyRepository,
+    )
+    _reserve(host, managed)
+
+    changed = host.expire_due_turns(FENCE_DEADLINE)
+
+    assert tuple(schedule.schedule_id for schedule in changed) == (
+        managed.schedule_id,
+    )
+    assert repository.fenced_finish_calls == 1
+    assert repository.dispatch_scan_calls == 0
+    assert repository.unfenced_finish_calls == 0
+
+
 def test_dispatch_block_after_schedule_creation_still_allows_due_turn_expiry() -> None:
-    schedule = _schedule(deadline=NOW)
+    schedule = _schedule(deadline=FENCE_DEADLINE)
     repository = InMemoryGameRepository()
     repository.save_game(GameState(game_id=schedule.game_id))
-    host = _host(repository, now=NOW - timedelta(minutes=1))
+    host = _host(repository, now=FENCE_NOW)
     schedule = host.create_schedule(schedule)
     managed = host.admit_next_turn(
         schedule.schedule_id,
         _admission(schedule=schedule),
     )
-    attempt = repository.create_dispatch(_attempt(managed))
+    attempt = _reserve(host, managed)
     attempt = repository.mark_dispatching(
         attempt.dispatch_id,
         attempt.state_version,
@@ -702,7 +947,7 @@ def test_dispatch_block_after_schedule_creation_still_allows_due_turn_expiry() -
             AgentTurnStatus.OBSERVING,
         )
 
-    changed = host.expire_due_turns(NOW)
+    changed = host.expire_due_turns(FENCE_DEADLINE)
 
     assert tuple(item.schedule_id for item in changed) == (schedule.schedule_id,)
     assert repository.load_dispatch(attempt.dispatch_id).status is DispatchStatus.CANCELLED  # type: ignore[union-attr]

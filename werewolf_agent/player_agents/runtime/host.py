@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-协调自主玩家托管回合的恢复门禁、生命周期、取消与确定性过期。
+协调自主玩家托管回合的恢复门禁、围栏 dispatch、生命周期、取消与确定性过期。
 
 作者: Project contributors
 创建日期: 2026-07-30
-修改日期: 2026-07-30
+修改日期: 2026-07-31
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import ClassVar
 
-from werewolf_agent.player_agents.contracts.dispatch import DispatchStatus
+from werewolf_agent.player_agents.contracts.dispatch import DispatchAttempt
 from werewolf_agent.player_agents.contracts.scheduling import (
     ManagedAgentTurn,
     SerialPublicSchedule,
@@ -22,6 +22,9 @@ from werewolf_agent.player_agents.contracts.scheduling import (
 )
 from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
 from werewolf_agent.player_agents.runtime.serial_public import SerialPublicScheduler
+from werewolf_agent.storage.active_turn_fence import (
+    require_active_turn_fence_repository,
+)
 from werewolf_agent.storage.autonomous_turns import (
     AutonomousTurnRepository,
     InvalidScheduleTransition,
@@ -65,6 +68,10 @@ class HostRuntime:
         *,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        self._fence_repository = require_active_turn_fence_repository(
+            turn_repository,
+            dispatch_repository,
+        )
         self._scheduler = SerialPublicScheduler(turn_repository)
         self._dispatch_repository = require_durable_dispatch_repository(
             dispatch_repository,
@@ -136,12 +143,30 @@ class HostRuntime:
             next_status,
         )
 
+    def create_active_turn_dispatch(
+        self,
+        schedule_id: str,
+        attempt: DispatchAttempt,
+    ) -> DispatchAttempt:
+        """预约当前活动回合的 dispatch，并由仓储生成持久化围栏。"""
+
+        schedule, managed = self._require_active_schedule_turn(schedule_id)
+        self._require_recovered(schedule.game_id)
+        return self._fence_repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            attempt,
+            self._aware_clock_now(),
+        )
+
     def complete_active_turn(self, schedule_id: str) -> SerialPublicSchedule:
         """在外部权威提交成功后把 VALIDATING 回合标记为已提交。"""
 
         schedule, managed = self._require_active_schedule_turn(schedule_id)
         self._require_recovered(schedule.game_id)
-        return self._scheduler.finish_active_turn(
+        return self._fence_repository.finish_active_turn_fenced(
             schedule.schedule_id,
             schedule.state_version,
             managed.turn.turn_id,
@@ -157,12 +182,11 @@ class HostRuntime:
         reason_code: str,
         disposition: TerminalDisposition,
     ) -> SerialPublicSchedule:
-        """先取消尚未完成的 dispatch，再按调用方处置终结活动回合。"""
+        """按调用方处置在同一围栏事务中终结活动回合。"""
 
         schedule, managed = self._require_active_schedule_turn(schedule_id)
         self._require_recovered(schedule.game_id)
-        self._cancel_turn_dispatches(managed, reason_code)
-        return self._scheduler.finish_active_turn(
+        return self._fence_repository.finish_active_turn_fenced(
             schedule.schedule_id,
             schedule.state_version,
             managed.turn.turn_id,
@@ -192,9 +216,8 @@ class HostRuntime:
             ):
                 continue
             managed = self._scheduler.require_managed_turn(schedule.active_turn_id)
-            self._cancel_turn_dispatches(managed, "deadline_expired")
             changed.append(
-                self._scheduler.finish_active_turn(
+                self._fence_repository.finish_active_turn_fenced(
                     schedule.schedule_id,
                     schedule.state_version,
                     managed.turn.turn_id,
@@ -232,26 +255,6 @@ class HostRuntime:
 
     def _list_open_schedules(self) -> tuple[SerialPublicSchedule, ...]:
         return self._scheduler.list_open_schedules()
-
-    def _cancel_turn_dispatches(
-        self,
-        managed: ManagedAgentTurn,
-        reason_code: str,
-    ) -> None:
-        attempts = self._dispatch_repository.list_dispatches_for_turn(
-            managed.turn.game_id,
-            managed.turn.turn_id,
-        )
-        for attempt in attempts:
-            if attempt.status in {
-                DispatchStatus.PENDING,
-                DispatchStatus.DISPATCHING,
-            }:
-                self._dispatch_repository.cancel_dispatch(
-                    attempt.dispatch_id,
-                    attempt.state_version,
-                    reason_code,
-                )
 
     def _require_recovered(self, game_id: str) -> None:
         if game_id in self._recovered_games:
