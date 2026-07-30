@@ -40,6 +40,7 @@ from werewolf_agent.player_agents.contracts.turns import (
 from werewolf_agent.storage.active_turn_fence import (
     ActiveTurnFenceError,
     ActiveTurnFenceRejected,
+    ActiveTurnFenceRepository,
     ActiveTurnFenceTransactionError,
     ActiveTurnFenceUnsupported,
     prepare_active_turn_dispatch,
@@ -283,6 +284,40 @@ def test_sqlite_plain_create_rejects_caller_supplied_fence(tmp_path) -> None:
     repository.close()
 
 
+def test_sqlite_fenced_create_rejects_context_before_cross_game_recovery_barrier(
+    tmp_path,
+) -> None:
+    repository, schedule, managed = _sqlite_active_turn(tmp_path)
+    repository.save_game(GameState(game_id="game-2"))
+    blocker = _attempt_for(
+        managed,
+        dispatch_id="game-2-blocker",
+        game_id="game-2",
+        provider_idempotency_key="game-2-blocker-key",
+    )
+    repository.create_dispatch(blocker)
+    repository.mark_dispatching(blocker.dispatch_id, blocker.state_version)
+
+    with pytest.raises(ActiveTurnFenceRejected):
+        repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            _attempt_for(
+                managed,
+                dispatch_id="cross-game-attempt",
+                game_id="game-2",
+                provider_idempotency_key="cross-game-key",
+            ),
+            NOW,
+        )
+
+    assert repository.load_managed_turn(managed.turn.turn_id) == managed
+    assert repository.load_dispatch("cross-game-attempt") is None
+    repository.close()
+
+
 def test_sqlite_fenced_create_rolls_back_attempt_when_turn_update_fails(
     tmp_path,
 ) -> None:
@@ -337,7 +372,7 @@ def test_sqlite_fenced_create_conflicts_leave_turn_unchanged(tmp_path, case: str
 
 
 def _cancel(
-    repository: InMemoryGameRepository,
+    repository: ActiveTurnFenceRepository,
     schedule: SerialPublicSchedule,
     managed: ManagedAgentTurn,
 ) -> SerialPublicSchedule:

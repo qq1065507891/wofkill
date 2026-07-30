@@ -97,3 +97,39 @@ was clean.
   all within one transaction. Trigger failures prove rollback of each order.
 - The race tests use two distinct `SqliteGameRepository` objects sharing one
   database file, rather than one process-local lock.
+
+## Fix round 1
+
+### Review findings addressed
+
+- Reservation now calls `prepare_active_turn_dispatch()` immediately after the
+  schedule and managed-turn CAS checks. A malformed cross-game attempt is
+  therefore rejected before dispatch uniqueness or recovery queries can expose
+  another game's state.
+- The legacy migration fixture now creates an explicit pre-fence dispatch table
+  instead of reusing current durable-dispatch DDL. It verifies the fence column
+  is absent before repository initialization and nullable afterwards.
+- `_cancel()` now accepts the shared `ActiveTurnFenceRepository` protocol.
+
+### RED/GREEN evidence
+
+The new priority regression initially failed with `DispatchRecoveryBlocked:
+game-2` when a game-2 `DISPATCHING` row existed:
+
+```bash
+conda run -n wofkill python -m pytest tests/storage/test_active_turn_fence.py -k "sqlite_fenced_create_rejects_context_before_cross_game_recovery_barrier" -v
+```
+
+After moving the pure validation, this command passed. The upgraded legacy
+fixture also passed its focused migration assertion. Final verification:
+
+```bash
+conda run -n wofkill python -m pytest tests/storage/test_active_turn_fence.py -k sqlite -v
+conda run -n wofkill python -m pytest tests/storage/test_sqlite_migrations.py tests/storage/test_autonomous_turns.py tests/storage/test_autonomous_commit.py -k "sqlite or dispatch or turn" -v
+conda run -n wofkill python -m ruff check --ignore UP009 werewolf_agent/storage/sqlite_store.py tests/storage/test_active_turn_fence.py tests/storage/test_sqlite_migrations.py
+conda run -n wofkill python -m mypy --follow-imports=skip werewolf_agent/storage/sqlite_store.py
+git diff --check
+```
+
+Results: `12 passed`; `134 passed`; Ruff and mypy passed; and the diff check
+was clean.

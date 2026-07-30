@@ -3,7 +3,7 @@
 验证 SQLite fresh schema、版本迁移与 repository 自动升级的一致性。
 
 作者: Project contributors
-修改日期: 2026-07-30
+修改日期: 2026-07-31
 """
 
 from __future__ import annotations
@@ -17,15 +17,24 @@ def _create_pre_fence_database(path) -> None:
     import sqlite3
 
     from werewolf_agent.storage.sqlite_store import (
-        _AUTONOMOUS_DISPATCH_SCHEMA,
         _AUTONOMOUS_SCHEDULING_SCHEMA,
         _SCHEMA,
     )
 
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
-    conn.executescript(_AUTONOMOUS_DISPATCH_SCHEMA)
     conn.executescript(_AUTONOMOUS_SCHEDULING_SCHEMA)
+    conn.execute(
+        "CREATE TABLE autonomous_dispatch_attempts ("
+        "dispatch_id TEXT PRIMARY KEY, game_id TEXT NOT NULL, turn_id TEXT NOT NULL, "
+        "actor_id TEXT NOT NULL, operation_kind TEXT NOT NULL, executor_id TEXT NOT NULL, "
+        "provider_idempotency_key TEXT NOT NULL, recovery_policy TEXT NOT NULL, "
+        "request_hash TEXT NOT NULL, lease_hash TEXT NOT NULL, "
+        "view_fingerprint TEXT NOT NULL, deadline TEXT NOT NULL, status TEXT NOT NULL, "
+        "state_version INTEGER NOT NULL, reason_code TEXT, created_at TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL, FOREIGN KEY (game_id) REFERENCES games(game_id) "
+        "ON DELETE CASCADE)",
+    )
     conn.execute("INSERT INTO games (game_id, state_json) VALUES (?, ?)", ("game-1", "{}"))
     conn.execute(
         "INSERT INTO autonomous_dispatch_attempts ("
@@ -80,14 +89,33 @@ def test_sqlite_fresh_schema_has_nullable_active_turn_fence_column(tmp_path) -> 
 
 
 def test_sqlite_legacy_dispatch_schema_adds_nullable_fence_column(tmp_path) -> None:
+    import sqlite3
+
     from werewolf_agent.storage.sqlite_store import SqliteGameRepository
 
     path = tmp_path / "legacy-dispatch.db"
     _create_pre_fence_database(path)
+    with sqlite3.connect(path) as connection:
+        columns_before = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(autonomous_dispatch_attempts)",
+            ).fetchall()
+        }
+    assert "active_turn_fence_json" not in columns_before
 
     repository = SqliteGameRepository(str(path))
 
+    columns_after = {
+        row[1]: row
+        for row in repository._conn.execute(
+            "PRAGMA table_info(autonomous_dispatch_attempts)",
+        ).fetchall()
+    }
+
     assert repository.supports_active_turn_fence() is True
+    assert "active_turn_fence_json" in columns_after
+    assert columns_after["active_turn_fence_json"][3] == 0
     stored = repository.load_dispatch("legacy-dispatch")
     assert stored is not None
     assert stored.active_turn_fence is None

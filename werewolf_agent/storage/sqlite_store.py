@@ -1388,6 +1388,12 @@ class SqliteGameRepository:
                     raise ManagedTurnNotFound("managed turn not found")
                 if managed.state_version != expected_turn_version:
                     raise TurnStateConflict("managed turn state version conflict")
+                updated_managed, fenced_attempt = prepare_active_turn_dispatch(
+                    schedule,
+                    managed,
+                    attempt,
+                    observed_at,
+                )
                 if self._conn.execute(
                     "SELECT 1 FROM autonomous_dispatch_attempts "
                     "WHERE dispatch_id = ?",
@@ -1413,12 +1419,6 @@ class SqliteGameRepository:
                     ),
                 ).fetchone() is not None:
                     raise DispatchRecoveryBlocked(attempt.game_id)
-                updated_managed, fenced_attempt = prepare_active_turn_dispatch(
-                    schedule,
-                    managed,
-                    attempt,
-                    observed_at,
-                )
                 self._insert_dispatch_unlocked(fenced_attempt)
                 self._update_managed_turn_unlocked(
                     updated_managed,
