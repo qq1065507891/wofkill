@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** Planned steps complete (`52/52`); final-review fixes in progress
+**Progress:** Planned steps complete (`52/52`); final-review fixes complete
 (`3/3`).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
