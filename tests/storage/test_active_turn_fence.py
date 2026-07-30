@@ -6,11 +6,14 @@
 创建日期: 2026-07-31
 """
 
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from werewolf_agent.core.models import GameState
 from werewolf_agent.player_agents.contracts.dispatch import (
     ActiveTurnDispatchFence,
     DispatchAttempt,
@@ -25,6 +28,7 @@ from werewolf_agent.player_agents.contracts.scheduling import (
     SerialPublicScheduleStatus,
     SerialPublicSlot,
     TerminalDisposition,
+    TurnAdmission,
 )
 from werewolf_agent.player_agents.contracts.turns import (
     AgentTurn,
@@ -42,7 +46,16 @@ from werewolf_agent.storage.active_turn_fence import (
     prepare_fenced_active_finish,
     require_active_turn_fence_repository,
 )
-from werewolf_agent.storage.durable_dispatch import DispatchRecoveryBlocked
+from werewolf_agent.storage.autonomous_turns import (
+    ScheduleStateConflict,
+    TurnStateConflict,
+)
+from werewolf_agent.storage.durable_dispatch import (
+    DispatchIdempotencyConflict,
+    DispatchInvalidTransition,
+    DispatchRecoveryBlocked,
+)
+from werewolf_agent.storage.memory_store import InMemoryGameRepository
 
 HASH = "a" * 64
 NOW = datetime(2026, 7, 31, 10, tzinfo=timezone.utc)
@@ -147,6 +160,377 @@ def _attempt_for(managed: ManagedAgentTurn, **updates: object) -> DispatchAttemp
     }
     payload.update(updates)
     return DispatchAttempt.model_validate(payload)
+
+
+def _memory_active_turn(
+    *,
+    status: AgentTurnStatus = AgentTurnStatus.THINKING,
+) -> tuple[InMemoryGameRepository, SerialPublicSchedule, ManagedAgentTurn]:
+    """通过公开的调度 API 创建一个持久化活动回合。"""
+
+    repository = InMemoryGameRepository()
+    repository.save_game(GameState(game_id="game-1"))
+    schedule, managed = _active_turn()
+    created = repository.create_serial_public_schedule(
+        schedule.model_copy(update={"active_turn_id": None, "state_version": 0}),
+    )
+    admitted = repository.admit_serial_public_turn(
+        created.schedule_id,
+        created.state_version,
+        TurnAdmission(
+            turn_id=managed.turn.turn_id,
+            player_id=managed.turn.player_id,
+            role_id=managed.turn.role_id,
+            phase=managed.turn.phase,
+            revision=managed.turn.revision,
+            read_set=(),
+            model_lease_hash=managed.turn.model_lease_hash,
+            budget=managed.turn.budget,
+            idempotency_key=managed.turn.idempotency_key,
+        ),
+    )
+    for next_status in (
+        AgentTurnStatus.OBSERVING,
+        AgentTurnStatus.THINKING,
+        AgentTurnStatus.SUBMITTED,
+        AgentTurnStatus.VALIDATING,
+    ):
+        if admitted.turn.status is status:
+            break
+        admitted = repository.transition_active_turn(
+            admitted.turn.turn_id,
+            admitted.state_version,
+            next_status,
+        )
+    return repository, repository.load_serial_public_schedule(created.schedule_id), admitted  # type: ignore[return-value]
+
+
+def _reservation_state(
+    repository: InMemoryGameRepository,
+    schedule: SerialPublicSchedule,
+    managed: ManagedAgentTurn,
+) -> tuple[ManagedAgentTurn | None, dict[str, DispatchAttempt], dict[tuple[str, str], str]]:
+    """记录预约失败前后必须完全一致的内存持久化状态。"""
+
+    return (
+        repository.load_managed_turn(managed.turn.turn_id),
+        dict(repository._dispatch_attempts),
+        dict(repository._dispatch_key_index),
+    )
+
+
+def test_memory_fenced_create_persists_attempt_and_turn_version() -> None:
+    repository, schedule, managed = _memory_active_turn()
+
+    stored = repository.create_active_turn_dispatch(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        _attempt_for(managed),
+        NOW,
+    )
+
+    current = repository.load_managed_turn(managed.turn.turn_id)
+    assert current is not None
+    assert current.state_version == managed.state_version + 1
+    assert stored.active_turn_fence is not None
+    assert stored.active_turn_fence.turn_state_version == current.state_version
+    assert repository.load_dispatch(stored.dispatch_id) == stored
+
+
+def test_memory_plain_create_rejects_caller_supplied_fence() -> None:
+    repository, schedule, managed = _memory_active_turn()
+    fence = ActiveTurnDispatchFence(
+        schedule_id=schedule.schedule_id,
+        schedule_state_version=schedule.state_version,
+        turn_state_version=managed.state_version,
+        window_id=schedule.window.window_id,
+        window_version=schedule.window.version,
+        base_game_revision=managed.turn.revision.base_revision,
+    )
+
+    with pytest.raises(DispatchInvalidTransition):
+        repository.create_dispatch(_attempt_for(managed, active_turn_fence=fence))
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("schedule_cas", ScheduleStateConflict),
+        ("turn_cas", TurnStateConflict),
+        ("recovery", DispatchRecoveryBlocked),
+        ("dispatch_id", DispatchIdempotencyConflict),
+        ("provider_key", DispatchIdempotencyConflict),
+        ("context", ActiveTurnFenceRejected),
+        ("expired", ActiveTurnFenceRejected),
+    ],
+)
+def test_memory_fenced_create_failure_leaves_every_index_unchanged(
+    case: str,
+    expected_error: type[Exception],
+) -> None:
+    repository, schedule, managed = _memory_active_turn()
+    attempt = _attempt_for(managed)
+    expected_schedule_version = schedule.state_version
+    expected_turn_version = managed.state_version
+    observed_at = NOW
+
+    if case == "schedule_cas":
+        expected_schedule_version -= 1
+    elif case == "turn_cas":
+        expected_turn_version -= 1
+    elif case == "recovery":
+        blocker = _attempt_for(
+            managed,
+            dispatch_id="blocking",
+            provider_idempotency_key="blocking-key",
+        )
+        repository.create_dispatch(blocker)
+        repository.mark_dispatching(blocker.dispatch_id, blocker.state_version)
+    elif case == "dispatch_id":
+        repository.create_dispatch(attempt)
+    elif case == "provider_key":
+        repository.create_dispatch(
+            _attempt_for(managed, dispatch_id="other-dispatch"),
+        )
+    elif case == "context":
+        attempt = _attempt_for(managed, actor_id="p02")
+    elif case == "expired":
+        observed_at = DEADLINE
+
+    before = _reservation_state(repository, schedule, managed)
+    with pytest.raises(expected_error):
+        repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            expected_schedule_version,
+            managed.turn.turn_id,
+            expected_turn_version,
+            attempt,
+            observed_at,
+        )
+    assert _reservation_state(repository, schedule, managed) == before
+
+
+def test_memory_fenced_create_restores_all_records_after_publish_failure() -> None:
+    class FailingDispatchDict(dict[str, DispatchAttempt]):
+        def __setitem__(self, key: str, value: DispatchAttempt) -> None:
+            raise OSError("injected dispatch write failure")
+
+    repository, schedule, managed = _memory_active_turn()
+    before = _reservation_state(repository, schedule, managed)
+    repository._dispatch_attempts = FailingDispatchDict(repository._dispatch_attempts)
+
+    with pytest.raises(ActiveTurnFenceTransactionError):
+        _reserve(repository, schedule, managed)
+
+    assert _reservation_state(repository, schedule, managed) == before
+
+
+def _reserve(
+    repository: InMemoryGameRepository,
+    schedule: SerialPublicSchedule,
+    managed: ManagedAgentTurn,
+    *,
+    dispatch_id: str = "dispatch-1",
+) -> DispatchAttempt:
+    """用当前 CAS 身份预约一个活动回合 dispatch。"""
+
+    return repository.create_active_turn_dispatch(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        _attempt_for(managed, dispatch_id=dispatch_id),
+        NOW,
+    )
+
+
+def test_memory_fenced_cancel_rolls_attempts_and_turn_forward_together() -> None:
+    repository, schedule, managed = _memory_active_turn()
+    pending = _reserve(repository, schedule, managed, dispatch_id="pending")
+    managed = repository.load_managed_turn(managed.turn.turn_id)
+    assert managed is not None
+
+    updated = repository.finish_active_turn_fenced(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        AgentTurnStatus.CANCELLED,
+        TerminalDisposition.REPLACE,
+        "operator_cancelled",
+    )
+
+    assert updated.active_turn_id is None
+    stored = repository.load_dispatch(pending.dispatch_id)
+    assert stored is not None
+    assert stored.status is DispatchStatus.CANCELLED
+    finished = repository.load_managed_turn(managed.turn.turn_id)
+    assert finished is not None
+    assert finished.turn.status is AgentTurnStatus.CANCELLED
+
+
+def _race(*operations):
+    """让两个操作从同一同步点竞争同一份已捕获的 CAS 身份。"""
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(operation) for operation in operations]
+        results = []
+        for future in futures:
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001 - 断言公开竞争结果。
+                results.append(type(exc))
+            else:
+                results.append(None)
+    return results
+
+
+def test_memory_create_and_complete_have_one_cas_winner() -> None:
+    repository, schedule, managed = _memory_active_turn(
+        status=AgentTurnStatus.VALIDATING,
+    )
+    barrier = threading.Barrier(2)
+
+    results = _race(
+        lambda: (
+            barrier.wait(),
+            _reserve(repository, schedule, managed),
+        ),
+        lambda: (
+            barrier.wait(),
+            repository.finish_active_turn_fenced(
+                schedule.schedule_id,
+                schedule.state_version,
+                managed.turn.turn_id,
+                managed.state_version,
+                AgentTurnStatus.COMMITTED,
+                TerminalDisposition.ADVANCE,
+                None,
+            ),
+        ),
+    )
+
+    assert results.count(None) == 1
+    assert {result for result in results if result is not None} <= {
+        ScheduleStateConflict,
+        TurnStateConflict,
+        ActiveTurnFenceRejected,
+        DispatchRecoveryBlocked,
+    }
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "reason_code"),
+    [
+        (AgentTurnStatus.CANCELLED, "operator_cancelled"),
+        (AgentTurnStatus.EXPIRED, "window_expired"),
+    ],
+)
+def test_memory_create_and_terminal_retry_leave_no_executable_attempt(
+    terminal_status: AgentTurnStatus,
+    reason_code: str,
+) -> None:
+    repository, schedule, managed = _memory_active_turn()
+    barrier = threading.Barrier(2)
+
+    results = _race(
+        lambda: (
+            barrier.wait(),
+            _reserve(repository, schedule, managed),
+        ),
+        lambda: (
+            barrier.wait(),
+            repository.finish_active_turn_fenced(
+                schedule.schedule_id,
+                schedule.state_version,
+                managed.turn.turn_id,
+                managed.state_version,
+                terminal_status,
+                TerminalDisposition.REPLACE,
+                reason_code,
+            ),
+        ),
+    )
+
+    assert results.count(None) == 1
+    current_schedule = repository.load_serial_public_schedule(schedule.schedule_id)
+    current_turn = repository.load_managed_turn(managed.turn.turn_id)
+    assert current_schedule is not None
+    assert current_turn is not None
+    if current_schedule.active_turn_id == current_turn.turn.turn_id:
+        repository.finish_active_turn_fenced(
+            current_schedule.schedule_id,
+            current_schedule.state_version,
+            current_turn.turn.turn_id,
+            current_turn.state_version,
+            terminal_status,
+            TerminalDisposition.REPLACE,
+            reason_code,
+        )
+    assert all(
+        attempt.status not in {DispatchStatus.PENDING, DispatchStatus.DISPATCHING}
+        for attempt in repository.list_dispatches_for_turn(
+            managed.turn.game_id,
+            managed.turn.turn_id,
+        )
+    )
+
+
+def test_memory_create_and_nonterminal_transition_have_one_cas_winner() -> None:
+    repository, schedule, managed = _memory_active_turn()
+    barrier = threading.Barrier(2)
+
+    results = _race(
+        lambda: (
+            barrier.wait(),
+            _reserve(repository, schedule, managed),
+        ),
+        lambda: (
+            barrier.wait(),
+            repository.transition_active_turn(
+                managed.turn.turn_id,
+                managed.state_version,
+                AgentTurnStatus.SUBMITTED,
+            ),
+        ),
+    )
+
+    assert results.count(None) == 1
+    assert {result for result in results if result is not None} == {
+        TurnStateConflict,
+    }
+
+
+def test_memory_fenced_finish_restores_all_records_after_publish_failure() -> None:
+    class FailingScheduleDict(dict[str, SerialPublicSchedule]):
+        def __setitem__(self, key: str, value: SerialPublicSchedule) -> None:
+            raise OSError("injected schedule write failure")
+
+    repository, schedule, managed = _memory_active_turn()
+    pending = _reserve(repository, schedule, managed)
+    managed = repository.load_managed_turn(managed.turn.turn_id)
+    assert managed is not None
+    before_attempt = repository.load_dispatch(pending.dispatch_id)
+    before_turn = repository.load_managed_turn(managed.turn.turn_id)
+    repository._serial_public_schedules = FailingScheduleDict(
+        repository._serial_public_schedules,
+    )
+
+    with pytest.raises(ActiveTurnFenceTransactionError):
+        repository.finish_active_turn_fenced(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            AgentTurnStatus.CANCELLED,
+            TerminalDisposition.REPLACE,
+            "operator_cancelled",
+        )
+
+    assert repository.load_dispatch(pending.dispatch_id) == before_attempt
+    assert repository.load_managed_turn(managed.turn.turn_id) == before_turn
 
 
 def test_prepare_active_turn_dispatch_reserves_turn_and_builds_fence() -> None:

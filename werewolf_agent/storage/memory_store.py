@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：内存游戏仓库，支持旧数据接口、自主玩家原子 CommitTurn 与 durable dispatch。
+功能描述：内存游戏仓库，支持旧数据接口、自主玩家原子 CommitTurn、durable dispatch 与活动回合围栏。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-30
+修改日期：2026-07-31
 使用示例：内部模块，无对外接口
 """
 
@@ -38,6 +38,12 @@ from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
 from werewolf_agent.runtime.game_termination import (
     validate_game_aborted_append,
     validate_game_state_save,
+)
+from werewolf_agent.storage.active_turn_fence import (
+    ActiveTurnFenceRejected,
+    ActiveTurnFenceTransactionError,
+    prepare_active_turn_dispatch,
+    prepare_fenced_active_finish,
 )
 from werewolf_agent.storage.autonomous_commit import (
     CommitTransactionError,
@@ -484,9 +490,18 @@ class InMemoryGameRepository:
         with self._lock:
             return True
 
+    def supports_active_turn_fence(self) -> bool:
+        """声明内存仓储可原子维护活动回合与 dispatch 围栏。"""
+        with self._lock:
+            return True
+
     def create_dispatch(self, attempt: DispatchAttempt) -> DispatchAttempt:
         """在外部网络 I/O 前持久化一个新的 PENDING dispatch 意图。"""
         with self._lock:
+            if attempt.active_turn_fence is not None:
+                raise DispatchInvalidTransition(
+                    "plain dispatch cannot include an active turn fence",
+                )
             if (
                 attempt.status is not DispatchStatus.PENDING
                 or attempt.state_version != 0
@@ -510,6 +525,141 @@ class InMemoryGameRepository:
             self._dispatch_attempts[stored.dispatch_id] = stored
             self._dispatch_key_index[key] = stored.dispatch_id
             return stored.model_copy(deep=True)
+
+    def create_active_turn_dispatch(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        attempt: DispatchAttempt,
+        observed_at: datetime,
+    ) -> DispatchAttempt:
+        """原子预约活动回合 dispatch，并生成仓储持久化的围栏。"""
+        with self._lock:
+            schedule = self._serial_public_schedules.get(schedule_id)
+            if schedule is None:
+                raise ScheduleNotFound("schedule not found")
+            if schedule.state_version != expected_schedule_version:
+                raise ScheduleStateConflict("schedule state version conflict")
+            managed = self._managed_agent_turns.get(turn_id)
+            if managed is None:
+                raise ManagedTurnNotFound("managed turn not found")
+            if managed.state_version != expected_turn_version:
+                raise TurnStateConflict("managed turn state version conflict")
+            self._assert_dispatch_allowed_unlocked(attempt.game_id)
+            key = (attempt.executor_id, attempt.provider_idempotency_key)
+            if (
+                attempt.dispatch_id in self._dispatch_attempts
+                or key in self._dispatch_key_index
+            ):
+                raise DispatchIdempotencyConflict(attempt.dispatch_id)
+            updated_managed, fenced_attempt = prepare_active_turn_dispatch(
+                schedule,
+                managed,
+                attempt,
+                observed_at,
+            )
+            prepared_managed = updated_managed.model_copy(deep=True)
+            prepared_attempt = fenced_attempt.model_copy(deep=True)
+            attempts_snapshot = dict(self._dispatch_attempts)
+            managed_snapshot = dict(self._managed_agent_turns)
+            key_index_snapshot = dict(self._dispatch_key_index)
+            try:
+                self._managed_agent_turns[turn_id] = prepared_managed
+                self._dispatch_attempts[fenced_attempt.dispatch_id] = prepared_attempt
+                self._dispatch_key_index[key] = fenced_attempt.dispatch_id
+            except Exception as exc:
+                self._dispatch_attempts = attempts_snapshot
+                self._managed_agent_turns = managed_snapshot
+                self._dispatch_key_index = key_index_snapshot
+                raise ActiveTurnFenceTransactionError(
+                    "active turn fence transaction failed",
+                ) from exc
+            return fenced_attempt.model_copy(deep=True)
+
+    def finish_active_turn_fenced(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        terminal_status: AgentTurnStatus,
+        disposition: TerminalDisposition,
+        reason_code: str | None,
+    ) -> SerialPublicSchedule:
+        """原子终结活动回合，并同步取消可撤销的同回合 dispatch。"""
+        with self._lock:
+            schedule = self._serial_public_schedules.get(schedule_id)
+            if schedule is None:
+                raise ScheduleNotFound("schedule not found")
+            if schedule.state_version != expected_schedule_version:
+                raise ScheduleStateConflict("schedule state version conflict")
+            managed = self._managed_agent_turns.get(turn_id)
+            if managed is None:
+                raise ManagedTurnNotFound("managed turn not found")
+            if managed.state_version != expected_turn_version:
+                raise TurnStateConflict("managed turn state version conflict")
+
+            attempts = tuple(
+                sorted(
+                    (
+                        attempt
+                        for attempt in self._dispatch_attempts.values()
+                        if attempt.game_id == schedule.game_id
+                        and attempt.turn_id == turn_id
+                    ),
+                    key=lambda item: (item.created_at, item.dispatch_id),
+                ),
+            )
+            attempts_snapshot = dict(self._dispatch_attempts)
+            managed_snapshot = dict(self._managed_agent_turns)
+            schedules_snapshot = dict(self._serial_public_schedules)
+            active_schedule_snapshot = dict(self._active_schedule_by_game)
+            try:
+                now = max(datetime.now(timezone.utc), schedule.updated_at)
+                updated_schedule, updated_managed, updated_attempts = (
+                    prepare_fenced_active_finish(
+                        schedule,
+                        managed,
+                        attempts,
+                        terminal_status,
+                        disposition,
+                        reason_code=reason_code,
+                        now=now,
+                    )
+                )
+                prepared_attempts = tuple(
+                    attempt.model_copy(deep=True) for attempt in updated_attempts
+                )
+                prepared_managed = updated_managed.model_copy(deep=True)
+                prepared_schedule = updated_schedule.model_copy(deep=True)
+
+                for attempt in prepared_attempts:
+                    self._dispatch_attempts[attempt.dispatch_id] = attempt
+                self._managed_agent_turns[turn_id] = prepared_managed
+                self._serial_public_schedules[schedule_id] = prepared_schedule
+                if prepared_schedule.status is SerialPublicScheduleStatus.OPEN:
+                    self._active_schedule_by_game[prepared_schedule.game_id] = (
+                        schedule_id
+                    )
+                else:
+                    self._active_schedule_by_game.pop(prepared_schedule.game_id, None)
+            except (
+                ActiveTurnFenceRejected,
+                DispatchRecoveryBlocked,
+                InvalidScheduleTransition,
+            ):
+                raise
+            except Exception as exc:
+                self._dispatch_attempts = attempts_snapshot
+                self._managed_agent_turns = managed_snapshot
+                self._serial_public_schedules = schedules_snapshot
+                self._active_schedule_by_game = active_schedule_snapshot
+                raise ActiveTurnFenceTransactionError(
+                    "active turn fence transaction failed",
+                ) from exc
+            return prepared_schedule.model_copy(deep=True)
 
     def mark_dispatching(
         self,
