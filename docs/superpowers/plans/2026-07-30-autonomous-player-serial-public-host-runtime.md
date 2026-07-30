@@ -9,7 +9,7 @@
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
 **Progress:** Planned steps complete (`52/52`); final-review fixes in progress
-(`2/3`).
+(`3/3`).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -1312,7 +1312,7 @@ git commit -m "feat: add autonomous player serial public host runtime"
   must reach the last slot through normal admission/advance rather than creating
   a pre-advanced schedule.
 
-- [ ] **Fix 3: Enforce fresh replacement idempotency keys durably**
+- [x] **Fix 3: Enforce fresh replacement idempotency keys durably**
 
   A replacement turn must not reuse an idempotency key already stored for the
   same schedule. Memory, SQLite, and PostgreSQL must enforce equivalent atomic
