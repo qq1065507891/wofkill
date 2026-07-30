@@ -260,6 +260,34 @@ def test_prepare_transition_requires_matching_active_identity() -> None:
         prepare_active_transition(schedule, managed, AgentTurnStatus.COMMITTED)
 
 
+@pytest.mark.parametrize(
+    "schedule_updates",
+    [
+        {
+            "game_id": "game-2",
+            "window": _window(game_id="game-2"),
+        },
+        {"window": _window(window_id="speech-d2")},
+        {"window": _window(version=2)},
+    ],
+)
+def test_prepare_transition_rejects_schedule_context_drift(
+    schedule_updates: dict[str, object],
+) -> None:
+    _, managed = prepare_serial_public_admission(_schedule(), _admission(), NOW)
+    drifted_schedule = _schedule(
+        active_turn_id=managed.turn.turn_id,
+        **schedule_updates,
+    )
+
+    with pytest.raises(InvalidScheduleTransition):
+        prepare_active_transition(
+            drifted_schedule,
+            managed,
+            AgentTurnStatus.OBSERVING,
+        )
+
+
 def test_prepare_transition_increments_only_turn_version() -> None:
     schedule, managed = prepare_serial_public_admission(_schedule(), _admission(), NOW)
     updated = prepare_active_transition(schedule, managed, AgentTurnStatus.OBSERVING)

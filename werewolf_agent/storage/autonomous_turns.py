@@ -176,6 +176,12 @@ def _require_active_identity(
         raise _invalid_transition()
     if managed.schedule_id != schedule.schedule_id:
         raise _invalid_transition()
+    if managed.turn.game_id != schedule.game_id:
+        raise _invalid_transition()
+    if managed.turn.window.window_id != schedule.window.window_id:
+        raise _invalid_transition()
+    if managed.turn.window.version != schedule.window.version:
+        raise _invalid_transition()
 
 
 def prepare_serial_public_admission(
