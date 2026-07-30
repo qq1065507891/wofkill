@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -46,6 +47,7 @@ from werewolf_agent.player_agents.runtime.host import (
     HostRuntimeError,
 )
 from werewolf_agent.player_agents.runtime.serial_public import SerialPublicScheduler
+from werewolf_agent.storage import memory_store
 from werewolf_agent.storage.active_turn_fence import (
     ActiveTurnFenceRejected,
     ActiveTurnFenceUnsupported,
@@ -67,8 +69,6 @@ from werewolf_agent.storage.memory_store import InMemoryGameRepository
 HASH = "a" * 64
 NOW = datetime(2026, 7, 30, 10, tzinfo=timezone.utc)
 DEADLINE = NOW + timedelta(hours=1)
-FENCE_NOW = datetime(2030, 7, 30, 10, tzinfo=timezone.utc)
-FENCE_DEADLINE = FENCE_NOW + timedelta(hours=1)
 
 
 class PendingResolver:
@@ -299,14 +299,17 @@ def _host_with_fenceable_active_turn(
     ManagedAgentTurn,
 ]:
     repository = repository_type()
-    schedule = _schedule(deadline=FENCE_DEADLINE)
+    opened_at = datetime.now(timezone.utc)
+    schedule = _schedule(deadline=opened_at + timedelta(hours=1))
     repository.save_game(GameState(game_id=schedule.game_id))
-    host = _host(repository, now=FENCE_NOW)
-    created = host.create_schedule(schedule)
-    managed = host.admit_next_turn(
+    admission_host = _host(repository, now=opened_at)
+    created = admission_host.create_schedule(schedule)
+    managed = admission_host.admit_next_turn(
         created.schedule_id,
         _admission(schedule=created),
     )
+    host = _host(repository, now=managed.updated_at)
+    host.recover_game(managed.turn.game_id)
     return repository, host, managed
 
 
@@ -410,9 +413,32 @@ def test_host_creates_repository_generated_fenced_attempt() -> None:
     assert attempt.active_turn_fence.turn_state_version == current.state_version
 
 
+def test_fence_fixture_uses_repository_lifecycle_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_datetime = datetime
+
+    class LifecycleDateTime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            return real_datetime(2040, 1, 1, tzinfo=tz)
+
+    monkeypatch.setattr(memory_store, "datetime", LifecycleDateTime)
+    monkeypatch.setattr(sys.modules[__name__], "datetime", LifecycleDateTime)
+
+    _repository, host, managed = _host_with_fenceable_active_turn()
+
+    attempt = host.create_active_turn_dispatch(
+        managed.schedule_id,
+        _attempt(managed),
+    )
+
+    assert attempt.active_turn_fence is not None
+
+
 def test_active_turn_dispatch_requires_recovered_game() -> None:
     repository, _active_host, managed = _host_with_fenceable_active_turn()
-    restarted = _host(repository, now=FENCE_NOW)
+    restarted = _host(repository, now=managed.updated_at)
 
     with pytest.raises(HostRecoveryRequired):
         restarted.create_active_turn_dispatch(
@@ -436,7 +462,7 @@ def test_active_turn_dispatch_requires_open_recovery_barrier() -> None:
 
 def test_active_turn_dispatch_rejects_expired_deadline() -> None:
     repository, _active_host, managed = _host_with_fenceable_active_turn()
-    expired_host = _host(repository, now=FENCE_DEADLINE)
+    expired_host = _host(repository, now=managed.turn.window.deadline)
     expired_host.recover_game(managed.turn.game_id)
 
     with pytest.raises(ActiveTurnFenceRejected):
@@ -737,7 +763,7 @@ def test_host_cancel_uses_one_fenced_terminal_call_without_prescan() -> None:
 
 def test_dispatch_block_after_recovery_still_allows_active_turn_cancel() -> None:
     repository, _active_host, managed = _host_with_fenceable_active_turn()
-    restarted = _host(repository, now=FENCE_NOW)
+    restarted = _host(repository, now=managed.updated_at)
     report = restarted.recover_game(managed.turn.game_id)
     attempt = _reserve(restarted, managed)
     attempt = repository.mark_dispatching(
@@ -850,34 +876,41 @@ def test_dispatched_attempt_survives_cancel_and_blocks_replacement_until_recover
 
 
 def test_expire_due_turns_is_aware_recovered_and_deterministic() -> None:
+    opened_at = datetime.now(timezone.utc)
     schedule_b = _schedule(
         game_id="game-b",
         schedule_id="schedule-b",
-        deadline=FENCE_NOW,
+        deadline=opened_at + timedelta(hours=1),
     )
     schedule_a = _schedule(
         game_id="game-a",
         schedule_id="schedule-a",
-        deadline=FENCE_NOW,
+        deadline=opened_at + timedelta(hours=1),
     )
     schedule_future = _schedule(
         game_id="game-c",
         schedule_id="schedule-c",
-        deadline=FENCE_NOW + timedelta(hours=2),
+        deadline=opened_at + timedelta(hours=3),
     )
     repository = InMemoryGameRepository()
-    host = _host(repository, now=FENCE_NOW - timedelta(minutes=1))
+    admission_host = _host(repository, now=opened_at)
     managed_by_schedule: dict[str, ManagedAgentTurn] = {}
     for schedule in (schedule_b, schedule_a, schedule_future):
         repository.save_game(GameState(game_id=schedule.game_id))
-        host.create_schedule(schedule)
-        managed_by_schedule[schedule.schedule_id] = host.admit_next_turn(
+        admission_host.create_schedule(schedule)
+        managed_by_schedule[schedule.schedule_id] = admission_host.admit_next_turn(
             schedule.schedule_id,
             _admission(
                 schedule=schedule,
                 turn_id=f"turn-{schedule.game_id}",
             ),
         )
+    host = _host(
+        repository,
+        now=max(item.updated_at for item in managed_by_schedule.values()),
+    )
+    for schedule in (schedule_a, schedule_b, schedule_future):
+        host.recover_game(schedule.game_id)
     pending = _reserve(
         host,
         managed_by_schedule["schedule-a"],
@@ -887,7 +920,7 @@ def test_expire_due_turns_is_aware_recovered_and_deterministic() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         host.expire_due_turns(datetime(2026, 7, 30, 10))  # noqa: DTZ001
 
-    changed = host.expire_due_turns(FENCE_NOW)
+    changed = host.expire_due_turns(schedule_a.window.deadline)
 
     assert tuple(schedule.schedule_id for schedule in changed) == (
         "schedule-a",
@@ -914,7 +947,7 @@ def test_host_expiry_uses_one_fenced_terminal_call_without_prescan() -> None:
     )
     _reserve(host, managed)
 
-    changed = host.expire_due_turns(FENCE_DEADLINE)
+    changed = host.expire_due_turns(managed.turn.window.deadline)
 
     assert tuple(schedule.schedule_id for schedule in changed) == (
         managed.schedule_id,
@@ -925,15 +958,7 @@ def test_host_expiry_uses_one_fenced_terminal_call_without_prescan() -> None:
 
 
 def test_dispatch_block_after_schedule_creation_still_allows_due_turn_expiry() -> None:
-    schedule = _schedule(deadline=FENCE_DEADLINE)
-    repository = InMemoryGameRepository()
-    repository.save_game(GameState(game_id=schedule.game_id))
-    host = _host(repository, now=FENCE_NOW)
-    schedule = host.create_schedule(schedule)
-    managed = host.admit_next_turn(
-        schedule.schedule_id,
-        _admission(schedule=schedule),
-    )
+    repository, host, managed = _host_with_fenceable_active_turn()
     attempt = _reserve(host, managed)
     attempt = repository.mark_dispatching(
         attempt.dispatch_id,
@@ -947,9 +972,9 @@ def test_dispatch_block_after_schedule_creation_still_allows_due_turn_expiry() -
             AgentTurnStatus.OBSERVING,
         )
 
-    changed = host.expire_due_turns(FENCE_DEADLINE)
+    changed = host.expire_due_turns(managed.turn.window.deadline)
 
-    assert tuple(item.schedule_id for item in changed) == (schedule.schedule_id,)
+    assert tuple(item.schedule_id for item in changed) == (managed.schedule_id,)
     assert repository.load_dispatch(attempt.dispatch_id).status is DispatchStatus.CANCELLED  # type: ignore[union-attr]
     stored = repository.load_managed_turn(managed.turn.turn_id)
     assert stored is not None
