@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** In progress (`17/52` implementation steps).
+**Progress:** In progress (`23/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -580,7 +580,7 @@ git commit -m "feat: query durable dispatches by turn"
 - Modify: `werewolf_agent/storage/memory_store.py`
 - Modify: `tests/storage/test_autonomous_turns.py`
 
-- [ ] **Step 1: Write failing in-memory lifecycle and CAS tests**
+- [x] **Step 1: Write failing in-memory lifecycle and CAS tests**
 
 Add a repository fixture with `GameState(game_id="game-1")` and cover creation,
 admission, transition, finish, replace, close, missing game, duplicate active
@@ -613,7 +613,7 @@ def test_memory_stale_admission_does_not_publish_partial_turn() -> None:
     assert repository.load_managed_turn("turn-stale") is None
 ```
 
-- [ ] **Step 2: Run memory tests and verify RED**
+- [x] **Step 2: Run memory tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py -k "memory" -v
@@ -621,7 +621,7 @@ conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py -k 
 
 Expected: `InMemoryGameRepository` lacks the autonomous-turn capability.
 
-- [ ] **Step 3: Add in-memory state and capability methods**
+- [x] **Step 3: Add in-memory state and capability methods**
 
 Initialize these maps under the existing `RLock`:
 
@@ -635,7 +635,7 @@ Implement `supports_autonomous_turns`, create/load/list methods, and use the
 Task 2 pure helpers for admission and transition. Creation rejects a missing
 game, a duplicate schedule ID, or an already-open schedule for the same game.
 
-- [ ] **Step 4: Implement atomic finish with prepare-then-publish**
+- [x] **Step 4: Implement atomic finish with prepare-then-publish**
 
 Inside the lock, load both records and verify expected versions before calling
 `prepare_active_finish`. Publish the updated turn and schedule only after all
@@ -662,7 +662,7 @@ return updated_schedule.model_copy(deep=True)
 Update `delete_game` to remove the game's schedules and their managed turns.
 Do not alter legacy save/load/event behavior.
 
-- [ ] **Step 5: Verify memory concurrency and rollback semantics**
+- [x] **Step 5: Verify memory concurrency and rollback semantics**
 
 Add a 20-worker duplicate-admission test: exactly one admission succeeds and
 all failures are stable CAS or invalid-schedule errors; exactly one managed turn
@@ -675,7 +675,7 @@ conda run -n wofkill python -m mypy --follow-imports=skip werewolf_agent/storage
 
 Expected: memory tests pass and mypy reports no errors.
 
-- [ ] **Step 6: Commit the memory implementation**
+- [x] **Step 6: Commit the memory implementation**
 
 ```bash
 git add werewolf_agent/storage/memory_store.py tests/storage/test_autonomous_turns.py
