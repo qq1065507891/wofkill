@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：SQLite 游戏仓库，支持事件兼容读写、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
+功能描述：SQLite 游戏仓库，支持事件兼容读写、串行公开调度持久化、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
 作者: Project contributors
 创建日期：2025-01-15
 修改日期：2026-07-30
@@ -569,8 +569,8 @@ class SqliteGameRepository:
                 schedule.active_turn_id,
                 schedule.state_version,
                 self._canonical_contract_json(schedule),
-                self._dispatch_timestamp(schedule.created_at),
-                self._dispatch_timestamp(schedule.updated_at),
+                self._utc_timestamp(schedule.created_at),
+                self._utc_timestamp(schedule.updated_at),
                 schedule.schedule_id,
                 expected_version,
             ),
@@ -597,8 +597,8 @@ class SqliteGameRepository:
                 managed.state_version,
                 self._canonical_contract_json(managed),
                 managed.terminal_reason,
-                self._dispatch_timestamp(managed.created_at),
-                self._dispatch_timestamp(managed.updated_at),
+                self._utc_timestamp(managed.created_at),
+                self._utc_timestamp(managed.updated_at),
                 managed.turn.turn_id,
                 expected_version,
             ),
@@ -644,16 +644,16 @@ class SqliteGameRepository:
                         schedule.active_turn_id,
                         schedule.state_version,
                         self._canonical_contract_json(schedule),
-                        self._dispatch_timestamp(schedule.created_at),
-                        self._dispatch_timestamp(schedule.updated_at),
+                        self._utc_timestamp(schedule.created_at),
+                        self._utc_timestamp(schedule.updated_at),
                     ),
                 )
-                self._conn.commit()
                 stored = self._load_schedule_unlocked(schedule.schedule_id)
                 if stored is None:
                     raise AutonomousTurnTransactionError(
                         "created schedule could not be loaded",
                     )
+                self._conn.commit()
                 return stored
             except (
                 AutonomousTurnTransactionError,
@@ -743,8 +743,8 @@ class SqliteGameRepository:
                         managed.state_version,
                         self._canonical_contract_json(managed),
                         managed.terminal_reason,
-                        self._dispatch_timestamp(managed.created_at),
-                        self._dispatch_timestamp(managed.updated_at),
+                        self._utc_timestamp(managed.created_at),
+                        self._utc_timestamp(managed.updated_at),
                     ),
                 )
                 self._update_schedule_unlocked(
@@ -1054,11 +1054,11 @@ class SqliteGameRepository:
 
     @staticmethod
     def _dispatch_now() -> str:
-        return SqliteGameRepository._dispatch_timestamp(datetime.now(timezone.utc))
+        return SqliteGameRepository._utc_timestamp(datetime.now(timezone.utc))
 
     @staticmethod
-    def _dispatch_timestamp(value: datetime) -> str:
-        """将带时区 dispatch 时间统一为 UTC，确保文本排序等价于时间排序。"""
+    def _utc_timestamp(value: datetime) -> str:
+        """将带时区时间统一为 UTC，确保文本排序等价于时间排序。"""
         return value.astimezone(timezone.utc).isoformat()
 
     @classmethod
@@ -1070,7 +1070,7 @@ class SqliteGameRepository:
             return value
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             return value
-        return cls._dispatch_timestamp(parsed)
+        return cls._utc_timestamp(parsed)
 
     def _normalize_dispatch_timestamps(self) -> None:
         """幂等回填历史 dispatch 时间，避免 offset 文本造成跨后端错序。"""
@@ -1224,12 +1224,12 @@ class SqliteGameRepository:
                         attempt.request_hash,
                         attempt.lease_hash,
                         attempt.view_fingerprint,
-                        self._dispatch_timestamp(attempt.deadline),
+                        self._utc_timestamp(attempt.deadline),
                         attempt.status.value,
                         attempt.state_version,
                         attempt.reason_code,
-                        self._dispatch_timestamp(attempt.created_at),
-                        self._dispatch_timestamp(attempt.updated_at),
+                        self._utc_timestamp(attempt.created_at),
+                        self._utc_timestamp(attempt.updated_at),
                     ),
                 )
                 stored = attempt.model_copy(deep=True)
@@ -1271,7 +1271,7 @@ class SqliteGameRepository:
                 (
                     target_status.value,
                     reason_code,
-                    self._dispatch_timestamp(updated_at),
+                    self._utc_timestamp(updated_at),
                     dispatch_id,
                     expected_version,
                     *(status.value for status in allowed_statuses),
@@ -1434,7 +1434,7 @@ class SqliteGameRepository:
                             sort_keys=True,
                             separators=(",", ":"),
                         ),
-                        self._dispatch_timestamp(result.recorded_at),
+                        self._utc_timestamp(result.recorded_at),
                     ),
                 )
                 cur = self._conn.execute(

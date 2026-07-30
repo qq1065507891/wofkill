@@ -753,6 +753,98 @@ def test_sqlite_schema_capability_and_schedule_lifecycle(tmp_path) -> None:
         repository.close()
 
 
+def test_sqlite_schedule_creation_rolls_back_when_final_read_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _sqlite_repository(tmp_path)
+    original_load = repository._load_schedule_unlocked
+    load_count = 0
+
+    def fail_final_load(schedule_id: str) -> SerialPublicSchedule | None:
+        nonlocal load_count
+        load_count += 1
+        if load_count == 2:
+            raise RuntimeError("forced final read failure")
+        return original_load(schedule_id)
+
+    monkeypatch.setattr(repository, "_load_schedule_unlocked", fail_final_load)
+    try:
+        with pytest.raises(AutonomousTurnTransactionError):
+            repository.create_serial_public_schedule(_schedule())
+        monkeypatch.setattr(repository, "_load_schedule_unlocked", original_load)
+        assert repository.load_serial_public_schedule("schedule-1") is None
+    finally:
+        repository.close()
+
+
+def test_sqlite_schedule_json_is_canonical_utf8(tmp_path) -> None:
+    import json
+
+    repository = SqliteGameRepository(str(tmp_path / "canonical.db"))
+    repository.save_game(GameState(game_id="游戏-甲"))
+    schedule = _schedule(
+        schedule_id="日间-调度",
+        game_id="游戏-甲",
+        window=_window(
+            window_id="发言窗口",
+            game_id="游戏-甲",
+            task_type="公开发言",
+        ),
+    )
+    try:
+        repository.create_serial_public_schedule(schedule)
+        raw = repository._conn.execute(
+            "SELECT schedule_json FROM autonomous_serial_public_schedules "
+            "WHERE schedule_id = ?",
+            (schedule.schedule_id,),
+        ).fetchone()[0]
+        assert "公开发言" in raw
+        assert raw == json.dumps(
+            json.loads(raw),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    finally:
+        repository.close()
+
+
+def test_sqlite_lists_open_schedules_in_deterministic_cross_game_order(
+    tmp_path,
+) -> None:
+    repository = SqliteGameRepository(str(tmp_path / "ordered.db"))
+    schedules = (
+        _schedule(
+            schedule_id="schedule-z",
+            game_id="game-z",
+            window=_window(game_id="game-z"),
+        ),
+        _schedule(
+            schedule_id="schedule-a",
+            game_id="game-a",
+            window=_window(game_id="game-a"),
+        ),
+        _schedule(
+            schedule_id="schedule-earlier",
+            game_id="game-earlier",
+            window=_window(game_id="game-earlier"),
+            created_at=datetime(2026, 7, 30, 9, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 7, 30, 9, tzinfo=timezone.utc),
+        ),
+    )
+    try:
+        for schedule in schedules:
+            repository.save_game(GameState(game_id=schedule.game_id))
+            repository.create_serial_public_schedule(schedule)
+        assert tuple(
+            schedule.schedule_id
+            for schedule in repository.list_open_serial_public_schedules()
+        ) == ("schedule-earlier", "schedule-a", "schedule-z")
+    finally:
+        repository.close()
+
+
 def test_sqlite_admission_transition_finish_and_defensive_reads(tmp_path) -> None:
     repository = _sqlite_repository(tmp_path)
     try:
@@ -792,6 +884,80 @@ def test_sqlite_admission_transition_finish_and_defensive_reads(tmp_path) -> Non
         assert finished.active_turn_id is None
         assert repository.load_active_serial_public_schedule("game-1") == finished
         assert repository.list_open_serial_public_schedules() == (finished,)
+    finally:
+        repository.close()
+
+
+def test_sqlite_delete_game_cascades_schedule_and_managed_turn(tmp_path) -> None:
+    repository = _sqlite_repository(tmp_path)
+    try:
+        repository.create_serial_public_schedule(_schedule())
+        repository.admit_serial_public_turn("schedule-1", 0, _admission())
+        repository.delete_game("game-1")
+        assert repository.load_serial_public_schedule("schedule-1") is None
+        assert repository.load_managed_turn("turn-1") is None
+        assert repository.load_active_serial_public_schedule("game-1") is None
+        assert repository.list_open_serial_public_schedules() == ()
+    finally:
+        repository.close()
+
+
+def test_sqlite_finish_rolls_back_managed_update_when_schedule_update_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _sqlite_repository(tmp_path)
+    try:
+        repository.create_serial_public_schedule(_schedule())
+        managed = repository.admit_serial_public_turn("schedule-1", 0, _admission())
+        for next_status in (
+            AgentTurnStatus.OBSERVING,
+            AgentTurnStatus.THINKING,
+            AgentTurnStatus.SUBMITTED,
+            AgentTurnStatus.VALIDATING,
+        ):
+            managed = repository.transition_active_turn(
+                managed.turn.turn_id,
+                managed.state_version,
+                next_status,
+            )
+
+        def fail_schedule_update(
+            schedule: SerialPublicSchedule,
+            expected_version: int,
+        ) -> None:
+            del schedule, expected_version
+            raise ScheduleStateConflict("forced schedule conflict")
+
+        original_update = repository._update_schedule_unlocked
+        monkeypatch.setattr(
+            repository,
+            "_update_schedule_unlocked",
+            fail_schedule_update,
+        )
+        with pytest.raises(ScheduleStateConflict):
+            repository.finish_active_turn(
+                "schedule-1",
+                expected_schedule_version=1,
+                turn_id="turn-1",
+                expected_turn_version=managed.state_version,
+                terminal_status=AgentTurnStatus.COMMITTED,
+                disposition=TerminalDisposition.ADVANCE,
+                reason_code=None,
+            )
+        monkeypatch.setattr(
+            repository,
+            "_update_schedule_unlocked",
+            original_update,
+        )
+        stored_turn = repository.load_managed_turn("turn-1")
+        stored_schedule = repository.load_serial_public_schedule("schedule-1")
+        assert stored_turn is not None
+        assert stored_turn.turn.status is AgentTurnStatus.VALIDATING
+        assert stored_turn.state_version == managed.state_version
+        assert stored_schedule is not None
+        assert stored_schedule.active_turn_id == "turn-1"
+        assert stored_schedule.state_version == 1
     finally:
         repository.close()
 
@@ -869,7 +1035,9 @@ def test_sqlite_concurrent_duplicate_admission_is_single_winner(tmp_path) -> Non
     with ThreadPoolExecutor(max_workers=20) as executor:
         results = list(executor.map(attempt, range(20)))
     assert sum(result == "success" for result, _ in results) == 1
-    assert sum(result == "error" for result, _ in results) == 19
+    failures = [error for result, error in results if result == "error"]
+    assert len(failures) == 19
+    assert set(failures) <= {ScheduleStateConflict, InvalidTurnAdmission}
     repository = SqliteGameRepository(str(db_path))
     try:
         turns = [repository.load_managed_turn(f"turn-{index}") for index in range(20)]

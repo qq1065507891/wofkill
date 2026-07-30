@@ -11,6 +11,19 @@ from __future__ import annotations
 import re
 
 
+def test_sqlite_module_describes_serial_public_scheduling_responsibility() -> None:
+    from werewolf_agent.storage import sqlite_store
+
+    assert "串行公开调度" in (sqlite_store.__doc__ or "")
+
+
+def test_sqlite_uses_shared_utc_timestamp_serializer() -> None:
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    assert hasattr(SqliteGameRepository, "_utc_timestamp")
+    assert not hasattr(SqliteGameRepository, "_dispatch_timestamp")
+
+
 def test_sqlite_schema_matches_migration_v1():
     """legacy schema 必须保持与 MigrationManager v1 一致。"""
     from werewolf_agent.storage.migrations import MIGRATIONS
