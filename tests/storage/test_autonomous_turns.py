@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-验证自主玩家托管回合能力协议和纯状态准备辅助函数。
+验证自主玩家托管回合契约、状态准备逻辑与 memory/SQLite 原子语义一致性。
 
 作者: Project contributors
 创建日期: 2026-07-30
 修改日期: 2026-07-30
 """
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -1044,3 +1045,546 @@ def test_sqlite_concurrent_duplicate_admission_is_single_winner(tmp_path) -> Non
         assert sum(turn is not None for turn in turns) == 1
     finally:
         repository.close()
+
+
+# ===========================================================================
+# 最终 memory/SQLite 共享原子性矩阵
+# ===========================================================================
+
+
+SharedTurnRepository = InMemoryGameRepository | SqliteGameRepository
+
+
+class _FixedRepositoryDateTime(datetime):
+    """为两个仓储实现提供相同的持久化时间。"""
+
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return NOW.replace(tzinfo=None)
+        return NOW.astimezone(tz)
+
+
+def _freeze_repository_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "werewolf_agent.storage.memory_store.datetime",
+        _FixedRepositoryDateTime,
+    )
+    monkeypatch.setattr(
+        "werewolf_agent.storage.sqlite_store.datetime",
+        _FixedRepositoryDateTime,
+    )
+
+
+def _shared_repository(
+    repository_kind: str,
+    tmp_path,
+    *,
+    database_name: str = "shared-autonomous-turns.db",
+) -> SharedTurnRepository:
+    if repository_kind == "memory":
+        repository: SharedTurnRepository = InMemoryGameRepository()
+    else:
+        assert repository_kind == "sqlite"
+        repository = SqliteGameRepository(str(tmp_path / database_name))
+    repository.save_game(GameState(game_id="game-1"))
+    return repository
+
+
+def _close_shared_repository(repository: SharedTurnRepository) -> None:
+    if isinstance(repository, SqliteGameRepository):
+        repository.close()
+
+
+def _canonical_contract_bytes(
+    value: SerialPublicSchedule | ManagedAgentTurn,
+) -> bytes:
+    return json.dumps(
+        value.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _shared_admit_to_validating(
+    repository: SharedTurnRepository,
+    *,
+    schedule: SerialPublicSchedule | None = None,
+    admission: TurnAdmission | None = None,
+) -> tuple[SerialPublicSchedule, ManagedAgentTurn]:
+    created = repository.create_serial_public_schedule(schedule or _schedule())
+    managed = repository.admit_serial_public_turn(
+        created.schedule_id,
+        created.state_version,
+        admission or _admission(),
+    )
+    for next_status in (
+        AgentTurnStatus.OBSERVING,
+        AgentTurnStatus.THINKING,
+        AgentTurnStatus.SUBMITTED,
+        AgentTurnStatus.VALIDATING,
+    ):
+        managed = repository.transition_active_turn(
+            managed.turn.turn_id,
+            managed.state_version,
+            next_status,
+        )
+    active = repository.load_serial_public_schedule(created.schedule_id)
+    assert active is not None
+    return active, managed
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_shared_schedule_creation_and_current_slot_admission(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    try:
+        created = repository.create_serial_public_schedule(_schedule())
+        assert _canonical_contract_bytes(created) == _canonical_contract_bytes(
+            _schedule(),
+        )
+        assert repository.load_active_serial_public_schedule("game-1") == created
+
+        with pytest.raises(InvalidTurnAdmission):
+            repository.admit_serial_public_turn(
+                created.schedule_id,
+                created.state_version,
+                _admission(player_id="p02"),
+            )
+        assert repository.load_managed_turn("turn-1") is None
+
+        managed = repository.admit_serial_public_turn(
+            created.schedule_id,
+            created.state_version,
+            _admission(),
+        )
+        active = repository.load_serial_public_schedule(created.schedule_id)
+        assert active is not None
+        assert managed.turn.player_id == created.current_slot.player_id
+        assert managed.turn.status is AgentTurnStatus.OPEN
+        assert active.active_turn_id == managed.turn.turn_id
+        assert active.state_version == created.state_version + 1
+    finally:
+        _close_shared_repository(repository)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_shared_stale_cas_never_publishes_partial_state(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    try:
+        created = repository.create_serial_public_schedule(_schedule())
+        with pytest.raises(ScheduleStateConflict):
+            repository.admit_serial_public_turn(
+                created.schedule_id,
+                created.state_version + 1,
+                _admission(),
+            )
+        assert repository.load_managed_turn("turn-1") is None
+
+        managed = repository.admit_serial_public_turn(
+            created.schedule_id,
+            created.state_version,
+            _admission(),
+        )
+        managed_before = _canonical_contract_bytes(managed)
+        with pytest.raises(TurnStateConflict):
+            repository.transition_active_turn(
+                managed.turn.turn_id,
+                managed.state_version + 1,
+                AgentTurnStatus.OBSERVING,
+            )
+        stored_managed = repository.load_managed_turn(managed.turn.turn_id)
+        assert stored_managed is not None
+        assert _canonical_contract_bytes(stored_managed) == managed_before
+
+        for next_status in (
+            AgentTurnStatus.OBSERVING,
+            AgentTurnStatus.THINKING,
+            AgentTurnStatus.SUBMITTED,
+            AgentTurnStatus.VALIDATING,
+        ):
+            managed = repository.transition_active_turn(
+                managed.turn.turn_id,
+                managed.state_version,
+                next_status,
+            )
+        active = repository.load_serial_public_schedule(created.schedule_id)
+        assert active is not None
+        active_before = _canonical_contract_bytes(active)
+        managed_before = _canonical_contract_bytes(managed)
+
+        with pytest.raises(ScheduleStateConflict):
+            repository.finish_active_turn(
+                active.schedule_id,
+                active.state_version - 1,
+                managed.turn.turn_id,
+                managed.state_version,
+                AgentTurnStatus.COMMITTED,
+                TerminalDisposition.ADVANCE,
+                None,
+            )
+        with pytest.raises(TurnStateConflict):
+            repository.finish_active_turn(
+                active.schedule_id,
+                active.state_version,
+                managed.turn.turn_id,
+                managed.state_version - 1,
+                AgentTurnStatus.COMMITTED,
+                TerminalDisposition.ADVANCE,
+                None,
+            )
+        stored_schedule = repository.load_serial_public_schedule(active.schedule_id)
+        stored_managed = repository.load_managed_turn(managed.turn.turn_id)
+        assert stored_schedule is not None
+        assert stored_managed is not None
+        assert _canonical_contract_bytes(stored_schedule) == active_before
+        assert _canonical_contract_bytes(stored_managed) == managed_before
+    finally:
+        _close_shared_repository(repository)
+
+
+_HOST_NONTERMINAL_EDGES = (
+    (AgentTurnStatus.OPEN, AgentTurnStatus.OBSERVING),
+    (AgentTurnStatus.OBSERVING, AgentTurnStatus.THINKING),
+    (AgentTurnStatus.THINKING, AgentTurnStatus.WAITING_TOOL),
+    (AgentTurnStatus.WAITING_TOOL, AgentTurnStatus.THINKING),
+    (AgentTurnStatus.THINKING, AgentTurnStatus.COMPACTING),
+    (AgentTurnStatus.COMPACTING, AgentTurnStatus.THINKING),
+    (AgentTurnStatus.THINKING, AgentTurnStatus.SUBMITTED),
+    (AgentTurnStatus.SUBMITTED, AgentTurnStatus.VALIDATING),
+    (AgentTurnStatus.VALIDATING, AgentTurnStatus.REPAIRING),
+    (AgentTurnStatus.REPAIRING, AgentTurnStatus.SUBMITTED),
+)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_shared_host_nonterminal_transition_edges(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    try:
+        created = repository.create_serial_public_schedule(_schedule())
+        managed = repository.admit_serial_public_turn(
+            created.schedule_id,
+            created.state_version,
+            _admission(),
+        )
+        for current_status, next_status in _HOST_NONTERMINAL_EDGES:
+            assert managed.turn.status is current_status
+            previous_version = managed.state_version
+            managed = repository.transition_active_turn(
+                managed.turn.turn_id,
+                previous_version,
+                next_status,
+            )
+            assert managed.turn.status is next_status
+            assert managed.state_version == previous_version + 1
+    finally:
+        _close_shared_repository(repository)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+@pytest.mark.parametrize(
+    (
+        "terminal_status",
+        "disposition",
+        "reason_code",
+        "expected_status",
+        "expected_ordinal",
+    ),
+    (
+        (
+            AgentTurnStatus.COMMITTED,
+            TerminalDisposition.ADVANCE,
+            None,
+            SerialPublicScheduleStatus.OPEN,
+            1,
+        ),
+        (
+            AgentTurnStatus.EXPIRED,
+            TerminalDisposition.REPLACE,
+            "deadline_expired",
+            SerialPublicScheduleStatus.OPEN,
+            0,
+        ),
+        (
+            AgentTurnStatus.CANCELLED,
+            TerminalDisposition.CLOSE,
+            "operator_cancelled",
+            SerialPublicScheduleStatus.CANCELLED,
+            0,
+        ),
+    ),
+)
+def test_shared_atomic_finish_matrix(
+    repository_kind: str,
+    terminal_status: AgentTurnStatus,
+    disposition: TerminalDisposition,
+    reason_code: str | None,
+    expected_status: SerialPublicScheduleStatus,
+    expected_ordinal: int,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    try:
+        schedule, managed = _shared_admit_to_validating(repository)
+        updated = repository.finish_active_turn(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            terminal_status,
+            disposition,
+            reason_code,
+        )
+        stored = repository.load_managed_turn(managed.turn.turn_id)
+        assert stored is not None
+        assert stored.turn.status is terminal_status
+        assert stored.terminal_reason == reason_code
+        assert stored.state_version == managed.state_version + 1
+        assert updated.status is expected_status
+        assert updated.next_slot_ordinal == expected_ordinal
+        assert updated.active_turn_id is None
+        assert updated.state_version == schedule.state_version + 1
+    finally:
+        _close_shared_repository(repository)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_shared_final_slot_advance_closes_schedule(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    final_schedule = _schedule(next_slot_ordinal=1)
+    final_admission = _admission(
+        turn_id="turn-2",
+        player_id="p02",
+        idempotency_key="turn-2:submit",
+    )
+    try:
+        schedule, managed = _shared_admit_to_validating(
+            repository,
+            schedule=final_schedule,
+            admission=final_admission,
+        )
+        closed = repository.finish_active_turn(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            AgentTurnStatus.COMMITTED,
+            TerminalDisposition.ADVANCE,
+            None,
+        )
+        assert closed.status is SerialPublicScheduleStatus.CLOSED
+        assert closed.next_slot_ordinal == len(closed.slots)
+        assert closed.active_turn_id is None
+        assert repository.load_active_serial_public_schedule("game-1") is None
+    finally:
+        _close_shared_repository(repository)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_shared_twenty_duplicate_admissions_have_one_winner(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    database_name = "shared-concurrent.db"
+    seed = _shared_repository(
+        repository_kind,
+        tmp_path,
+        database_name=database_name,
+    )
+    seed.create_serial_public_schedule(_schedule())
+    if isinstance(seed, SqliteGameRepository):
+        seed.close()
+
+    def attempt(index: int) -> tuple[str, type[BaseException] | None]:
+        repository = (
+            seed
+            if repository_kind == "memory"
+            else SqliteGameRepository(str(tmp_path / database_name))
+        )
+        try:
+            repository.admit_serial_public_turn(
+                "schedule-1",
+                0,
+                _admission(
+                    turn_id=f"shared-turn-{index}",
+                    idempotency_key=f"shared-turn-{index}:submit",
+                ),
+            )
+        except BaseException as exc:  # noqa: BLE001 - 验证稳定仓储错误分类
+            return "error", type(exc)
+        finally:
+            if repository_kind == "sqlite":
+                repository.close()
+        return "success", None
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        results = list(executor.map(attempt, range(20)))
+
+    verifier = (
+        seed
+        if repository_kind == "memory"
+        else SqliteGameRepository(str(tmp_path / database_name))
+    )
+    try:
+        assert sum(result == "success" for result, _ in results) == 1
+        failures = [error for result, error in results if result == "error"]
+        assert len(failures) == 19
+        assert set(failures) <= {ScheduleStateConflict, InvalidTurnAdmission}
+        stored_turns = [
+            verifier.load_managed_turn(f"shared-turn-{index}")
+            for index in range(20)
+        ]
+        assert sum(turn is not None for turn in stored_turns) == 1
+        active = verifier.load_serial_public_schedule("schedule-1")
+        assert active is not None
+        assert active.state_version == 1
+        assert active.active_turn_id is not None
+    finally:
+        if repository_kind == "sqlite":
+            verifier.close()
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_shared_delete_game_cleans_schedule_and_turn_state(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    try:
+        repository.create_serial_public_schedule(_schedule())
+        repository.admit_serial_public_turn("schedule-1", 0, _admission())
+        repository.delete_game("game-1")
+        assert repository.load_serial_public_schedule("schedule-1") is None
+        assert repository.load_managed_turn("turn-1") is None
+        assert repository.load_active_serial_public_schedule("game-1") is None
+        assert repository.list_open_serial_public_schedules() == ()
+    finally:
+        _close_shared_repository(repository)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_shared_forced_admission_failure_rolls_back_atomically(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    created = repository.create_serial_public_schedule(_schedule())
+
+    def fail_prepare(*args: object, **kwargs: object) -> object:
+        raise AutonomousTurnTransactionError("forced shared failure")
+
+    module_name = (
+        "werewolf_agent.storage.memory_store"
+        if repository_kind == "memory"
+        else "werewolf_agent.storage.sqlite_store"
+    )
+    monkeypatch.setattr(
+        f"{module_name}.prepare_serial_public_admission",
+        fail_prepare,
+    )
+    try:
+        with pytest.raises(AutonomousTurnTransactionError):
+            repository.admit_serial_public_turn(
+                created.schedule_id,
+                created.state_version,
+                _admission(),
+            )
+        stored = repository.load_serial_public_schedule(created.schedule_id)
+        assert stored is not None
+        assert _canonical_contract_bytes(stored) == _canonical_contract_bytes(created)
+        assert repository.load_managed_turn("turn-1") is None
+    finally:
+        _close_shared_repository(repository)
+
+
+def _canonical_backend_trace(
+    repository: SharedTurnRepository,
+) -> tuple[bytes, ...]:
+    trace: list[bytes] = []
+    created = repository.create_serial_public_schedule(_schedule())
+    trace.append(_canonical_contract_bytes(created))
+    managed = repository.admit_serial_public_turn(
+        created.schedule_id,
+        created.state_version,
+        _admission(),
+    )
+    active = repository.load_serial_public_schedule(created.schedule_id)
+    assert active is not None
+    trace.extend(
+        (_canonical_contract_bytes(active), _canonical_contract_bytes(managed)),
+    )
+    for _current_status, next_status in _HOST_NONTERMINAL_EDGES:
+        managed = repository.transition_active_turn(
+            managed.turn.turn_id,
+            managed.state_version,
+            next_status,
+        )
+        trace.append(_canonical_contract_bytes(managed))
+    managed = repository.transition_active_turn(
+        managed.turn.turn_id,
+        managed.state_version,
+        AgentTurnStatus.VALIDATING,
+    )
+    trace.append(_canonical_contract_bytes(managed))
+    active = repository.load_serial_public_schedule(created.schedule_id)
+    assert active is not None
+    finished = repository.finish_active_turn(
+        active.schedule_id,
+        active.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        AgentTurnStatus.EXPIRED,
+        TerminalDisposition.REPLACE,
+        "canonical_replacement",
+    )
+    stored = repository.load_managed_turn(managed.turn.turn_id)
+    assert stored is not None
+    trace.extend(
+        (_canonical_contract_bytes(finished), _canonical_contract_bytes(stored)),
+    )
+    return tuple(trace)
+
+
+def test_memory_and_sqlite_contract_json_is_byte_equivalent(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_repository_clocks(monkeypatch)
+    memory = _shared_repository("memory", tmp_path)
+    sqlite = _shared_repository(
+        "sqlite",
+        tmp_path,
+        database_name="canonical-parity.db",
+    )
+    try:
+        assert _canonical_backend_trace(memory) == _canonical_backend_trace(sqlite)
+    finally:
+        sqlite.close()
