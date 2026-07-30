@@ -538,6 +538,16 @@ class PostgresGameRepository:
                     raise ScheduleNotFound("schedule not found")
                 if schedule.state_version != expected_schedule_version:
                     raise ScheduleStateConflict("schedule state version conflict")
+                duplicate = conn.execute(
+                    "SELECT 1 FROM autonomous_managed_turns "
+                    "WHERE schedule_id = %s "
+                    "AND turn_json #>> '{turn,idempotency_key}' = %s LIMIT 1",
+                    (schedule_id, admission.idempotency_key),
+                ).fetchone()
+                if duplicate is not None:
+                    raise InvalidTurnAdmission(
+                        "invalid autonomous turn admission",
+                    )
                 now = max(datetime.now(timezone.utc), schedule.updated_at)
                 updated_schedule, managed = prepare_serial_public_admission(
                     schedule,
@@ -579,6 +589,18 @@ class PostgresGameRepository:
                 raise
             except Exception as exc:
                 conn.rollback()
+                constraint_name = getattr(
+                    getattr(exc, "diag", None),
+                    "constraint_name",
+                    None,
+                )
+                if (
+                    constraint_name == "uq_managed_turn_schedule_idempotency_key"
+                    or "uq_managed_turn_schedule_idempotency_key" in str(exc)
+                ):
+                    raise InvalidTurnAdmission(
+                        "invalid autonomous turn admission",
+                    ) from exc
                 raise AutonomousTurnTransactionError(
                     "autonomous turn admission transaction failed",
                 ) from exc
@@ -1950,6 +1972,36 @@ class PostgresGameRepository:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_managed_turn_schedule_status "
             "ON autonomous_managed_turns (schedule_id, status)"
+        )
+        key_duplicates = conn.execute("""
+            SELECT
+                schedule_id,
+                turn_json #>> '{turn,idempotency_key}' AS idempotency_key,
+                COUNT(*),
+                array_agg(turn_id ORDER BY turn_id)
+            FROM autonomous_managed_turns
+            WHERE turn_json #>> '{turn,idempotency_key}' IS NOT NULL
+            GROUP BY schedule_id, turn_json #>> '{turn,idempotency_key}'
+            HAVING COUNT(*) > 1
+            ORDER BY schedule_id, turn_json #>> '{turn,idempotency_key}'
+            LIMIT 20
+        """).fetchall()
+        if key_duplicates:
+            details = " | ".join(
+                f"schedule_id={schedule_id}, idempotency_key={idempotency_key}, "
+                f"count={count}, rows={row_ids}"
+                for schedule_id, idempotency_key, count, row_ids in key_duplicates
+            )
+            raise PostgresSchemaMigrationError(
+                "PostgreSQL managed turn idempotency migration blocked by "
+                "duplicate schedule keys; resolve or quarantine these rows "
+                f"before retrying: {details}",
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "uq_managed_turn_schedule_idempotency_key "
+            "ON autonomous_managed_turns "
+            "(schedule_id, (turn_json #>> '{turn,idempotency_key}'))"
         )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS autonomous_dispatch_attempts (

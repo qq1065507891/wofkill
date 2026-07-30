@@ -333,6 +333,43 @@ class SqliteSchemaMigrationError(RuntimeError):
     """SQLite schema 升级因现存数据冲突而无法安全完成。"""
 
 
+def _ensure_managed_turn_idempotency_integrity(
+    conn: sqlite3.Connection,
+) -> None:
+    """预检历史重复 key 后创建托管回合唯一表达式索引。"""
+    duplicates = conn.execute(
+        """
+        SELECT
+            schedule_id,
+            json_extract(turn_json, '$.turn.idempotency_key'),
+            COUNT(*),
+            GROUP_CONCAT(turn_id)
+        FROM autonomous_managed_turns
+        WHERE json_extract(turn_json, '$.turn.idempotency_key') IS NOT NULL
+        GROUP BY schedule_id, json_extract(turn_json, '$.turn.idempotency_key')
+        HAVING COUNT(*) > 1
+        ORDER BY schedule_id, json_extract(turn_json, '$.turn.idempotency_key')
+        LIMIT 20
+        """,
+    ).fetchall()
+    if duplicates:
+        details = " | ".join(
+            f"schedule_id={schedule_id}, idempotency_key={idempotency_key}, "
+            f"count={count}, rows={row_ids}"
+            for schedule_id, idempotency_key, count, row_ids in duplicates
+        )
+        raise SqliteSchemaMigrationError(
+            "SQLite managed turn idempotency migration blocked by duplicate "
+            f"schedule keys; resolve or quarantine these rows before retrying: {details}",
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS "
+        "uq_managed_turn_schedule_idempotency_key "
+        "ON autonomous_managed_turns "
+        "(schedule_id, json_extract(turn_json, '$.turn.idempotency_key'))",
+    )
+
+
 def _ensure_event_sequence_integrity(conn: sqlite3.Connection) -> None:
     """拒绝历史重复序号，并为后续 legacy/autonomous 混写建立约束。"""
     duplicates = conn.execute(
@@ -391,6 +428,7 @@ class SqliteGameRepository:
             _ensure_event_schema_v2(self._conn)
             self._conn.executescript(_AUTONOMOUS_DISPATCH_SCHEMA)
             self._conn.executescript(_AUTONOMOUS_SCHEDULING_SCHEMA)
+            _ensure_managed_turn_idempotency_integrity(self._conn)
             self._normalize_dispatch_timestamps()
             self._durable_dispatch_schema_ready = True
             self._autonomous_turn_schema_ready = True
@@ -718,6 +756,16 @@ class SqliteGameRepository:
                     raise ScheduleNotFound("schedule not found")
                 if schedule.state_version != expected_schedule_version:
                     raise ScheduleStateConflict("schedule state version conflict")
+                duplicate = self._conn.execute(
+                    "SELECT 1 FROM autonomous_managed_turns "
+                    "WHERE schedule_id = ? AND json_extract(turn_json, "
+                    "'$.turn.idempotency_key') = ? LIMIT 1",
+                    (schedule_id, admission.idempotency_key),
+                ).fetchone()
+                if duplicate is not None:
+                    raise InvalidTurnAdmission(
+                        "invalid autonomous turn admission",
+                    )
                 now = max(datetime.now(timezone.utc), schedule.updated_at)
                 updated_schedule, managed = prepare_serial_public_admission(
                     schedule,
@@ -748,16 +796,25 @@ class SqliteGameRepository:
                 )
                 self._conn.commit()
                 return managed.model_copy(deep=True)
+            except InvalidTurnAdmission:
+                self._conn.rollback()
+                raise
             except (
                 ScheduleNotFound,
                 ScheduleStateConflict,
-                InvalidTurnAdmission,
                 InvalidScheduleTransition,
             ):
                 self._conn.rollback()
                 raise
             except Exception as exc:
                 self._conn.rollback()
+                if (
+                    isinstance(exc, sqlite3.IntegrityError)
+                    and "uq_managed_turn_schedule_idempotency_key" in str(exc)
+                ):
+                    raise InvalidTurnAdmission(
+                        "invalid autonomous turn admission",
+                    ) from exc
                 raise AutonomousTurnTransactionError(
                     "autonomous turn admission transaction failed",
                 ) from exc

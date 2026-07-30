@@ -155,8 +155,65 @@ def test_fresh_sqlite_schema_includes_autonomous_turn_tables_and_indexes(tmp_pat
     assert {
         "uq_open_serial_public_schedule",
         "idx_managed_turn_schedule_status",
+        "uq_managed_turn_schedule_idempotency_key",
     } <= indexes
     repository.close()
+
+
+def test_sqlite_rejects_duplicate_historical_idempotency_keys_during_initialization(
+    tmp_path,
+) -> None:
+    """唯一索引升级前预检历史重复，避免暴露裸 IntegrityError。"""
+    import sqlite3
+
+    from tests.storage.test_autonomous_turns import _schedule
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.storage.sqlite_store import (
+        SqliteGameRepository,
+        SqliteSchemaMigrationError,
+    )
+    db_path = tmp_path / "duplicate-turn-history.db"
+    repository = SqliteGameRepository(str(db_path))
+    repository.save_game(GameState(game_id="game-1"))
+    repository.create_serial_public_schedule(_schedule())
+    repository.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("DROP INDEX uq_managed_turn_schedule_idempotency_key")
+    row = conn.execute(
+        "SELECT schedule_json, created_at, updated_at FROM autonomous_serial_public_schedules",
+    ).fetchone()
+    assert row is not None
+    _schedule_json, created_at, updated_at = row
+    for turn_id in ("turn-history-1", "turn-history-2"):
+        conn.execute(
+            "INSERT INTO autonomous_managed_turns "
+            "(turn_id, schedule_id, game_id, player_id, status, state_version, "
+            "turn_json, terminal_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                turn_id,
+                "schedule-1",
+                "game-1",
+                "p01",
+                "cancelled",
+                1,
+                '{"turn":{"idempotency_key":"historical-key"}}',
+                None,
+                created_at,
+                updated_at,
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    try:
+        SqliteGameRepository(str(db_path))
+    except SqliteSchemaMigrationError as exc:
+        assert "schedule_id=schedule-1" in str(exc)
+        assert "idempotency_key=historical-key" in str(exc)
+        assert "turn-history-1" in str(exc)
+    else:
+        raise AssertionError("duplicate idempotency history was silently accepted")
 
 
 def test_migration_manager_does_not_apply_durable_dispatch_schema(tmp_path) -> None:

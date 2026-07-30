@@ -100,6 +100,7 @@ class InMemoryGameRepository:
         self._dispatch_key_index: dict[tuple[str, str], str] = {}
         self._serial_public_schedules: dict[str, SerialPublicSchedule] = {}
         self._managed_agent_turns: dict[str, ManagedAgentTurn] = {}
+        self._managed_turn_idempotency_keys: dict[tuple[str, str], str] = {}
         self._active_schedule_by_game: dict[str, str] = {}
 
     def save_game(self, state: GameState) -> None:
@@ -214,6 +215,9 @@ class InMemoryGameRepository:
             if schedule.state_version != expected_schedule_version:
                 raise ScheduleStateConflict("schedule state version conflict")
             try:
+                key = (schedule_id, admission.idempotency_key)
+                if key in self._managed_turn_idempotency_keys:
+                    raise InvalidTurnAdmission("invalid autonomous turn admission")
                 now = max(datetime.now(timezone.utc), schedule.updated_at)
                 updated_schedule, managed = prepare_serial_public_admission(
                     schedule,
@@ -238,6 +242,9 @@ class InMemoryGameRepository:
             self._managed_agent_turns[managed.turn.turn_id] = managed.model_copy(
                 deep=True,
             )
+            self._managed_turn_idempotency_keys[
+                (schedule_id, managed.turn.idempotency_key)
+            ] = managed.turn.turn_id
             self._serial_public_schedules[schedule_id] = updated_schedule.model_copy(
                 deep=True,
             )
@@ -781,6 +788,11 @@ class InMemoryGameRepository:
                 for turn_id, managed in self._managed_agent_turns.items()
                 if managed.turn.game_id != game_id
                 and managed.schedule_id not in schedule_ids
+            }
+            self._managed_turn_idempotency_keys = {
+                key: turn_id
+                for key, turn_id in self._managed_turn_idempotency_keys.items()
+                if key[0] not in schedule_ids
             }
             self._active_schedule_by_game.pop(game_id, None)
             self._autonomous_commits = {

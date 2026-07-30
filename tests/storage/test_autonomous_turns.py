@@ -757,6 +757,7 @@ def test_sqlite_schema_capability_and_schedule_lifecycle(tmp_path) -> None:
         assert {
             "uq_open_serial_public_schedule",
             "idx_managed_turn_schedule_status",
+            "uq_managed_turn_schedule_idempotency_key",
         } <= indexes
         created = repository.create_serial_public_schedule(_schedule())
         assert repository.load_serial_public_schedule("schedule-1") == created
@@ -1181,6 +1182,55 @@ def test_shared_schedule_creation_and_current_slot_admission(
         assert managed.turn.status is AgentTurnStatus.OPEN
         assert active.active_turn_id == managed.turn.turn_id
         assert active.state_version == created.state_version + 1
+    finally:
+        _close_shared_repository(repository)
+
+
+@pytest.mark.parametrize("repository_kind", ("memory", "sqlite"))
+def test_replacement_cannot_reuse_persisted_idempotency_key(
+    repository_kind: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """终态替换仍保留 schedule-scoped key 历史，只有新 key 可再次准入。"""
+    _freeze_repository_clocks(monkeypatch)
+    repository = _shared_repository(repository_kind, tmp_path)
+    try:
+        created = repository.create_serial_public_schedule(_schedule())
+        managed = repository.admit_serial_public_turn(
+            created.schedule_id,
+            created.state_version,
+            _admission(),
+        )
+        replaced = repository.finish_active_turn(
+            created.schedule_id,
+            expected_schedule_version=created.state_version + 1,
+            turn_id=managed.turn.turn_id,
+            expected_turn_version=managed.state_version,
+            terminal_status=AgentTurnStatus.CANCELLED,
+            disposition=TerminalDisposition.REPLACE,
+            reason_code="replace",
+        )
+        assert replaced.active_turn_id is None
+        assert replaced.state_version == 2
+
+        with pytest.raises(InvalidTurnAdmission) as exc_info:
+            repository.admit_serial_public_turn(
+                created.schedule_id,
+                replaced.state_version,
+                _admission(turn_id="turn-2"),
+            )
+        assert exc_info.value.code == "invalid_turn_admission"
+        assert str(exc_info.value) == "invalid autonomous turn admission"
+        assert repository.load_managed_turn("turn-2") is None
+        assert repository.load_serial_public_schedule(created.schedule_id) == replaced
+
+        fresh = repository.admit_serial_public_turn(
+            created.schedule_id,
+            replaced.state_version,
+            _admission(turn_id="turn-3", idempotency_key="turn-3:submit"),
+        )
+        assert fresh.turn.turn_id == "turn-3"
     finally:
         _close_shared_repository(repository)
 

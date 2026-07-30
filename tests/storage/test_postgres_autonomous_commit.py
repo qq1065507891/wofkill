@@ -39,6 +39,7 @@ from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
 from werewolf_agent.storage.autonomous_turns import (
     AutonomousTurnTransactionError,
     InvalidScheduleTransition,
+    InvalidTurnAdmission,
     ScheduleStateConflict,
     TurnStateConflict,
 )
@@ -218,6 +219,19 @@ class _TurnConnection:
             data = self._payload(payload)
             return _TurnCursor((data["schedule_id"], data["turn"]["game_id"]))
         if normalized.startswith(
+            "SELECT 1 FROM autonomous_managed_turns WHERE schedule_id = %s "
+            "AND turn_json #>> '{turn,idempotency_key}' = %s"
+        ):
+            schedule_id, idempotency_key = bound
+            for payload in self.turns.values():
+                data = self._payload(payload)
+                if (
+                    data["schedule_id"] == schedule_id
+                    and data["turn"]["idempotency_key"] == idempotency_key
+                ):
+                    return _TurnCursor((1,))
+            return _TurnCursor()
+        if normalized.startswith(
             "SELECT schedule_json FROM autonomous_serial_public_schedules "
             "WHERE schedule_id = %s"
         ):
@@ -330,6 +344,8 @@ def test_postgres_schema_contains_autonomous_turn_tables() -> None:
     assert "uq_open_serial_public_schedule" in sql
     assert "where status = 'open'" in sql
     assert "idx_managed_turn_schedule_status" in sql
+    assert "uq_managed_turn_schedule_idempotency_key" in sql
+    assert "turn_json #>> '{turn,idempotency_key}'" in sql
 
 
 def test_postgres_autonomous_turn_jsonb_decoders_accept_dicts_and_strings() -> None:
@@ -511,6 +527,52 @@ def test_postgres_admission_cas_miss_rolls_back_inserted_turn() -> None:
     assert connection.schedules == schedules_before
     assert connection.turns == {}
     assert connection.rolled_back == 1
+
+
+def test_postgres_replacement_rejects_reused_idempotency_key() -> None:
+    connection = _TurnConnection()
+    repository = _turn_repository(connection)
+    created = repository.create_serial_public_schedule(_schedule())
+    managed = repository.admit_serial_public_turn(
+        created.schedule_id,
+        created.state_version,
+        _admission(),
+    )
+    replaced = repository.finish_active_turn(
+        created.schedule_id,
+        expected_schedule_version=1,
+        turn_id=managed.turn.turn_id,
+        expected_turn_version=managed.state_version,
+        terminal_status=AgentTurnStatus.CANCELLED,
+        disposition=TerminalDisposition.REPLACE,
+        reason_code="replace",
+    )
+    executed_before = len(connection.executed)
+    commits_before = connection.committed
+
+    with pytest.raises(InvalidTurnAdmission) as exc_info:
+        repository.admit_serial_public_turn(
+            created.schedule_id,
+            replaced.state_version,
+            _admission(turn_id="turn-2"),
+        )
+
+    assert exc_info.value.code == "invalid_turn_admission"
+    assert str(exc_info.value) == "invalid autonomous turn admission"
+    assert "INSERT INTO autonomous_managed_turns" not in " ".join(
+        statement
+        for statement, _ in connection.executed[executed_before:]
+    )
+    assert connection.committed == commits_before
+    assert "turn-2" not in connection.turns
+    assert connection._payload(connection.schedules["schedule-1"])["active_turn_id"] is None
+
+    fresh = repository.admit_serial_public_turn(
+        created.schedule_id,
+        replaced.state_version,
+        _admission(turn_id="turn-3", idempotency_key="turn-3:submit"),
+    )
+    assert fresh.turn.turn_id == "turn-3"
 
 
 def test_postgres_transition_cas_miss_preserves_managed_turn() -> None:
