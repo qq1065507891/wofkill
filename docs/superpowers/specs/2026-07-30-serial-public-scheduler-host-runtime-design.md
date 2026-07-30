@@ -134,6 +134,13 @@ enforces these additional invariants:
    admitting any later slot; and
 7. a closed or cancelled schedule cannot admit another turn.
 
+`HostRuntime` captures the schedule ID/version and active turn ID/version as one
+decision identity before any terminal operation. It passes those exact CAS
+values through `SerialPublicScheduler` to the repository. The scheduler must
+not reload a newer active turn when completing, cancelling, or expiring an
+older captured turn; an intervening replacement must produce a stable CAS
+conflict instead of terminalizing the replacement.
+
 The scheduler is poll-driven. `HostRuntime.expire_due_turns(now)` finds an
 active turn whose deadline is not later than `now` and finishes it with
 `AgentTurnStatus.EXPIRED`. It does not start a background thread, which keeps
@@ -295,3 +302,12 @@ budgeting, and the first AgentLoop. It must consume this host API rather than
 modifying scheduler ordering or bypassing recovery/cancellation checks.
 Real model and tool invocation will create durable dispatch attempts only
 through a later explicit dispatcher; it is deliberately absent here.
+
+Before that dispatcher becomes a production caller of `create_dispatch`, its
+design must add a durable active-turn fence shared with cancellation and
+terminal advancement. Attempt creation must either validate the captured
+schedule/turn identity in the same backend transaction or be rejected after
+terminalization begins. A second dispatch scan or a process-local lock is not
+sufficient because another process can create an attempt in the remaining
+window. Result consumers must still revalidate the active turn, lease, window,
+and revision as required above.

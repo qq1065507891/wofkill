@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** In progress (`38/52` implementation steps).
+**Progress:** In progress (`46/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -1017,7 +1017,7 @@ git commit -m "feat: persist serial public turns in postgres"
 - Create: `tests/player_agents/test_host_runtime.py`
 - Create: `tests/player_agents/test_runtime_import_boundary.py`
 
-- [ ] **Step 1: Write failing isolated-runtime boundary test**
+- [x] **Step 1: Write failing isolated-runtime boundary test**
 
 Scan every Python file below `werewolf_agent/player_agents/runtime` and reject
 imports starting with:
@@ -1035,7 +1035,7 @@ FORBIDDEN_PREFIXES = (
 
 Assert the runtime package exists and has no violation.
 
-- [ ] **Step 2: Write failing HostRuntime lifecycle tests**
+- [x] **Step 2: Write failing HostRuntime lifecycle tests**
 
 Cover fresh admission, restarted-runtime recovery requirement, pending recovery
 block, unsafe-to-unknown recovery success, lifecycle transitions, committed
@@ -1072,7 +1072,7 @@ def test_complete_active_turn_advances_after_validating() -> None:
     ).turn.status is AgentTurnStatus.COMMITTED
 ```
 
-- [ ] **Step 3: Run runtime tests and verify RED**
+- [x] **Step 3: Run runtime tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/player_agents/test_runtime_import_boundary.py tests/player_agents/test_host_runtime.py -v
@@ -1080,14 +1080,16 @@ conda run -n wofkill python -m pytest tests/player_agents/test_runtime_import_bo
 
 Expected: runtime modules and `HostRuntime` do not exist.
 
-- [ ] **Step 4: Implement the narrow scheduler facade**
+- [x] **Step 4: Implement the narrow scheduler facade**
 
 `SerialPublicScheduler` accepts only
 `require_autonomous_turn_repository(repository)`. Its methods delegate
 create/load/admit/transition/finish while keeping repository access private.
-It loads the active schedule before each turn operation and raises stable
-not-found or inactive-turn errors instead of accepting arbitrary schedule
-state from a caller.
+It loads repository state before admission and non-terminal transitions and
+raises stable not-found or inactive-turn errors. Terminal operations instead
+accept the schedule and turn IDs plus expected versions captured together by
+`HostRuntime`; the facade must not reload a newer active turn and accidentally
+apply an older completion or cancellation decision to it.
 
 ```python
 class SerialPublicScheduler:
@@ -1107,7 +1109,7 @@ class SerialPublicScheduler:
         )
 ```
 
-- [ ] **Step 5: Implement HostRuntime recovery and admission gates**
+- [x] **Step 5: Implement HostRuntime recovery and admission gates**
 
 Define `HostRuntimeError`, `HostRecoveryRequired`, and
 `HostRecoveryBlocked` with stable `code` values. The constructor validates
@@ -1147,7 +1149,7 @@ def _require_recovered(self, game_id: str) -> None:
     raise HostRecoveryRequired(game_id)
 ```
 
-- [ ] **Step 6: Implement completion, cancellation, and expiry**
+- [x] **Step 6: Implement completion, cancellation, and expiry**
 
 `complete_active_turn` loads the schedule and managed turn, then calls finish
 with `COMMITTED`, `ADVANCE`, and no reason.
@@ -1182,7 +1184,7 @@ def _cancel_turn_dispatches(
             )
 ```
 
-- [ ] **Step 7: Verify recovery and late-result behavior**
+- [x] **Step 7: Verify recovery and late-result behavior**
 
 Create a dispatched attempt, cancel the active turn, assert the attempt remains
 recoverable and a new admission is blocked. Reconcile it to
@@ -1197,16 +1199,17 @@ conda run -n wofkill python -m pytest tests/player_agents/test_host_runtime.py t
 
 Expected: all runtime and recovery tests pass.
 
-- [ ] **Step 8: Run runtime static checks and commit**
+- [x] **Step 8: Run runtime static checks and commit**
 
 ```bash
 conda run -n wofkill python -m ruff check --ignore UP009 werewolf_agent/player_agents/runtime tests/player_agents/test_host_runtime.py tests/player_agents/test_runtime_import_boundary.py
-conda run -n wofkill python -m mypy werewolf_agent/player_agents/runtime
+conda run -n wofkill python -m mypy --follow-imports=skip werewolf_agent/player_agents/runtime
 git add werewolf_agent/player_agents/runtime tests/player_agents/test_host_runtime.py tests/player_agents/test_runtime_import_boundary.py
 git commit -m "feat: add serial public host runtime"
 ```
 
-Expected: Ruff and mypy pass, followed by a successful commit.
+Expected: Ruff and the scoped runtime mypy check pass, followed by a successful
+commit. Repository-wide dependency checking remains part of Task 8.
 
 ### Task 8: Run Cross-Backend and Repository-Wide Verification
 
