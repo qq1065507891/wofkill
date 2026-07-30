@@ -200,6 +200,19 @@ class InMemoryDispatchFixture:
             in {DispatchStatus.DISPATCHING, DispatchStatus.DISPATCHED}
         ]
 
+    def list_dispatches_for_turn(
+        self,
+        game_id: str,
+        turn_id: str,
+    ) -> list[DispatchAttempt]:
+        attempts = [
+            attempt
+            for attempt in self._attempts.values()
+            if attempt.game_id == game_id and attempt.turn_id == turn_id
+        ]
+        attempts.sort(key=lambda item: (item.created_at, item.dispatch_id))
+        return [attempt.model_copy(deep=True) for attempt in attempts]
+
     def assert_dispatch_allowed(self, game_id: str) -> None:
         if self.list_recoverable_dispatches(game_id):
             raise DispatchRecoveryBlocked(game_id)
@@ -327,6 +340,49 @@ def test_recovery_resolution_is_frozen_and_kind_is_closed() -> None:
         "unavailable",
         "unsafe",
     }
+
+
+def test_dispatches_for_turn_fixture_is_deterministic_and_scoped() -> None:
+    store = InMemoryDispatchFixture(
+        [
+            _attempt(
+                dispatch_id="dispatch-z",
+                game_id="game-1",
+                turn_id="turn-2",
+                created_at=datetime(2026, 7, 29, 12, tzinfo=timezone.utc),
+            ),
+            _attempt(
+                dispatch_id="dispatch-b",
+                game_id="game-1",
+                turn_id="turn-1",
+                created_at=datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+                status=DispatchStatus.CANCELLED,
+                state_version=1,
+            ),
+            _attempt(
+                dispatch_id="dispatch-a",
+                game_id="game-1",
+                turn_id="turn-1",
+                created_at=datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+                status=DispatchStatus.RESULT_RECORDED,
+                state_version=3,
+            ),
+            _attempt(
+                dispatch_id="dispatch-other-game",
+                game_id="game-2",
+                turn_id="turn-1",
+            ),
+        ]
+    )
+
+    listed = store.list_dispatches_for_turn("game-1", "turn-1")
+
+    assert [item.dispatch_id for item in listed] == ["dispatch-a", "dispatch-b"]
+    assert {item.status for item in listed} == {
+        DispatchStatus.CANCELLED,
+        DispatchStatus.RESULT_RECORDED,
+    }
+    assert listed[0] is not store.load_dispatch("dispatch-a")
 
 
 def test_reconciler_marks_non_idempotent_attempt_unknown() -> None:

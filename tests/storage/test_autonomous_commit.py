@@ -891,6 +891,63 @@ def test_dispatch_listing_is_sorted_and_returns_defensive_copies(dispatch_reposi
     assert reloaded.reason_code is None
 
 
+def test_dispatches_for_turn_filters_game_and_turn_and_includes_all_statuses(
+    dispatch_repository,
+) -> None:
+    dispatch_repository.save_game(GameState(game_id="g2"))
+
+    def create(
+        dispatch_id: str,
+        *,
+        game_id: str = "g1",
+        turn_id: str = "turn-1",
+        hour: int,
+    ) -> None:
+        dispatch_repository.create_dispatch(
+            _dispatch_attempt(
+                dispatch_id=dispatch_id,
+                game_id=game_id,
+                turn_id=turn_id,
+                provider_idempotency_key=f"provider-{dispatch_id}",
+                created_at=datetime(2026, 7, 29, hour, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 7, 29, hour, tzinfo=timezone.utc),
+            )
+        )
+
+    create("dispatch-pending", hour=12)
+    create("dispatch-cancelled", hour=9)
+    dispatch_repository.cancel_dispatch("dispatch-cancelled", 0, "expired")
+    create("dispatch-result", hour=9)
+    dispatch_repository.mark_dispatching("dispatch-result", 0)
+    dispatch_repository.mark_dispatched("dispatch-result", 1)
+    dispatch_repository.record_result(
+        "dispatch-result",
+        2,
+        _dispatch_result(dispatch_id="dispatch-result", result_id="result-dispatch"),
+    )
+    create("dispatch-unknown", hour=8)
+    dispatch_repository.mark_dispatching("dispatch-unknown", 0)
+    dispatch_repository.mark_unknown_outcome("dispatch-unknown", 1, "timeout")
+    create("dispatch-other-turn", turn_id="turn-2", hour=7)
+    create("dispatch-other-game", game_id="g2", hour=6)
+
+    listed = dispatch_repository.list_dispatches_for_turn("g1", "turn-1")
+
+    assert [item.dispatch_id for item in listed] == [
+        "dispatch-unknown",
+        "dispatch-cancelled",
+        "dispatch-result",
+        "dispatch-pending",
+    ]
+    assert {item.status for item in listed} == {
+        DispatchStatus.PENDING,
+        DispatchStatus.CANCELLED,
+        DispatchStatus.RESULT_RECORDED,
+        DispatchStatus.UNKNOWN_OUTCOME,
+    }
+    assert listed[0] is not dispatch_repository.load_dispatch("dispatch-unknown")
+
+
 def test_found_recovery_records_result_from_dispatching_state(dispatch_repository) -> None:
     dispatch_repository.create_dispatch(_dispatch_attempt())
     dispatch_repository.mark_dispatching("dispatch-1", 0)

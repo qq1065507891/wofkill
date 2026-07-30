@@ -458,6 +458,21 @@ class InMemoryGameRepository:
             attempt = self._dispatch_attempts.get(dispatch_id)
             return attempt.model_copy(deep=True) if attempt is not None else None
 
+    def list_dispatches_for_turn(
+        self,
+        game_id: str,
+        turn_id: str,
+    ) -> list[DispatchAttempt]:
+        """按 game/turn 精确列出所有 dispatch，并保持稳定顺序。"""
+        with self._lock:
+            attempts = [
+                attempt
+                for attempt in self._dispatch_attempts.values()
+                if attempt.game_id == game_id and attempt.turn_id == turn_id
+            ]
+            attempts.sort(key=lambda item: (item.created_at, item.dispatch_id))
+            return [attempt.model_copy(deep=True) for attempt in attempts]
+
     def list_recoverable_dispatches(self, game_id: str) -> list[DispatchAttempt]:
         with self._lock:
             attempts = [

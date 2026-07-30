@@ -184,6 +184,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_dispatch_executor_key
     ON autonomous_dispatch_attempts (executor_id, provider_idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_dispatch_game_status_created
     ON autonomous_dispatch_attempts (game_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_dispatch_game_turn_created
+    ON autonomous_dispatch_attempts (game_id, turn_id, created_at);
 """
 
 
@@ -1005,6 +1007,25 @@ class SqliteGameRepository:
         with self._lock:
             attempt = self._load_dispatch_unlocked(dispatch_id)
             return attempt.model_copy(deep=True) if attempt is not None else None
+
+    def list_dispatches_for_turn(
+        self,
+        game_id: str,
+        turn_id: str,
+    ) -> list[DispatchAttempt]:
+        """按 game/turn 精确列出所有 dispatch，并保持稳定顺序。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT dispatch_id, game_id, turn_id, actor_id, operation_kind, "
+                "executor_id, provider_idempotency_key, recovery_policy, request_hash, "
+                "lease_hash, view_fingerprint, deadline, status, state_version, "
+                "reason_code, created_at, updated_at "
+                "FROM autonomous_dispatch_attempts "
+                "WHERE game_id = ? AND turn_id = ? "
+                "ORDER BY created_at, dispatch_id",
+                (game_id, turn_id),
+            ).fetchall()
+            return [self._dispatch_from_row(row).model_copy(deep=True) for row in rows]
 
     def list_recoverable_dispatches(self, game_id: str) -> list[DispatchAttempt]:
         with self._lock:

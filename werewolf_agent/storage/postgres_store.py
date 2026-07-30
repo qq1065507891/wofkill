@@ -906,6 +906,26 @@ class PostgresGameRepository:
             )
             return None if attempt is None else self._dispatch_copy(attempt)
 
+    def list_dispatches_for_turn(
+        self,
+        game_id: str,
+        turn_id: str,
+    ) -> list[DispatchAttempt]:
+        """按 game/turn 精确列出所有 dispatch，并保持稳定顺序。"""
+        with self._lock:
+            rows = self._ensure_connection().execute(
+                "SELECT "
+                f"{self._dispatch_select_columns()} "
+                "FROM autonomous_dispatch_attempts "
+                "WHERE game_id = %s AND turn_id = %s "
+                "ORDER BY created_at, dispatch_id",
+                (game_id, turn_id),
+            ).fetchall()
+            return [
+                self._dispatch_copy(self._dispatch_from_row(row))
+                for row in rows
+            ]
+
     def list_recoverable_dispatches(self, game_id: str) -> list[DispatchAttempt]:
         with self._lock:
             rows = self._ensure_connection().execute(
@@ -1463,6 +1483,10 @@ class PostgresGameRepository:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_autonomous_dispatch_game_status_created "
             "ON autonomous_dispatch_attempts (game_id, status, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_autonomous_dispatch_game_turn_created "
+            "ON autonomous_dispatch_attempts (game_id, turn_id, created_at)"
         )
 
     @staticmethod

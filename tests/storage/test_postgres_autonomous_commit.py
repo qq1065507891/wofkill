@@ -224,7 +224,30 @@ def test_postgres_schema_contains_durable_dispatch_tables_and_indexes() -> None:
     assert "executor_id, provider_idempotency_key" in sql
     assert "game_id, status, created_at" in sql
     assert "on autonomous_dispatch_attempts (game_id, status, created_at)" in sql
-    assert "created_at, dispatch_id" not in sql
+    assert "idx_autonomous_dispatch_game_turn_created" in sql
+    assert "on autonomous_dispatch_attempts (game_id, turn_id, created_at)" in sql
+
+
+def test_postgres_dispatches_for_turn_binds_game_and_turn() -> None:
+    repository = _repository_without_connection()
+    repository._conn = MagicMock()
+    repository._autonomous_schema_ready = True
+    row = (
+        "dispatch-1", "game-1", "turn-1", "p01", "model", "provider",
+        "provider-key", "idempotent_lookup_or_reissue", "a" * 64, "b" * 64,
+        "c" * 64, datetime(2026, 7, 29, 12, tzinfo=timezone.utc), "cancelled", 1,
+        "expired", datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+    )
+    repository._conn.execute.return_value.fetchall.return_value = [row]
+
+    listed = repository.list_dispatches_for_turn("game-1", "turn-1")
+
+    assert [item.dispatch_id for item in listed] == ["dispatch-1"]
+    sql, params = repository._conn.execute.call_args.args
+    normalized = " ".join(sql.split())
+    assert "WHERE game_id = %s AND turn_id = %s ORDER BY created_at, dispatch_id" in normalized
+    assert params == ("game-1", "turn-1")
 
 
 def test_postgres_durable_capability_never_opens_connection() -> None:
