@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** In progress (`46/52` implementation steps).
+**Progress:** Complete (`52/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -1217,7 +1217,7 @@ commit. Repository-wide dependency checking remains part of Task 8.
 - Modify: `tests/storage/test_autonomous_turns.py`
 - Modify: `docs/superpowers/plans/2026-07-30-autonomous-player-serial-public-host-runtime.md`
 
-- [ ] **Step 1: Add the final shared atomicity matrix**
+- [x] **Step 1: Add the final shared atomicity matrix**
 
 Parameterize memory and SQLite for: schedule creation, current-slot admission,
 stale CAS, every legal non-terminal edge used by HostRuntime, advance, replace,
@@ -1247,7 +1247,7 @@ def test_atomic_finish_matrix(repository_kind, tmp_path) -> None:
     assert updated.next_slot_ordinal == 1
 ```
 
-- [ ] **Step 2: Run focused player-agent and storage suites**
+- [x] **Step 2: Run focused player-agent and storage suites**
 
 ```bash
 conda run -n wofkill python -m pytest tests/player_agents tests/storage/test_autonomous_turns.py tests/storage/test_durable_dispatch_protocol.py tests/storage/test_autonomous_commit.py tests/storage/test_sqlite_migrations.py tests/storage/test_postgres_autonomous_commit.py -v
@@ -1255,7 +1255,7 @@ conda run -n wofkill python -m pytest tests/player_agents tests/storage/test_aut
 
 Expected: all focused and adjacent tests pass.
 
-- [ ] **Step 3: Run scoped Ruff and mypy**
+- [x] **Step 3: Run scoped Ruff and mypy**
 
 ```bash
 conda run -n wofkill python -m ruff check --ignore UP009 werewolf_agent/player_agents werewolf_agent/storage/autonomous_turns.py werewolf_agent/storage/durable_dispatch.py werewolf_agent/storage/memory_store.py werewolf_agent/storage/sqlite_store.py werewolf_agent/storage/postgres_store.py tests/player_agents tests/storage/test_autonomous_turns.py tests/storage/test_durable_dispatch_protocol.py tests/storage/test_postgres_autonomous_commit.py tests/storage/test_sqlite_migrations.py
@@ -1264,7 +1264,7 @@ conda run -n wofkill python -m mypy --follow-imports=skip werewolf_agent/player_
 
 Expected: both commands report no errors.
 
-- [ ] **Step 4: Verify the live-runtime boundary**
+- [x] **Step 4: Verify the live-runtime boundary**
 
 Run:
 
@@ -1274,7 +1274,7 @@ rg -n "HostRuntime|SerialPublicScheduler|AutonomousTurnRepository" werewolf_agen
 
 Expected: no output. This stage must not be wired into the old runtime.
 
-- [ ] **Step 5: Run the full test suite and diff checks**
+- [x] **Step 5: Run the full test suite and diff checks**
 
 ```bash
 conda run -n wofkill python -m pytest -q
@@ -1285,7 +1285,7 @@ git status --short
 Expected: the full suite passes with only the repository's existing warnings;
 `git diff --check` is silent; status lists only this plan's intended files.
 
-- [ ] **Step 6: Mark progress complete and commit the integrated stage**
+- [x] **Step 6: Mark progress complete and commit the integrated stage**
 
 Change this plan's progress to `52/52` and every completed checkbox to
 `[x]`, then run:
