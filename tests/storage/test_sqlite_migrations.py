@@ -3,7 +3,7 @@
 验证 SQLite fresh schema、版本迁移与 repository 自动升级的一致性。
 
 作者: Project contributors
-修改日期: 2026-07-29
+修改日期: 2026-07-30
 """
 
 from __future__ import annotations
@@ -119,6 +119,33 @@ def test_fresh_sqlite_schema_includes_durable_dispatch_tables_and_indexes(tmp_pa
     repository.close()
 
 
+def test_fresh_sqlite_schema_includes_autonomous_turn_tables_and_indexes(tmp_path) -> None:
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    repository = SqliteGameRepository(str(tmp_path / "turn-schema.db"))
+    tables = {
+        row[0]
+        for row in repository._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'",
+        ).fetchall()
+    }
+    indexes = {
+        row[0]
+        for row in repository._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'",
+        ).fetchall()
+    }
+    assert {
+        "autonomous_serial_public_schedules",
+        "autonomous_managed_turns",
+    } <= tables
+    assert {
+        "uq_open_serial_public_schedule",
+        "idx_managed_turn_schedule_status",
+    } <= indexes
+    repository.close()
+
+
 def test_migration_manager_does_not_apply_durable_dispatch_schema(tmp_path) -> None:
     from werewolf_agent.storage.migrations import MIGRATIONS
     from werewolf_agent.storage.sqlite_store import _AUTONOMOUS_DISPATCH_SCHEMA
@@ -129,6 +156,30 @@ def test_migration_manager_does_not_apply_durable_dispatch_schema(tmp_path) -> N
         and "autonomous_dispatch_results" not in migration.sql
         for migration in MIGRATIONS
     )
+
+
+def test_migration_manager_does_not_apply_autonomous_turn_schema(tmp_path) -> None:
+    from werewolf_agent.storage.migrations import MIGRATIONS, MigrationManager
+    from werewolf_agent.storage.sqlite_store import _AUTONOMOUS_SCHEDULING_SCHEMA
+
+    assert "autonomous_serial_public_schedules" in _AUTONOMOUS_SCHEDULING_SCHEMA
+    assert all(
+        "autonomous_serial_public_schedules" not in migration.sql
+        and "autonomous_managed_turns" not in migration.sql
+        for migration in MIGRATIONS
+    )
+    with MigrationManager(str(tmp_path / "legacy-turn-migrations.db")) as manager:
+        manager.apply_all()
+        tables = {
+            row[0]
+            for row in manager._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'",
+            ).fetchall()
+        }
+    assert not {
+        "autonomous_serial_public_schedules",
+        "autonomous_managed_turns",
+    } & tables
 
 
 def test_repository_upgrades_legacy_events_table_and_round_trips_v2(tmp_path) -> None:
