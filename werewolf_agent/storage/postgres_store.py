@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：PostgreSQL 游戏仓库，支持事件兼容读写、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
+功能描述：PostgreSQL 游戏仓库，支持事件兼容读写、串行公开调度持久化、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-29
+修改日期：2026-07-30
 使用示例：内部模块，无对外接口
 """
 
@@ -29,11 +29,19 @@ from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchResultRecord,
     DispatchStatus,
 )
+from werewolf_agent.player_agents.contracts.scheduling import (
+    ManagedAgentTurn,
+    SerialPublicSchedule,
+    SerialPublicScheduleStatus,
+    TerminalDisposition,
+    TurnAdmission,
+)
 from werewolf_agent.player_agents.contracts.transactions import (
     CommitResult,
     CommitTurnRequest,
     ProjectionOutboxRecord,
 )
+from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
 from werewolf_agent.runtime.event_metadata import (
     deserialize_game_event,
     serialize_game_event,
@@ -52,6 +60,18 @@ from werewolf_agent.storage.autonomous_commit import (
     build_commit_result,
     build_committed_event,
     request_hash,
+)
+from werewolf_agent.storage.autonomous_turns import (
+    AutonomousTurnTransactionError,
+    InvalidScheduleTransition,
+    InvalidTurnAdmission,
+    ManagedTurnNotFound,
+    ScheduleNotFound,
+    ScheduleStateConflict,
+    TurnStateConflict,
+    prepare_active_finish,
+    prepare_active_transition,
+    prepare_serial_public_admission,
 )
 from werewolf_agent.storage.durable_dispatch import (
     DispatchIdempotencyConflict,
@@ -223,6 +243,464 @@ class PostgresGameRepository:
                 )
                 for row in rows
         ]
+
+    # -- Autonomous serial-public turns -----------------------------------
+
+    def supports_autonomous_turns(self) -> bool:
+        """仅在连接已完成自主 schema 初始化后报告支持。"""
+        return self._conn is not None and bool(
+            getattr(self, "_autonomous_schema_ready", False),
+        )
+
+    @staticmethod
+    def _schedule_from_jsonb(payload: object) -> SerialPublicSchedule:
+        """兼容 psycopg 的 JSONB 字典及测试/旧驱动返回的 JSON 字符串。"""
+        if isinstance(payload, str):
+            return SerialPublicSchedule.model_validate_json(payload)
+        return SerialPublicSchedule.model_validate_json(
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    @staticmethod
+    def _managed_turn_from_jsonb(payload: object) -> ManagedAgentTurn:
+        """兼容 psycopg 的 JSONB 字典及测试/旧驱动返回的 JSON 字符串。"""
+        if isinstance(payload, str):
+            return ManagedAgentTurn.model_validate_json(payload)
+        return ManagedAgentTurn.model_validate_json(
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    @staticmethod
+    def _schedule_jsonb(schedule: SerialPublicSchedule) -> str:
+        """将严格调度契约编码为 PostgreSQL JSONB 输入。"""
+        return json.dumps(
+            schedule.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _managed_turn_jsonb(managed: ManagedAgentTurn) -> str:
+        """将严格托管回合契约编码为 PostgreSQL JSONB 输入。"""
+        return json.dumps(
+            managed.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _load_schedule_row(
+        self,
+        conn: Any,
+        schedule_id: str,
+        *,
+        for_update: bool = False,
+    ) -> SerialPublicSchedule | None:
+        suffix = " FOR UPDATE" if for_update else ""
+        row = conn.execute(
+            "SELECT schedule_json FROM autonomous_serial_public_schedules "
+            "WHERE schedule_id = %s"
+            f"{suffix}",
+            (schedule_id,),
+        ).fetchone()
+        return None if row is None else self._schedule_from_jsonb(row[0])
+
+    def _load_managed_turn_row(
+        self,
+        conn: Any,
+        turn_id: str,
+        *,
+        for_update: bool = False,
+    ) -> ManagedAgentTurn | None:
+        suffix = " FOR UPDATE" if for_update else ""
+        row = conn.execute(
+            "SELECT turn_json FROM autonomous_managed_turns WHERE turn_id = %s"
+            f"{suffix}",
+            (turn_id,),
+        ).fetchone()
+        return None if row is None else self._managed_turn_from_jsonb(row[0])
+
+    def _lock_schedule_transaction(self, conn: Any, schedule_id: str) -> str:
+        """定位所属游戏并用现有 advisory lock 串行化跨实例写入。"""
+        row = conn.execute(
+            "SELECT game_id FROM autonomous_serial_public_schedules "
+            "WHERE schedule_id = %s",
+            (schedule_id,),
+        ).fetchone()
+        if row is None:
+            raise ScheduleNotFound("schedule not found")
+        game_id = str(row[0])
+        self._lock_game_transaction(conn, game_id)
+        return game_id
+
+    def _lock_managed_turn_transaction(
+        self,
+        conn: Any,
+        turn_id: str,
+    ) -> tuple[str, str]:
+        """定位托管回合的调度与游戏，并获取游戏级事务锁。"""
+        row = conn.execute(
+            "SELECT schedule_id, game_id FROM autonomous_managed_turns "
+            "WHERE turn_id = %s",
+            (turn_id,),
+        ).fetchone()
+        if row is None:
+            raise ManagedTurnNotFound("managed turn not found")
+        schedule_id, game_id = str(row[0]), str(row[1])
+        self._lock_game_transaction(conn, game_id)
+        return schedule_id, game_id
+
+    def _update_schedule_row(
+        self,
+        conn: Any,
+        schedule: SerialPublicSchedule,
+        expected_version: int,
+    ) -> None:
+        cursor = conn.execute(
+            "UPDATE autonomous_serial_public_schedules SET "
+            "game_id = %s, window_id = %s, status = %s, "
+            "next_slot_ordinal = %s, active_turn_id = %s, state_version = %s, "
+            "schedule_json = %s::jsonb, created_at = %s, updated_at = %s "
+            "WHERE schedule_id = %s AND state_version = %s",
+            (
+                schedule.game_id,
+                schedule.window.window_id,
+                schedule.status.value,
+                schedule.next_slot_ordinal,
+                schedule.active_turn_id,
+                schedule.state_version,
+                self._schedule_jsonb(schedule),
+                schedule.created_at,
+                schedule.updated_at,
+                schedule.schedule_id,
+                expected_version,
+            ),
+        )
+        if getattr(cursor, "rowcount", None) != 1:
+            raise ScheduleStateConflict("schedule state version conflict")
+
+    def _update_managed_turn_row(
+        self,
+        conn: Any,
+        managed: ManagedAgentTurn,
+        expected_version: int,
+    ) -> None:
+        cursor = conn.execute(
+            "UPDATE autonomous_managed_turns SET "
+            "schedule_id = %s, game_id = %s, player_id = %s, status = %s, "
+            "state_version = %s, turn_json = %s::jsonb, terminal_reason = %s, "
+            "created_at = %s, updated_at = %s "
+            "WHERE turn_id = %s AND state_version = %s",
+            (
+                managed.schedule_id,
+                managed.turn.game_id,
+                managed.turn.player_id,
+                managed.turn.status.value,
+                managed.state_version,
+                self._managed_turn_jsonb(managed),
+                managed.terminal_reason,
+                managed.created_at,
+                managed.updated_at,
+                managed.turn.turn_id,
+                expected_version,
+            ),
+        )
+        if getattr(cursor, "rowcount", None) != 1:
+            raise TurnStateConflict("managed turn state version conflict")
+
+    def create_serial_public_schedule(
+        self,
+        schedule: SerialPublicSchedule,
+    ) -> SerialPublicSchedule:
+        """创建公开调度，并用游戏级锁与部分唯一索引维持单开放调度。"""
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                self._lock_game_transaction(conn, schedule.game_id)
+                game_row = conn.execute(
+                    "SELECT 1 FROM games WHERE game_id = %s FOR UPDATE",
+                    (schedule.game_id,),
+                ).fetchone()
+                if game_row is None:
+                    raise AutonomousTurnTransactionError(
+                        "game is required before creating a schedule",
+                    )
+                if self._load_schedule_row(
+                    conn,
+                    schedule.schedule_id,
+                    for_update=True,
+                ) is not None:
+                    raise AutonomousTurnTransactionError("schedule already exists")
+                if (
+                    schedule.status is SerialPublicScheduleStatus.OPEN
+                    and schedule.active_turn_id is not None
+                ):
+                    raise InvalidScheduleTransition(
+                        "invalid autonomous turn transition",
+                    )
+                conn.execute(
+                    "INSERT INTO autonomous_serial_public_schedules "
+                    "(schedule_id, game_id, window_id, status, next_slot_ordinal, "
+                    "active_turn_id, state_version, schedule_json, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)",
+                    (
+                        schedule.schedule_id,
+                        schedule.game_id,
+                        schedule.window.window_id,
+                        schedule.status.value,
+                        schedule.next_slot_ordinal,
+                        schedule.active_turn_id,
+                        schedule.state_version,
+                        self._schedule_jsonb(schedule),
+                        schedule.created_at,
+                        schedule.updated_at,
+                    ),
+                )
+                stored = self._load_schedule_row(conn, schedule.schedule_id)
+                if stored is None:
+                    raise AutonomousTurnTransactionError(
+                        "created schedule could not be loaded",
+                    )
+                conn.commit()
+                return stored.model_copy(deep=True)
+            except (
+                AutonomousTurnTransactionError,
+                InvalidScheduleTransition,
+            ):
+                conn.rollback()
+                raise
+            except Exception as exc:
+                conn.rollback()
+                raise AutonomousTurnTransactionError(
+                    "autonomous schedule creation transaction failed",
+                ) from exc
+
+    def load_serial_public_schedule(
+        self,
+        schedule_id: str,
+    ) -> SerialPublicSchedule | None:
+        with self._lock:
+            schedule = self._load_schedule_row(
+                self._ensure_connection(),
+                schedule_id,
+            )
+            return None if schedule is None else schedule.model_copy(deep=True)
+
+    def load_active_serial_public_schedule(
+        self,
+        game_id: str,
+    ) -> SerialPublicSchedule | None:
+        with self._lock:
+            row = self._ensure_connection().execute(
+                "SELECT schedule_json FROM autonomous_serial_public_schedules "
+                "WHERE game_id = %s AND status = %s",
+                (game_id, SerialPublicScheduleStatus.OPEN.value),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._schedule_from_jsonb(row[0]).model_copy(deep=True)
+
+    def list_open_serial_public_schedules(
+        self,
+    ) -> tuple[SerialPublicSchedule, ...]:
+        with self._lock:
+            rows = self._ensure_connection().execute(
+                "SELECT schedule_json FROM autonomous_serial_public_schedules "
+                "WHERE status = %s ORDER BY created_at, schedule_id",
+                (SerialPublicScheduleStatus.OPEN.value,),
+            ).fetchall()
+            return tuple(
+                self._schedule_from_jsonb(row[0]).model_copy(deep=True)
+                for row in rows
+            )
+
+    def load_managed_turn(self, turn_id: str) -> ManagedAgentTurn | None:
+        with self._lock:
+            managed = self._load_managed_turn_row(
+                self._ensure_connection(),
+                turn_id,
+            )
+            return None if managed is None else managed.model_copy(deep=True)
+
+    def admit_serial_public_turn(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        admission: TurnAdmission,
+    ) -> ManagedAgentTurn:
+        """锁定游戏和调度后，以 CAS 原子准入当前公开位置。"""
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                self._lock_schedule_transaction(conn, schedule_id)
+                schedule = self._load_schedule_row(
+                    conn,
+                    schedule_id,
+                    for_update=True,
+                )
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
+                if schedule.state_version != expected_schedule_version:
+                    raise ScheduleStateConflict("schedule state version conflict")
+                now = max(datetime.now(timezone.utc), schedule.updated_at)
+                updated_schedule, managed = prepare_serial_public_admission(
+                    schedule,
+                    admission,
+                    now,
+                )
+                conn.execute(
+                    "INSERT INTO autonomous_managed_turns "
+                    "(turn_id, schedule_id, game_id, player_id, status, state_version, "
+                    "turn_json, terminal_reason, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)",
+                    (
+                        managed.turn.turn_id,
+                        managed.schedule_id,
+                        managed.turn.game_id,
+                        managed.turn.player_id,
+                        managed.turn.status.value,
+                        managed.state_version,
+                        self._managed_turn_jsonb(managed),
+                        managed.terminal_reason,
+                        managed.created_at,
+                        managed.updated_at,
+                    ),
+                )
+                self._update_schedule_row(
+                    conn,
+                    updated_schedule,
+                    expected_schedule_version,
+                )
+                conn.commit()
+                return managed.model_copy(deep=True)
+            except (
+                ScheduleNotFound,
+                ScheduleStateConflict,
+                InvalidTurnAdmission,
+                InvalidScheduleTransition,
+            ):
+                conn.rollback()
+                raise
+            except Exception as exc:
+                conn.rollback()
+                raise AutonomousTurnTransactionError(
+                    "autonomous turn admission transaction failed",
+                ) from exc
+
+    def transition_active_turn(
+        self,
+        turn_id: str,
+        expected_turn_version: int,
+        next_status: AgentTurnStatus,
+    ) -> ManagedAgentTurn:
+        """在游戏级锁和行锁下推进托管回合的非终态状态。"""
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                schedule_id, _ = self._lock_managed_turn_transaction(conn, turn_id)
+                managed = self._load_managed_turn_row(
+                    conn,
+                    turn_id,
+                    for_update=True,
+                )
+                if managed is None:
+                    raise ManagedTurnNotFound("managed turn not found")
+                if managed.state_version != expected_turn_version:
+                    raise TurnStateConflict("managed turn state version conflict")
+                schedule = self._load_schedule_row(
+                    conn,
+                    schedule_id,
+                    for_update=True,
+                )
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
+                updated = prepare_active_transition(schedule, managed, next_status)
+                self._update_managed_turn_row(conn, updated, expected_turn_version)
+                conn.commit()
+                return updated.model_copy(deep=True)
+            except (
+                ManagedTurnNotFound,
+                TurnStateConflict,
+                ScheduleNotFound,
+                InvalidScheduleTransition,
+            ):
+                conn.rollback()
+                raise
+            except Exception as exc:
+                conn.rollback()
+                raise AutonomousTurnTransactionError(
+                    "autonomous turn transition transaction failed",
+                ) from exc
+
+    def finish_active_turn(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        terminal_status: AgentTurnStatus,
+        disposition: TerminalDisposition,
+        reason_code: str | None,
+    ) -> SerialPublicSchedule:
+        """原子终结托管回合并推进、替换或关闭公开调度。"""
+        with self._lock:
+            conn = self._ensure_connection()
+            try:
+                self._lock_schedule_transaction(conn, schedule_id)
+                schedule = self._load_schedule_row(
+                    conn,
+                    schedule_id,
+                    for_update=True,
+                )
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
+                if schedule.state_version != expected_schedule_version:
+                    raise ScheduleStateConflict("schedule state version conflict")
+                managed = self._load_managed_turn_row(
+                    conn,
+                    turn_id,
+                    for_update=True,
+                )
+                if managed is None:
+                    raise ManagedTurnNotFound("managed turn not found")
+                if managed.state_version != expected_turn_version:
+                    raise TurnStateConflict("managed turn state version conflict")
+                now = max(datetime.now(timezone.utc), schedule.updated_at)
+                updated_schedule, updated_turn = prepare_active_finish(
+                    schedule,
+                    managed,
+                    terminal_status,
+                    disposition,
+                    reason_code=reason_code,
+                    now=now,
+                )
+                self._update_managed_turn_row(
+                    conn,
+                    updated_turn,
+                    expected_turn_version,
+                )
+                self._update_schedule_row(
+                    conn,
+                    updated_schedule,
+                    expected_schedule_version,
+                )
+                conn.commit()
+                return updated_schedule.model_copy(deep=True)
+            except (
+                ScheduleNotFound,
+                ScheduleStateConflict,
+                ManagedTurnNotFound,
+                TurnStateConflict,
+                InvalidScheduleTransition,
+            ):
+                conn.rollback()
+                raise
+            except Exception as exc:
+                conn.rollback()
+                raise AutonomousTurnTransactionError(
+                    "autonomous turn finish transaction failed",
+                ) from exc
 
     # -- Autonomous CommitTurn --------------------------------------------
 
@@ -1438,6 +1916,45 @@ class PostgresGameRepository:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_autonomous_outbox_revision "
             "ON autonomous_projection_outbox (game_id, committed_revision)"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS autonomous_serial_public_schedules (
+                schedule_id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+                window_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                next_slot_ordinal BIGINT NOT NULL,
+                active_turn_id TEXT,
+                state_version BIGINT NOT NULL,
+                schedule_json JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS autonomous_managed_turns (
+                turn_id TEXT PRIMARY KEY,
+                schedule_id TEXT NOT NULL
+                    REFERENCES autonomous_serial_public_schedules(schedule_id)
+                    ON DELETE CASCADE,
+                game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+                player_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                state_version BIGINT NOT NULL,
+                turn_json JSONB NOT NULL,
+                terminal_reason TEXT,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_open_serial_public_schedule "
+            "ON autonomous_serial_public_schedules (game_id) "
+            "WHERE status = 'open'"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_managed_turn_schedule_status "
+            "ON autonomous_managed_turns (schedule_id, status)"
         )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS autonomous_dispatch_attempts (

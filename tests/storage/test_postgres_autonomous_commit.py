@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-验证 PostgreSQL 自主 CommitTurn、durable dispatch schema 与结果幂等契约。
+验证 PostgreSQL 串行公开调度、自主 CommitTurn、durable dispatch schema 与结果幂等契约。
 
 作者: Project contributors
 创建日期: 2026-07-29
-修改日期: 2026-07-29
+修改日期: 2026-07-30
 """
 
+import copy
+import json
 import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -15,6 +17,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.player_agents.test_transaction_contracts import _request
+from tests.storage.test_autonomous_turns import (
+    _admission,
+    _admitted_validating,
+    _schedule,
+)
 from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchAttempt,
     DispatchOperationKind,
@@ -23,6 +30,16 @@ from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchResultOutcome,
     DispatchResultRecord,
     DispatchStatus,
+)
+from werewolf_agent.player_agents.contracts.scheduling import (
+    SerialPublicScheduleStatus,
+    TerminalDisposition,
+)
+from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
+from werewolf_agent.storage.autonomous_turns import (
+    AutonomousTurnTransactionError,
+    ScheduleStateConflict,
+    TurnStateConflict,
 )
 from werewolf_agent.storage.durable_dispatch import (
     DispatchIdempotencyConflict,
@@ -126,10 +143,395 @@ class _CommitConnection:
         self.rolled_back += 1
 
 
+class _TurnCursor:
+    def __init__(self, row=None, rows=None, *, rowcount: int = 1) -> None:
+        self._row = row
+        self._rows = rows or []
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _TurnConnection:
+    """用内存快照模拟 PostgreSQL 事务，验证双记录原子发布。"""
+
+    def __init__(
+        self,
+        *,
+        schedules: dict[str, object] | None = None,
+        turns: dict[str, object] | None = None,
+        fail_on_schedule_update: bool = False,
+        force_schedule_cas_miss: bool = False,
+        force_turn_cas_miss: bool = False,
+    ) -> None:
+        self.games = {"game-1"}
+        self.schedules = copy.deepcopy(schedules or {})
+        self.turns = copy.deepcopy(turns or {})
+        self.fail_on_schedule_update = fail_on_schedule_update
+        self.force_schedule_cas_miss = force_schedule_cas_miss
+        self.force_turn_cas_miss = force_turn_cas_miss
+        self.executed: list[tuple[str, tuple[object, ...]]] = []
+        self.committed = 0
+        self.rolled_back = 0
+        self._snapshot: tuple[dict[str, object], dict[str, object]] | None = None
+
+    @staticmethod
+    def _payload(value: object) -> dict[str, object]:
+        if isinstance(value, str):
+            return json.loads(value)
+        return copy.deepcopy(value)
+
+    def _begin(self) -> None:
+        if self._snapshot is None:
+            self._snapshot = (
+                copy.deepcopy(self.schedules),
+                copy.deepcopy(self.turns),
+            )
+
+    def execute(self, sql: str, params=()):
+        self._begin()
+        normalized = " ".join(sql.split())
+        bound = tuple(params)
+        self.executed.append((normalized, bound))
+
+        if "pg_advisory_xact_lock" in normalized:
+            return _TurnCursor()
+        if normalized.startswith("SELECT 1 FROM games"):
+            return _TurnCursor((1,) if bound[0] in self.games else None)
+        if normalized.startswith(
+            "SELECT game_id FROM autonomous_serial_public_schedules"
+        ):
+            payload = self.schedules.get(str(bound[0]))
+            row = None if payload is None else (self._payload(payload)["game_id"],)
+            return _TurnCursor(row)
+        if normalized.startswith(
+            "SELECT schedule_id, game_id FROM autonomous_managed_turns"
+        ):
+            payload = self.turns.get(str(bound[0]))
+            if payload is None:
+                return _TurnCursor()
+            data = self._payload(payload)
+            return _TurnCursor((data["schedule_id"], data["turn"]["game_id"]))
+        if normalized.startswith(
+            "SELECT schedule_json FROM autonomous_serial_public_schedules "
+            "WHERE schedule_id = %s"
+        ):
+            payload = self.schedules.get(str(bound[0]))
+            return _TurnCursor(None if payload is None else (copy.deepcopy(payload),))
+        if normalized.startswith(
+            "SELECT turn_json FROM autonomous_managed_turns WHERE turn_id = %s"
+        ):
+            payload = self.turns.get(str(bound[0]))
+            return _TurnCursor(None if payload is None else (copy.deepcopy(payload),))
+        if normalized.startswith(
+            "SELECT schedule_json FROM autonomous_serial_public_schedules "
+            "WHERE game_id = %s AND status = %s"
+        ):
+            for payload in self.schedules.values():
+                data = self._payload(payload)
+                if data["game_id"] == bound[0] and data["status"] == bound[1]:
+                    return _TurnCursor((copy.deepcopy(payload),))
+            return _TurnCursor()
+        if normalized.startswith(
+            "SELECT schedule_json FROM autonomous_serial_public_schedules "
+            "WHERE status = %s ORDER BY created_at, schedule_id"
+        ):
+            matching = [
+                payload
+                for payload in self.schedules.values()
+                if self._payload(payload)["status"] == bound[0]
+            ]
+            matching.sort(
+                key=lambda payload: (
+                    self._payload(payload)["created_at"],
+                    self._payload(payload)["schedule_id"],
+                ),
+            )
+            return _TurnCursor(rows=[(copy.deepcopy(payload),) for payload in matching])
+        if normalized.startswith(
+            "INSERT INTO autonomous_serial_public_schedules"
+        ):
+            self.schedules[str(bound[0])] = copy.deepcopy(bound[7])
+            return _TurnCursor()
+        if normalized.startswith("INSERT INTO autonomous_managed_turns"):
+            self.turns[str(bound[0])] = copy.deepcopy(bound[6])
+            return _TurnCursor()
+        if normalized.startswith("UPDATE autonomous_managed_turns SET"):
+            if self.force_turn_cas_miss:
+                return _TurnCursor(rowcount=0)
+            turn_id = str(bound[9])
+            current = self.turns.get(turn_id)
+            if current is None or self._payload(current)["state_version"] != bound[10]:
+                return _TurnCursor(rowcount=0)
+            self.turns[turn_id] = copy.deepcopy(bound[5])
+            return _TurnCursor()
+        if normalized.startswith("UPDATE autonomous_serial_public_schedules SET"):
+            if self.fail_on_schedule_update:
+                raise RuntimeError("forced schedule update failure")
+            if self.force_schedule_cas_miss:
+                return _TurnCursor(rowcount=0)
+            schedule_id = str(bound[9])
+            current = self.schedules.get(schedule_id)
+            if current is None or self._payload(current)["state_version"] != bound[10]:
+                return _TurnCursor(rowcount=0)
+            self.schedules[schedule_id] = copy.deepcopy(bound[6])
+            return _TurnCursor()
+        raise AssertionError(f"unexpected SQL: {normalized}")
+
+    def commit(self) -> None:
+        self.committed += 1
+        self._snapshot = None
+
+    def rollback(self) -> None:
+        self.rolled_back += 1
+        if self._snapshot is not None:
+            self.schedules, self.turns = self._snapshot
+        self._snapshot = None
+
+
+def _turn_repository(connection: _TurnConnection):
+    repository = _repository_without_connection()
+    repository._conn = connection
+    repository._autonomous_schema_ready = True
+    return repository
+
+
 def test_uninitialized_postgres_reports_autonomous_commit_unsupported() -> None:
     repository = _repository_without_connection()
 
     assert repository.supports_autonomous_commit() is False
+
+
+def test_uninitialized_postgres_reports_autonomous_turns_unsupported() -> None:
+    repository = _repository_without_connection()
+
+    assert repository.supports_autonomous_turns() is False
+
+
+def test_postgres_schema_contains_autonomous_turn_tables() -> None:
+    repository = _repository_without_connection()
+    connection = _clean_schema_connection()
+
+    repository._ensure_schema_transaction(connection)
+
+    sql = " ".join(call.args[0].lower() for call in connection.execute.call_args_list)
+    assert "create table if not exists autonomous_serial_public_schedules" in sql
+    assert "create table if not exists autonomous_managed_turns" in sql
+    assert "schedule_json jsonb not null" in sql
+    assert "turn_json jsonb not null" in sql
+    assert "created_at timestamptz not null" in sql
+    assert "updated_at timestamptz not null" in sql
+    assert "state_version bigint not null" in sql
+    assert "uq_open_serial_public_schedule" in sql
+    assert "where status = 'open'" in sql
+    assert "idx_managed_turn_schedule_status" in sql
+
+
+def test_postgres_autonomous_turn_jsonb_decoders_accept_dicts_and_strings() -> None:
+    from werewolf_agent.storage.postgres_store import PostgresGameRepository
+
+    schedule = _schedule()
+    _, managed = _admitted_validating()
+
+    assert PostgresGameRepository._schedule_from_jsonb(
+        schedule.model_dump(mode="json"),
+    ) == schedule
+    assert PostgresGameRepository._schedule_from_jsonb(
+        schedule.model_dump_json(),
+    ) == schedule
+    assert PostgresGameRepository._managed_turn_from_jsonb(
+        managed.model_dump(mode="json"),
+    ) == managed
+    assert PostgresGameRepository._managed_turn_from_jsonb(
+        managed.model_dump_json(),
+    ) == managed
+
+
+def test_postgres_autonomous_turn_jsonb_is_canonical_utf8() -> None:
+    from werewolf_agent.storage.postgres_store import PostgresGameRepository
+
+    schedule = _schedule(
+        window=_schedule().window.model_copy(update={"task_type": "公开发言"}),
+    )
+
+    payload = PostgresGameRepository._schedule_jsonb(schedule)
+
+    assert payload == json.dumps(
+        schedule.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert "公开发言" in payload
+
+
+def test_postgres_autonomous_turn_reads_are_ordered_and_defensive() -> None:
+    later = _schedule(
+        schedule_id="schedule-2",
+        created_at=datetime(2026, 7, 30, 11, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 7, 30, 11, tzinfo=timezone.utc),
+    )
+    first = _schedule()
+    connection = _TurnConnection(
+        schedules={
+            later.schedule_id: later.model_dump(mode="json"),
+            first.schedule_id: first.model_dump_json(),
+        },
+    )
+    repository = _turn_repository(connection)
+
+    loaded = repository.load_serial_public_schedule(first.schedule_id)
+    active = repository.load_active_serial_public_schedule(first.game_id)
+    open_schedules = repository.list_open_serial_public_schedules()
+
+    assert loaded == first
+    assert loaded is not first
+    assert active in (first, later)
+    assert tuple(item.schedule_id for item in open_schedules) == (
+        "schedule-1",
+        "schedule-2",
+    )
+    assert all(item is not first and item is not later for item in open_schedules)
+
+
+def test_postgres_autonomous_turn_lifecycle_persists_with_cas() -> None:
+    connection = _TurnConnection()
+    repository = _turn_repository(connection)
+
+    assert repository.supports_autonomous_turns() is True
+    created = repository.create_serial_public_schedule(_schedule())
+    managed = repository.admit_serial_public_turn(
+        created.schedule_id,
+        created.state_version,
+        _admission(),
+    )
+    for next_status in (
+        AgentTurnStatus.OBSERVING,
+        AgentTurnStatus.THINKING,
+        AgentTurnStatus.SUBMITTED,
+        AgentTurnStatus.VALIDATING,
+    ):
+        managed = repository.transition_active_turn(
+            managed.turn.turn_id,
+            managed.state_version,
+            next_status,
+        )
+    finished = repository.finish_active_turn(
+        created.schedule_id,
+        expected_schedule_version=1,
+        turn_id=managed.turn.turn_id,
+        expected_turn_version=managed.state_version,
+        terminal_status=AgentTurnStatus.COMMITTED,
+        disposition=TerminalDisposition.ADVANCE,
+        reason_code=None,
+    )
+
+    persisted_turn = repository.load_managed_turn(managed.turn.turn_id)
+    assert created == _schedule()
+    assert finished.status is SerialPublicScheduleStatus.OPEN
+    assert finished.next_slot_ordinal == 1
+    assert finished.active_turn_id is None
+    assert persisted_turn is not None
+    assert persisted_turn.turn.status is AgentTurnStatus.COMMITTED
+    assert persisted_turn.state_version == 5
+    assert connection.committed == 7
+
+
+def test_postgres_admission_preserves_schedule_version_conflict() -> None:
+    schedule = _schedule()
+    connection = _TurnConnection(
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+    )
+    repository = _turn_repository(connection)
+
+    with pytest.raises(ScheduleStateConflict):
+        repository.admit_serial_public_turn(
+            schedule.schedule_id,
+            expected_schedule_version=99,
+            admission=_admission(),
+        )
+
+    assert connection.rolled_back == 1
+    assert connection.turns == {}
+
+
+def test_postgres_admission_cas_miss_rolls_back_inserted_turn() -> None:
+    schedule = _schedule()
+    connection = _TurnConnection(
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+        force_schedule_cas_miss=True,
+    )
+    repository = _turn_repository(connection)
+    schedules_before = copy.deepcopy(connection.schedules)
+
+    with pytest.raises(ScheduleStateConflict):
+        repository.admit_serial_public_turn(
+            schedule.schedule_id,
+            expected_schedule_version=schedule.state_version,
+            admission=_admission(),
+        )
+
+    assert connection.schedules == schedules_before
+    assert connection.turns == {}
+    assert connection.rolled_back == 1
+
+
+def test_postgres_transition_cas_miss_preserves_managed_turn() -> None:
+    schedule, managed = _admitted_validating()
+    connection = _TurnConnection(
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+        turns={managed.turn.turn_id: managed.model_dump(mode="json")},
+        force_turn_cas_miss=True,
+    )
+    repository = _turn_repository(connection)
+    turns_before = copy.deepcopy(connection.turns)
+
+    with pytest.raises(TurnStateConflict):
+        repository.transition_active_turn(
+            managed.turn.turn_id,
+            expected_turn_version=managed.state_version,
+            next_status=AgentTurnStatus.REPAIRING,
+        )
+
+    assert connection.turns == turns_before
+    assert connection.rolled_back == 1
+
+
+def test_postgres_finish_rolls_back_both_records_when_second_write_fails() -> None:
+    schedule, managed = _admitted_validating()
+    connection = _TurnConnection(
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+        turns={managed.turn.turn_id: managed.model_dump(mode="json")},
+        fail_on_schedule_update=True,
+    )
+    repository = _turn_repository(connection)
+    schedules_before = copy.deepcopy(connection.schedules)
+    turns_before = copy.deepcopy(connection.turns)
+
+    with pytest.raises(AutonomousTurnTransactionError):
+        repository.finish_active_turn(
+            schedule.schedule_id,
+            expected_schedule_version=schedule.state_version,
+            turn_id=managed.turn.turn_id,
+            expected_turn_version=managed.state_version,
+            terminal_status=AgentTurnStatus.COMMITTED,
+            disposition=TerminalDisposition.ADVANCE,
+            reason_code=None,
+        )
+
+    sql = " ".join(statement for statement, _ in connection.executed)
+    assert connection.schedules == schedules_before
+    assert connection.turns == turns_before
+    assert connection.committed == 0
+    assert connection.rolled_back == 1
+    assert "pg_advisory_xact_lock" in sql
+    assert "FOR UPDATE" in sql
+    assert "state_version" in sql
+    assert "%s" in sql
 
 
 def test_postgres_schema_contains_all_autonomous_tables() -> None:
