@@ -11,7 +11,7 @@ import json
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -946,6 +946,56 @@ def test_dispatches_for_turn_filters_game_and_turn_and_includes_all_statuses(
         DispatchStatus.UNKNOWN_OUTCOME,
     }
     assert listed[0] is not dispatch_repository.load_dispatch("dispatch-unknown")
+
+
+def test_dispatches_for_turn_orders_offsets_identically_in_memory_and_sqlite(
+    tmp_path,
+) -> None:
+    memory = _memory_dispatch_repository()
+    sqlite = SqliteGameRepository(str(tmp_path / "dispatch-offset-order.db"))
+    sqlite.save_game(GameState(game_id="g1"))
+    repositories = (memory, sqlite)
+    try:
+        for repository in repositories:
+            repository.create_dispatch(
+                _dispatch_attempt(
+                    dispatch_id="dispatch-earlier",
+                    provider_idempotency_key="provider-earlier",
+                    created_at=datetime(
+                        2026, 7, 29, 10,
+                        tzinfo=timezone(timedelta(hours=2)),
+                    ),
+                    updated_at=datetime(
+                        2026, 7, 29, 10,
+                        tzinfo=timezone(timedelta(hours=2)),
+                    ),
+                )
+            )
+            repository.create_dispatch(
+                _dispatch_attempt(
+                    dispatch_id="dispatch-later",
+                    provider_idempotency_key="provider-later",
+                    created_at=datetime(
+                        2026, 7, 29, 9, tzinfo=timezone.utc,
+                    ),
+                    updated_at=datetime(
+                        2026, 7, 29, 9, tzinfo=timezone.utc,
+                    ),
+                )
+            )
+
+        # 第一条记录是 08:00Z（10:00+02:00），第二条记录是 09:00Z。
+        expected = ["dispatch-earlier", "dispatch-later"]
+        assert [
+            item.dispatch_id
+            for item in memory.list_dispatches_for_turn("g1", "turn-1")
+        ] == expected
+        assert [
+            item.dispatch_id
+            for item in sqlite.list_dispatches_for_turn("g1", "turn-1")
+        ] == expected
+    finally:
+        sqlite.close()
 
 
 def test_found_recovery_records_result_from_dispatching_state(dispatch_repository) -> None:

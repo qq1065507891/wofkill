@@ -630,7 +630,12 @@ class SqliteGameRepository:
 
     @staticmethod
     def _dispatch_now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return SqliteGameRepository._dispatch_timestamp(datetime.now(timezone.utc))
+
+    @staticmethod
+    def _dispatch_timestamp(value: datetime) -> str:
+        """将带时区 dispatch 时间统一为 UTC，确保文本排序等价于时间排序。"""
+        return value.astimezone(timezone.utc).isoformat()
 
     @staticmethod
     def _dispatch_from_row(row: sqlite3.Row | tuple[Any, ...]) -> DispatchAttempt:
@@ -753,12 +758,12 @@ class SqliteGameRepository:
                         attempt.request_hash,
                         attempt.lease_hash,
                         attempt.view_fingerprint,
-                        attempt.deadline.isoformat(),
+                        self._dispatch_timestamp(attempt.deadline),
                         attempt.status.value,
                         attempt.state_version,
                         attempt.reason_code,
-                        attempt.created_at.isoformat(),
-                        attempt.updated_at.isoformat(),
+                        self._dispatch_timestamp(attempt.created_at),
+                        self._dispatch_timestamp(attempt.updated_at),
                     ),
                 )
                 stored = attempt.model_copy(deep=True)
@@ -963,7 +968,7 @@ class SqliteGameRepository:
                             sort_keys=True,
                             separators=(",", ":"),
                         ),
-                        result.recorded_at.isoformat(),
+                        self._dispatch_timestamp(result.recorded_at),
                     ),
                 )
                 cur = self._conn.execute(
