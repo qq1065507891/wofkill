@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** In progress (`23/52` implementation steps).
+**Progress:** In progress (`30/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -689,7 +689,7 @@ git commit -m "feat: persist serial public turns in memory"
 - Modify: `tests/storage/test_autonomous_turns.py`
 - Modify: `tests/storage/test_sqlite_migrations.py`
 
-- [ ] **Step 1: Write failing SQLite schema, lifecycle, and rollback tests**
+- [x] **Step 1: Write failing SQLite schema, lifecycle, and rollback tests**
 
 Extend the shared repository fixture to SQLite. Assert fresh repository
 initialization creates the two scheduling tables and indexes while
@@ -720,7 +720,7 @@ def test_sqlite_admission_conflict_rolls_back_schedule_pointer(tmp_path) -> None
     assert stored.state_version == 0
 ```
 
-- [ ] **Step 2: Run SQLite tests and verify RED**
+- [x] **Step 2: Run SQLite tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py tests/storage/test_sqlite_migrations.py -k "sqlite or scheduling" -v
@@ -728,7 +728,7 @@ conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py tes
 
 Expected: scheduling tables and SQLite capability are missing.
 
-- [ ] **Step 3: Add isolated SQLite scheduling schema**
+- [x] **Step 3: Add isolated SQLite scheduling schema**
 
 Create `_AUTONOMOUS_SCHEDULING_SCHEMA` and execute it in repository
 initialization after the dispatch schema:
@@ -773,7 +773,7 @@ CREATE INDEX IF NOT EXISTS idx_managed_turn_schedule_status
 
 Keep this schema out of `MigrationManager` and its legacy version numbering.
 
-- [ ] **Step 4: Implement SQLite serializers and read operations**
+- [x] **Step 4: Implement SQLite serializers and read operations**
 
 Serialize full strict models as canonical UTF-8 JSON with sorted keys and
 compact separators. Rebuild through `model_validate_json`. Implement
@@ -808,7 +808,7 @@ def load_serial_public_schedule(
         )
 ```
 
-- [ ] **Step 5: Implement SQLite CAS admission, transition, and finish**
+- [x] **Step 5: Implement SQLite CAS admission, transition, and finish**
 
 Use `BEGIN IMMEDIATE` under `self._lock`. Load strict objects, validate
 expected versions, call the Task 2 preparation helper, then update payload and
@@ -857,7 +857,7 @@ with self._lock:
         ) from exc
 ```
 
-- [ ] **Step 6: Run SQLite lifecycle, concurrency, migration, and static checks**
+- [x] **Step 6: Run SQLite lifecycle, concurrency, migration, and static checks**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_turns.py tests/storage/test_sqlite_migrations.py -k "sqlite or scheduling" -v
@@ -867,7 +867,7 @@ conda run -n wofkill python -m mypy --follow-imports=skip werewolf_agent/storage
 
 Expected: SQLite and migration tests pass; static checks report no errors.
 
-- [ ] **Step 7: Commit SQLite persistence**
+- [x] **Step 7: Commit SQLite persistence**
 
 ```bash
 git add werewolf_agent/storage/sqlite_store.py tests/storage/test_autonomous_turns.py tests/storage/test_sqlite_migrations.py
