@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-30
+修改日期: 2026-07-30
 """
 
 from __future__ import annotations
@@ -378,6 +379,23 @@ def test_pending_or_errored_recovery_keeps_host_blocked(resolver: object) -> Non
             managed.state_version,
             AgentTurnStatus.OBSERVING,
         )
+
+
+def test_failed_explicit_recovery_revokes_existing_schedule_qualification() -> None:
+    repository, host, managed = _host_with_active_turn()
+    attempt = repository.create_dispatch(_attempt(managed))
+    repository.mark_dispatching(attempt.dispatch_id, attempt.state_version)
+
+    report = host.recover_game(managed.turn.game_id)
+
+    assert report.barrier_open is False
+    with pytest.raises(HostRecoveryBlocked):
+        host.cancel_active_turn(
+            managed.schedule_id,
+            "operator_cancelled",
+            TerminalDisposition.ADVANCE,
+        )
+    assert repository.load_managed_turn(managed.turn.turn_id) == managed
 
 
 def test_unsafe_recovery_marks_unknown_and_opens_barrier() -> None:
