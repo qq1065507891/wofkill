@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** In progress (`12/52` implementation steps).
+**Progress:** In progress (`17/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -484,7 +484,7 @@ git commit -m "feat: add autonomous turn repository protocol"
 - Modify: `tests/storage/test_autonomous_commit.py`
 - Modify: `tests/storage/test_postgres_autonomous_commit.py`
 
-- [ ] **Step 1: Write failing shared lookup tests**
+- [x] **Step 1: Write failing shared lookup tests**
 
 For memory and SQLite, create attempts for two turns and multiple statuses, then
 assert exact filtering and deterministic order:
@@ -517,7 +517,7 @@ def test_dispatches_for_turn_are_filtered_and_ordered(dispatch_repository) -> No
 Add a protocol-fixture method to `InMemoryDispatchFixture` and a PostgreSQL SQL
 assertion that both `game_id` and `turn_id` are parameters.
 
-- [ ] **Step 2: Run lookup tests and verify RED**
+- [x] **Step 2: Run lookup tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py tests/storage/test_durable_dispatch_protocol.py tests/storage/test_postgres_autonomous_commit.py -k "dispatches_for_turn" -v
@@ -525,7 +525,7 @@ conda run -n wofkill python -m pytest tests/storage/test_autonomous_commit.py te
 
 Expected: repositories and protocol lack `list_dispatches_for_turn`.
 
-- [ ] **Step 3: Extend the capability and all three backends**
+- [x] **Step 3: Extend the capability and all three backends**
 
 Add to `DurableDispatchRepository`:
 
@@ -558,7 +558,7 @@ Add `idx_dispatch_game_turn_created` /
 blocks. Update modified Python module descriptions and `修改日期` only where the
 current description no longer covers turn-scoped lookup.
 
-- [ ] **Step 4: Verify lookup behavior and dispatch regressions**
+- [x] **Step 4: Verify lookup behavior and dispatch regressions**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_durable_dispatch_protocol.py tests/storage/test_autonomous_commit.py tests/storage/test_postgres_autonomous_commit.py -k "dispatch" -v
@@ -567,7 +567,7 @@ conda run -n wofkill python -m ruff check --ignore UP009 werewolf_agent/storage/
 
 Expected: all dispatch tests and Ruff checks pass.
 
-- [ ] **Step 5: Commit the turn-scoped dispatch query**
+- [x] **Step 5: Commit the turn-scoped dispatch query**
 
 ```bash
 git add werewolf_agent/storage/durable_dispatch.py werewolf_agent/storage/memory_store.py werewolf_agent/storage/sqlite_store.py werewolf_agent/storage/postgres_store.py tests/storage
