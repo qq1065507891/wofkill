@@ -36,7 +36,7 @@
 conda run -n wofkill python -m pytest \
   tests/storage/test_postgres_autonomous_commit.py \
   tests/storage/test_active_turn_fence.py -k postgres -v
-55 passed
+56 passed
 
 conda run -n wofkill python -m ruff check --ignore UP009 \
   werewolf_agent/storage/postgres_store.py \
@@ -68,3 +68,18 @@ was run or claimed.
   the active-fence plain-create regression, and this Task 5 report. It does
   not modify Memory, SQLite, HostRuntime, legacy PlayerAgent, live paths, or
   ToolResult Markdown.
+
+## Fix round 1: transition lock order
+
+- Review identified that `transition_active_turn()` locked the managed-turn
+  row before its schedule after the advisory/game boundary, which violated the
+  shared `game -> schedule -> managed turn -> dispatch attempts` order.
+- The method still performs its original unlocked identity discovery only to
+  obtain `schedule_id` and `game_id`. After advisory lock plus `games FOR
+  UPDATE`, it now reloads and locks the authoritative schedule first, then
+  reloads and locks the managed turn before the unchanged version CAS and
+  transition preparation.
+- Added `test_postgres_transition_locks_schedule_before_managed_turn`, which
+  ignores the harmless discovery SELECT. RED showed the prior locked-row order
+  as managed turn index 3 before schedule index 4; GREEN passed after the
+  reorder.

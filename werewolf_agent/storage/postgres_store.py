@@ -627,6 +627,13 @@ class PostgresGameRepository:
             conn = self._ensure_connection()
             try:
                 schedule_id, _ = self._lock_managed_turn_transaction(conn, turn_id)
+                schedule = self._load_schedule_row(
+                    conn,
+                    schedule_id,
+                    for_update=True,
+                )
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
                 managed = self._load_managed_turn_row(
                     conn,
                     turn_id,
@@ -636,13 +643,6 @@ class PostgresGameRepository:
                     raise ManagedTurnNotFound("managed turn not found")
                 if managed.state_version != expected_turn_version:
                     raise TurnStateConflict("managed turn state version conflict")
-                schedule = self._load_schedule_row(
-                    conn,
-                    schedule_id,
-                    for_update=True,
-                )
-                if schedule is None:
-                    raise ScheduleNotFound("schedule not found")
                 updated = prepare_active_transition(schedule, managed, next_status)
                 self._update_managed_turn_row(conn, updated, expected_turn_version)
                 conn.commit()

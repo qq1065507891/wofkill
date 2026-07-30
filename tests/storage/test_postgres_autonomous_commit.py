@@ -1134,6 +1134,49 @@ def test_postgres_transition_cas_miss_preserves_managed_turn() -> None:
     assert connection.rolled_back == 1
 
 
+def test_postgres_transition_locks_schedule_before_managed_turn() -> None:
+    schedule, managed = _admitted_validating()
+    connection = _TurnConnection(
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+        turns={managed.turn.turn_id: managed.model_dump(mode="json")},
+    )
+    repository = _turn_repository(connection)
+
+    repository.transition_active_turn(
+        managed.turn.turn_id,
+        expected_turn_version=managed.state_version,
+        next_status=AgentTurnStatus.REPAIRING,
+    )
+
+    statements = [
+        " ".join(statement.split()).lower()
+        for statement, _ in connection.executed
+    ]
+    advisory_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "pg_advisory_xact_lock" in statement
+    )
+    game_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from games" in statement and "for update" in statement
+    )
+    schedule_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from autonomous_serial_public_schedules" in statement
+        and "for update" in statement
+    )
+    managed_turn_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from autonomous_managed_turns" in statement and "for update" in statement
+    )
+
+    assert advisory_index < game_index < schedule_lock_index < managed_turn_lock_index
+
+
 def test_postgres_finish_rolls_back_both_records_when_second_write_fails() -> None:
     schedule, managed = _admitted_validating()
     connection = _TurnConnection(
