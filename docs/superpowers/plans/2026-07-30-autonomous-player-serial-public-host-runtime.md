@@ -9,7 +9,7 @@
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
 **Progress:** Planned steps complete (`52/52`); final-review fixes in progress
-(`0/3`).
+(`1/3`).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -1298,7 +1298,7 @@ git commit -m "feat: add autonomous player serial public host runtime"
 
 ### Post-Review Fixes
 
-- [ ] **Fix 1: Preserve recovery qualification when new dispatch work is blocked**
+- [x] **Fix 1: Preserve recovery qualification when new dispatch work is blocked**
 
   Keep successful recovery/current-process qualification separate from the
   transient `assert_dispatch_allowed` result. A blocked transition or admission
