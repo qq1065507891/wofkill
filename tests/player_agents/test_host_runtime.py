@@ -49,6 +49,7 @@ from werewolf_agent.storage.autonomous_turns import (
     InvalidTurnAdmission,
     ManagedTurnNotFound,
     ScheduleNotFound,
+    ScheduleStateConflict,
 )
 from werewolf_agent.storage.durable_dispatch import (
     DispatchReconciler,
@@ -244,6 +245,43 @@ def _to_validating(host: HostRuntime, managed: ManagedAgentTurn) -> ManagedAgent
     return managed
 
 
+def _replace_with_validating_turn(
+    repository: InMemoryGameRepository,
+    schedule: SerialPublicSchedule,
+    managed: ManagedAgentTurn,
+) -> ManagedAgentTurn:
+    replaced = repository.finish_active_turn(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        AgentTurnStatus.CANCELLED,
+        TerminalDisposition.REPLACE,
+        "interleaved_replace",
+    )
+    replacement = repository.admit_serial_public_turn(
+        replaced.schedule_id,
+        replaced.state_version,
+        _admission(
+            schedule=replaced,
+            turn_id="turn-2",
+            idempotency_key="turn-2:submit",
+        ),
+    )
+    for status in (
+        AgentTurnStatus.OBSERVING,
+        AgentTurnStatus.THINKING,
+        AgentTurnStatus.SUBMITTED,
+        AgentTurnStatus.VALIDATING,
+    ):
+        replacement = repository.transition_active_turn(
+            replacement.turn.turn_id,
+            replacement.state_version,
+            status,
+        )
+    return replacement
+
+
 def test_host_errors_expose_stable_codes() -> None:
     assert HostRuntimeError.code == "host_runtime_error"
     assert HostRecoveryRequired.code == "host_recovery_required"
@@ -372,6 +410,38 @@ def test_complete_active_turn_does_not_bypass_turn_lifecycle() -> None:
     assert repository.load_managed_turn(managed.turn.turn_id) == managed
 
 
+def test_complete_keeps_captured_turn_identity_across_replace_interleaving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, host, managed = _host_with_active_turn()
+    managed = _to_validating(host, managed)
+    captured_schedule = repository.load_serial_public_schedule(managed.schedule_id)
+    assert captured_schedule is not None
+    original_require = host._require_active_schedule_turn
+    replacements: list[ManagedAgentTurn] = []
+
+    def interleave(
+        schedule_id: str,
+    ) -> tuple[SerialPublicSchedule, ManagedAgentTurn]:
+        captured = original_require(schedule_id)
+        replacements.append(
+            _replace_with_validating_turn(repository, *captured),
+        )
+        return captured
+
+    monkeypatch.setattr(host, "_require_active_schedule_turn", interleave)
+
+    with pytest.raises(ScheduleStateConflict):
+        host.complete_active_turn(captured_schedule.schedule_id)
+
+    replacement = repository.load_managed_turn(replacements[0].turn.turn_id)
+    assert replacement is not None
+    assert replacement.turn.status is AgentTurnStatus.VALIDATING
+    current = repository.load_serial_public_schedule(captured_schedule.schedule_id)
+    assert current is not None
+    assert current.active_turn_id == replacement.turn.turn_id
+
+
 @pytest.mark.parametrize(
     ("disposition", "expected_status", "expected_ordinal"),
     [
@@ -404,6 +474,40 @@ def test_cancel_active_turn_cancels_unresolved_dispatches_and_applies_dispositio
     assert stored is not None
     assert stored.turn.status is AgentTurnStatus.CANCELLED
     assert stored.terminal_reason == "operator_cancelled"
+
+
+def test_cancel_keeps_captured_turn_identity_across_replace_interleaving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, host, managed = _host_with_active_turn()
+    managed = _to_validating(host, managed)
+    original_require = host._require_active_schedule_turn
+    replacements: list[ManagedAgentTurn] = []
+
+    def interleave(
+        schedule_id: str,
+    ) -> tuple[SerialPublicSchedule, ManagedAgentTurn]:
+        captured = original_require(schedule_id)
+        replacements.append(
+            _replace_with_validating_turn(repository, *captured),
+        )
+        return captured
+
+    monkeypatch.setattr(host, "_require_active_schedule_turn", interleave)
+
+    with pytest.raises(ScheduleStateConflict):
+        host.cancel_active_turn(
+            managed.schedule_id,
+            "operator_cancelled",
+            TerminalDisposition.ADVANCE,
+        )
+
+    replacement = repository.load_managed_turn(replacements[0].turn.turn_id)
+    assert replacement is not None
+    assert replacement.turn.status is AgentTurnStatus.VALIDATING
+    current = repository.load_serial_public_schedule(managed.schedule_id)
+    assert current is not None
+    assert current.active_turn_id == replacement.turn.turn_id
 
 
 def test_dispatched_attempt_survives_cancel_and_blocks_replacement_until_recovery() -> None:

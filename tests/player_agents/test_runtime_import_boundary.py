@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ast
+from importlib.util import resolve_name
 from pathlib import Path
 
 RUNTIME_ROOT = (
@@ -17,6 +18,7 @@ RUNTIME_ROOT = (
     / "player_agents"
     / "runtime"
 )
+PACKAGE_NAME = "werewolf_agent.player_agents.runtime"
 FORBIDDEN_PREFIXES = (
     "werewolf_agent.agents",
     "werewolf_agent.model_gateway",
@@ -27,15 +29,59 @@ FORBIDDEN_PREFIXES = (
 )
 
 
-def _imported_modules(path: Path) -> tuple[str, ...]:
+def _imported_modules(
+    path: Path,
+    *,
+    package_root: Path = RUNTIME_ROOT,
+) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    modules: list[str] = []
+    relative_parent = path.relative_to(package_root).parent
+    current_package = ".".join((PACKAGE_NAME, *relative_parent.parts))
+    modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            modules.append(node.module)
-    return tuple(modules)
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                module = resolve_name(f"{'.' * node.level}{module}", current_package)
+            if module:
+                modules.add(module)
+            modules.update(
+                f"{module}.{alias.name}" if module else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
+    return modules
+
+
+def test_imported_modules_expands_absolute_from_import_members(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "werewolf_agent" / "player_agents" / "runtime"
+    probe = package_root / "absolute_probe.py"
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "from werewolf_agent import model_gateway\n",
+        encoding="utf-8",
+    )
+
+    assert "werewolf_agent.model_gateway" in _imported_modules(
+        probe,
+        package_root=package_root,
+    )
+
+
+def test_imported_modules_resolves_relative_from_imports(tmp_path: Path) -> None:
+    package_root = tmp_path / "werewolf_agent" / "player_agents" / "runtime"
+    probe = package_root / "probes" / "relative_probe.py"
+    probe.parent.mkdir(parents=True)
+    probe.write_text("from ....runtime import nodes\n", encoding="utf-8")
+
+    assert "werewolf_agent.runtime.nodes" in _imported_modules(
+        probe,
+        package_root=package_root,
+    )
 
 
 def test_player_agent_runtime_is_isolated_from_legacy_decision_modules() -> None:

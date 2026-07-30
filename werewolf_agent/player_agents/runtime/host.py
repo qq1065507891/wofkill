@@ -138,10 +138,13 @@ class HostRuntime:
     def complete_active_turn(self, schedule_id: str) -> SerialPublicSchedule:
         """在外部权威提交成功后把 VALIDATING 回合标记为已提交。"""
 
-        schedule, _ = self._require_active_schedule_turn(schedule_id)
+        schedule, managed = self._require_active_schedule_turn(schedule_id)
         self._require_recovered(schedule.game_id)
         return self._scheduler.finish_active_turn(
-            schedule_id,
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
             AgentTurnStatus.COMMITTED,
             TerminalDisposition.ADVANCE,
             None,
@@ -159,7 +162,10 @@ class HostRuntime:
         self._require_recovered(schedule.game_id)
         self._cancel_turn_dispatches(managed, reason_code)
         return self._scheduler.finish_active_turn(
-            schedule_id,
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
             AgentTurnStatus.CANCELLED,
             disposition,
             reason_code,
@@ -189,6 +195,9 @@ class HostRuntime:
             changed.append(
                 self._scheduler.finish_active_turn(
                     schedule.schedule_id,
+                    schedule.state_version,
+                    managed.turn.turn_id,
+                    managed.state_version,
                     AgentTurnStatus.EXPIRED,
                     TerminalDisposition.ADVANCE,
                     "deadline_expired",

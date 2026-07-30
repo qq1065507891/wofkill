@@ -111,23 +111,20 @@ class SerialPublicScheduler:
     def finish_active_turn(
         self,
         schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
         terminal_status: AgentTurnStatus,
         disposition: TerminalDisposition,
         reason_code: str | None,
     ) -> SerialPublicSchedule:
-        """加载活动双方的最新 CAS 版本并原子结束当前回合。"""
+        """使用 Host 首次捕获的 CAS 身份原子结束指定活动回合。"""
 
-        schedule = self.require_schedule(schedule_id)
-        if schedule.active_turn_id is None:
-            raise _inactive_turn()
-        managed = self.require_managed_turn(schedule.active_turn_id)
-        if managed.schedule_id != schedule.schedule_id:
-            raise _inactive_turn()
         return self._repository.finish_active_turn(
-            schedule.schedule_id,
-            schedule.state_version,
-            managed.turn.turn_id,
-            managed.state_version,
+            schedule_id,
+            expected_schedule_version,
+            turn_id,
+            expected_turn_version,
             terminal_status,
             disposition,
             reason_code,
