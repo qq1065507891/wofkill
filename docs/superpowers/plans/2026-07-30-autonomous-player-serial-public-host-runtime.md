@@ -9,7 +9,7 @@
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
 **Progress:** Planned steps complete (`52/52`); final-review fixes in progress
-(`1/3`).
+(`2/3`).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -1305,7 +1305,7 @@ git commit -m "feat: add autonomous player serial public host runtime"
   must not make later cancellation or expiry behave as though recovery never
   completed; a genuinely unrecovered restarted game must remain blocked.
 
-- [ ] **Fix 2: Require a fresh initial schedule at creation**
+- [x] **Fix 2: Require a fresh initial schedule at creation**
 
   All three backends must reject schedule creation unless it starts `open`, at
   slot zero, with no active turn and state version zero. Final-slot coverage
