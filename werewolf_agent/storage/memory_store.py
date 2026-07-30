@@ -634,7 +634,18 @@ class InMemoryGameRepository:
                 )
                 prepared_managed = updated_managed.model_copy(deep=True)
                 prepared_schedule = updated_schedule.model_copy(deep=True)
+            except (
+                ActiveTurnFenceRejected,
+                DispatchRecoveryBlocked,
+                InvalidScheduleTransition,
+            ):
+                raise
+            except Exception:  # noqa: BLE001 - 后端准备错误必须映射为稳定边界。
+                raise ActiveTurnFenceTransactionError(
+                    "active turn fence transaction failed",
+                ) from None
 
+            try:
                 for attempt in prepared_attempts:
                     self._dispatch_attempts[attempt.dispatch_id] = attempt
                 self._managed_agent_turns[turn_id] = prepared_managed
@@ -645,20 +656,14 @@ class InMemoryGameRepository:
                     )
                 else:
                     self._active_schedule_by_game.pop(prepared_schedule.game_id, None)
-            except (
-                ActiveTurnFenceRejected,
-                DispatchRecoveryBlocked,
-                InvalidScheduleTransition,
-            ):
-                raise
-            except Exception as exc:
+            except Exception:  # noqa: BLE001 - 发布错误必须先恢复全部快照。
                 self._dispatch_attempts = attempts_snapshot
                 self._managed_agent_turns = managed_snapshot
                 self._serial_public_schedules = schedules_snapshot
                 self._active_schedule_by_game = active_schedule_snapshot
                 raise ActiveTurnFenceTransactionError(
                     "active turn fence transaction failed",
-                ) from exc
+                ) from None
             return prepared_schedule.model_copy(deep=True)
 
     def mark_dispatching(

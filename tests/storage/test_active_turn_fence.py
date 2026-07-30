@@ -47,6 +47,7 @@ from werewolf_agent.storage.active_turn_fence import (
     require_active_turn_fence_repository,
 )
 from werewolf_agent.storage.autonomous_turns import (
+    InvalidScheduleTransition,
     ScheduleStateConflict,
     TurnStateConflict,
 )
@@ -416,8 +417,6 @@ def test_memory_create_and_complete_have_one_cas_winner() -> None:
     assert {result for result in results if result is not None} <= {
         ScheduleStateConflict,
         TurnStateConflict,
-        ActiveTurnFenceRejected,
-        DispatchRecoveryBlocked,
     }
 
 
@@ -455,6 +454,10 @@ def test_memory_create_and_terminal_retry_leave_no_executable_attempt(
     )
 
     assert results.count(None) == 1
+    assert {result for result in results if result is not None} <= {
+        ScheduleStateConflict,
+        TurnStateConflict,
+    }
     current_schedule = repository.load_serial_public_schedule(schedule.schedule_id)
     current_turn = repository.load_managed_turn(managed.turn.turn_id)
     assert current_schedule is not None
@@ -503,22 +506,37 @@ def test_memory_create_and_nonterminal_transition_have_one_cas_winner() -> None:
     }
 
 
-def test_memory_fenced_finish_restores_all_records_after_publish_failure() -> None:
+@pytest.mark.parametrize(
+    "publication_error",
+    [
+        ActiveTurnFenceRejected("injected active fence rejection"),
+        DispatchRecoveryBlocked("injected recovery block"),
+        InvalidScheduleTransition("injected schedule transition"),
+    ],
+    ids=("active_fence", "recovery", "schedule_transition"),
+)
+def test_memory_fenced_finish_restores_and_sanitizes_publish_errors(
+    publication_error: Exception,
+) -> None:
     class FailingScheduleDict(dict[str, SerialPublicSchedule]):
         def __setitem__(self, key: str, value: SerialPublicSchedule) -> None:
-            raise OSError("injected schedule write failure")
+            raise publication_error
 
     repository, schedule, managed = _memory_active_turn()
     pending = _reserve(repository, schedule, managed)
     managed = repository.load_managed_turn(managed.turn.turn_id)
     assert managed is not None
-    before_attempt = repository.load_dispatch(pending.dispatch_id)
-    before_turn = repository.load_managed_turn(managed.turn.turn_id)
+    before = (
+        dict(repository._dispatch_attempts),
+        dict(repository._managed_agent_turns),
+        dict(repository._serial_public_schedules),
+        dict(repository._active_schedule_by_game),
+    )
     repository._serial_public_schedules = FailingScheduleDict(
         repository._serial_public_schedules,
     )
 
-    with pytest.raises(ActiveTurnFenceTransactionError):
+    with pytest.raises(ActiveTurnFenceTransactionError) as exc_info:
         repository.finish_active_turn_fenced(
             schedule.schedule_id,
             schedule.state_version,
@@ -529,8 +547,15 @@ def test_memory_fenced_finish_restores_all_records_after_publish_failure() -> No
             "operator_cancelled",
         )
 
-    assert repository.load_dispatch(pending.dispatch_id) == before_attempt
-    assert repository.load_managed_turn(managed.turn.turn_id) == before_turn
+    assert exc_info.value.__cause__ is None
+    assert "injected" not in _formatted_traceback(exc_info.value)
+    assert (
+        dict(repository._dispatch_attempts),
+        dict(repository._managed_agent_turns),
+        dict(repository._serial_public_schedules),
+        dict(repository._active_schedule_by_game),
+    ) == before
+    assert repository.load_dispatch(pending.dispatch_id) == pending
 
 
 def test_prepare_active_turn_dispatch_reserves_turn_and_builds_fence() -> None:
