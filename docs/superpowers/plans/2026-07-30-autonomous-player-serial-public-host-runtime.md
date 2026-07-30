@@ -8,7 +8,8 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** Complete (`52/52` implementation steps).
+**Progress:** Planned steps complete (`52/52`); final-review fixes in progress
+(`0/3`).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -1294,6 +1295,28 @@ Change this plan's progress to `52/52` and every completed checkbox to
 git add werewolf_agent/player_agents werewolf_agent/storage tests/player_agents tests/storage docs/superpowers/plans/2026-07-30-autonomous-player-serial-public-host-runtime.md
 git commit -m "feat: add autonomous player serial public host runtime"
 ```
+
+### Post-Review Fixes
+
+- [ ] **Fix 1: Preserve recovery qualification when new dispatch work is blocked**
+
+  Keep successful recovery/current-process qualification separate from the
+  transient `assert_dispatch_allowed` result. A blocked transition or admission
+  must not make later cancellation or expiry behave as though recovery never
+  completed; a genuinely unrecovered restarted game must remain blocked.
+
+- [ ] **Fix 2: Require a fresh initial schedule at creation**
+
+  All three backends must reject schedule creation unless it starts `open`, at
+  slot zero, with no active turn and state version zero. Final-slot coverage
+  must reach the last slot through normal admission/advance rather than creating
+  a pre-advanced schedule.
+
+- [ ] **Fix 3: Enforce fresh replacement idempotency keys durably**
+
+  A replacement turn must not reuse an idempotency key already stored for the
+  same schedule. Memory, SQLite, and PostgreSQL must enforce equivalent atomic
+  behavior and expose the same stable admission error under duplicates.
 
 ## Completion Criteria
 
