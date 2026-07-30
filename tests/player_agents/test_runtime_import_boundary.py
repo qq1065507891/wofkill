@@ -55,6 +55,13 @@ def _imported_modules(
     return modules
 
 
+def _is_forbidden_module(module: str) -> bool:
+    return any(
+        module == prefix or module.startswith(f"{prefix}.")
+        for prefix in FORBIDDEN_PREFIXES
+    )
+
+
 def test_imported_modules_expands_absolute_from_import_members(
     tmp_path: Path,
 ) -> None:
@@ -84,6 +91,14 @@ def test_imported_modules_resolves_relative_from_imports(tmp_path: Path) -> None
     )
 
 
+def test_forbidden_matching_respects_python_module_boundaries() -> None:
+    assert _is_forbidden_module("werewolf_agent.agents") is True
+    assert _is_forbidden_module("werewolf_agent.agents.player") is True
+    assert _is_forbidden_module("werewolf_agent.model_gateway.client") is True
+    assert _is_forbidden_module("werewolf_agent.agents_v2") is False
+    assert _is_forbidden_module("werewolf_agent.model_gateway_v2") is False
+
+
 def test_player_agent_runtime_is_isolated_from_legacy_decision_modules() -> None:
     assert RUNTIME_ROOT.is_dir(), "player_agents runtime package must exist"
     runtime_files = tuple(sorted(RUNTIME_ROOT.rglob("*.py")))
@@ -93,7 +108,7 @@ def test_player_agent_runtime_is_isolated_from_legacy_decision_modules() -> None
         (path.relative_to(RUNTIME_ROOT), module)
         for path in runtime_files
         for module in _imported_modules(path)
-        if module.startswith(FORBIDDEN_PREFIXES)
+        if _is_forbidden_module(module)
     ]
 
     assert violations == []
