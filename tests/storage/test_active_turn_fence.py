@@ -57,6 +57,7 @@ from werewolf_agent.storage.durable_dispatch import (
     DispatchRecoveryBlocked,
 )
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
+from werewolf_agent.storage.sqlite_store import SqliteGameRepository
 
 HASH = "a" * 64
 NOW = datetime(2026, 7, 31, 10, tzinfo=timezone.utc)
@@ -204,6 +205,336 @@ def _memory_active_turn(
             next_status,
         )
     return repository, repository.load_serial_public_schedule(created.schedule_id), admitted  # type: ignore[return-value]
+
+
+def _sqlite_active_turn(
+    tmp_path,
+    *,
+    status: AgentTurnStatus = AgentTurnStatus.THINKING,
+) -> tuple[SqliteGameRepository, SerialPublicSchedule, ManagedAgentTurn]:
+    """通过 SQLite 的公开调度 API 创建一个持久化活动回合。"""
+
+    repository = SqliteGameRepository(str(tmp_path / "active-turn.db"))
+    repository.save_game(GameState(game_id="game-1"))
+    schedule, managed = _active_turn(status=status)
+    created = repository.create_serial_public_schedule(
+        schedule.model_copy(update={"active_turn_id": None, "state_version": 0}),
+    )
+    admitted = repository.admit_serial_public_turn(
+        created.schedule_id,
+        created.state_version,
+        TurnAdmission(
+            turn_id=managed.turn.turn_id,
+            player_id=managed.turn.player_id,
+            role_id=managed.turn.role_id,
+            phase=managed.turn.phase,
+            revision=managed.turn.revision,
+            read_set=(),
+            model_lease_hash=managed.turn.model_lease_hash,
+            budget=managed.turn.budget,
+            idempotency_key=managed.turn.idempotency_key,
+        ),
+    )
+    for next_status in (
+        AgentTurnStatus.OBSERVING,
+        AgentTurnStatus.THINKING,
+        AgentTurnStatus.SUBMITTED,
+        AgentTurnStatus.VALIDATING,
+    ):
+        if admitted.turn.status is status:
+            break
+        admitted = repository.transition_active_turn(
+            admitted.turn.turn_id,
+            admitted.state_version,
+            next_status,
+        )
+    current_schedule = repository.load_serial_public_schedule(created.schedule_id)
+    assert current_schedule is not None
+    return repository, current_schedule, admitted
+
+
+def test_sqlite_fenced_create_round_trips_attempt_and_turn_version(tmp_path) -> None:
+    repository, schedule, managed = _sqlite_active_turn(tmp_path)
+
+    stored = _reserve(repository, schedule, managed)
+    current = repository.load_managed_turn(managed.turn.turn_id)
+
+    assert current is not None
+    assert stored.active_turn_fence is not None
+    assert stored.active_turn_fence.turn_state_version == current.state_version
+    assert repository.load_dispatch(stored.dispatch_id) == stored
+    repository.close()
+
+
+def test_sqlite_plain_create_rejects_caller_supplied_fence(tmp_path) -> None:
+    repository, schedule, managed = _sqlite_active_turn(tmp_path)
+    fence = ActiveTurnDispatchFence(
+        schedule_id=schedule.schedule_id,
+        schedule_state_version=schedule.state_version,
+        turn_state_version=managed.state_version,
+        window_id=schedule.window.window_id,
+        window_version=schedule.window.version,
+        base_game_revision=managed.turn.revision.base_revision,
+    )
+
+    with pytest.raises(DispatchInvalidTransition):
+        repository.create_dispatch(_attempt_for(managed, active_turn_fence=fence))
+
+    repository.close()
+
+
+def test_sqlite_fenced_create_rolls_back_attempt_when_turn_update_fails(
+    tmp_path,
+) -> None:
+    repository, schedule, managed = _sqlite_active_turn(tmp_path)
+    repository._conn.execute(
+        "CREATE TRIGGER fail_fence_turn_update "
+        "BEFORE UPDATE ON autonomous_managed_turns "
+        "BEGIN SELECT RAISE(ABORT, 'forced turn update failure'); END;",
+    )
+
+    with pytest.raises(ActiveTurnFenceTransactionError) as exc_info:
+        _reserve(repository, schedule, managed)
+
+    assert exc_info.value.__cause__ is None
+    assert "forced turn update failure" not in _formatted_traceback(exc_info.value)
+    assert repository.load_dispatch("dispatch-1") is None
+    assert repository.load_managed_turn(managed.turn.turn_id) == managed
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("dispatch_id", "provider_key", "recovery_barrier"),
+)
+def test_sqlite_fenced_create_conflicts_leave_turn_unchanged(tmp_path, case: str) -> None:
+    repository, schedule, managed = _sqlite_active_turn(tmp_path)
+
+    if case == "dispatch_id":
+        repository.create_dispatch(_attempt_for(managed))
+    elif case == "provider_key":
+        repository.create_dispatch(_attempt_for(managed, dispatch_id="other-dispatch"))
+    else:
+        blocker = _attempt_for(
+            managed,
+            dispatch_id="blocking-dispatch",
+            provider_idempotency_key="blocking-key",
+        )
+        repository.create_dispatch(blocker)
+        repository.mark_dispatching(blocker.dispatch_id, blocker.state_version)
+
+    with pytest.raises(
+        (DispatchIdempotencyConflict, DispatchRecoveryBlocked),
+    ):
+        _reserve(repository, schedule, managed)
+
+    assert repository.load_managed_turn(managed.turn.turn_id) == managed
+    if case == "dispatch_id":
+        assert repository.load_dispatch("dispatch-1") is not None
+    else:
+        assert repository.load_dispatch("dispatch-1") is None
+    repository.close()
+
+
+def _cancel(
+    repository: InMemoryGameRepository,
+    schedule: SerialPublicSchedule,
+    managed: ManagedAgentTurn,
+) -> SerialPublicSchedule:
+    """用当前 CAS 身份终结活动回合。"""
+
+    return repository.finish_active_turn_fenced(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        AgentTurnStatus.CANCELLED,
+        TerminalDisposition.REPLACE,
+        "operator_cancelled",
+    )
+
+
+def test_sqlite_fenced_finish_rolls_back_cancel_when_schedule_update_fails(
+    tmp_path,
+) -> None:
+    repository, schedule, managed = _sqlite_active_turn(tmp_path)
+    attempt = _reserve(repository, schedule, managed)
+    managed = repository.load_managed_turn(managed.turn.turn_id)
+    assert managed is not None
+    repository._conn.execute(
+        "CREATE TRIGGER fail_fence_schedule_update "
+        "BEFORE UPDATE ON autonomous_serial_public_schedules "
+        "BEGIN SELECT RAISE(ABORT, 'forced schedule update failure'); END;",
+    )
+
+    with pytest.raises(ActiveTurnFenceTransactionError) as exc_info:
+        _cancel(repository, schedule, managed)
+
+    assert exc_info.value.__cause__ is None
+    assert "forced schedule update failure" not in _formatted_traceback(exc_info.value)
+    stored = repository.load_dispatch(attempt.dispatch_id)
+    assert stored is not None
+    assert stored.status is DispatchStatus.PENDING
+    assert repository.load_managed_turn(managed.turn.turn_id) == managed
+    assert repository.load_serial_public_schedule(schedule.schedule_id) == schedule
+    repository.close()
+
+
+def test_sqlite_fenced_cancel_updates_attempt_turn_and_schedule_together(
+    tmp_path,
+) -> None:
+    repository, schedule, managed = _sqlite_active_turn(tmp_path)
+    attempt = _reserve(repository, schedule, managed)
+    managed = repository.load_managed_turn(managed.turn.turn_id)
+    assert managed is not None
+
+    updated_schedule = _cancel(repository, schedule, managed)
+
+    stored = repository.load_dispatch(attempt.dispatch_id)
+    finished = repository.load_managed_turn(managed.turn.turn_id)
+    assert stored is not None
+    assert finished is not None
+    assert updated_schedule.active_turn_id is None
+    assert stored.status is DispatchStatus.CANCELLED
+    assert finished.turn.status is AgentTurnStatus.CANCELLED
+    repository.close()
+
+
+def _sqlite_two_connection_active_turn(
+    tmp_path,
+    *,
+    status: AgentTurnStatus,
+) -> tuple[
+    SqliteGameRepository,
+    SqliteGameRepository,
+    SerialPublicSchedule,
+    ManagedAgentTurn,
+]:
+    """返回连接到同一文件的两个 SQLite 仓储实例。"""
+
+    first, schedule, managed = _sqlite_active_turn(tmp_path, status=status)
+    second = SqliteGameRepository(str(tmp_path / "active-turn.db"))
+    return first, second, schedule, managed
+
+
+def _race_two_repositories(*operations):
+    """让两个独立 SQLite 连接从同一栅栏开始竞争。"""
+
+    barrier = threading.Barrier(2)
+    return _race(*(lambda operation=operation: (barrier.wait(), operation()) for operation in operations))
+
+
+def _assert_valid_sqlite_race_state(
+    repository: SqliteGameRepository,
+    schedule: SerialPublicSchedule,
+    managed: ManagedAgentTurn,
+) -> None:
+    """验证竞态之后终态或活动态均不遗留无主可执行 dispatch。"""
+
+    observed_schedule = repository.load_serial_public_schedule(schedule.schedule_id)
+    observed_turn = repository.load_managed_turn(managed.turn.turn_id)
+    observed_attempt = repository.load_dispatch("dispatch-1")
+
+    assert observed_schedule is not None
+    assert observed_turn is not None
+    if observed_attempt is not None and observed_attempt.status in {
+        DispatchStatus.PENDING,
+        DispatchStatus.DISPATCHING,
+    }:
+        assert observed_schedule.active_turn_id == observed_turn.turn.turn_id
+        assert observed_turn.turn.status not in {
+            AgentTurnStatus.COMMITTED,
+            AgentTurnStatus.CANCELLED,
+            AgentTurnStatus.EXPIRED,
+        }
+
+
+def test_sqlite_two_connections_create_and_complete_have_one_cas_winner(
+    tmp_path,
+) -> None:
+    first, second, schedule, managed = _sqlite_two_connection_active_turn(
+        tmp_path,
+        status=AgentTurnStatus.VALIDATING,
+    )
+
+    results = _race_two_repositories(
+        lambda: _reserve(first, schedule, managed),
+        lambda: second.finish_active_turn_fenced(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            AgentTurnStatus.COMMITTED,
+            TerminalDisposition.ADVANCE,
+            None,
+        ),
+    )
+
+    assert results.count(None) == 1
+    assert {result for result in results if result is not None} <= {
+        ScheduleStateConflict,
+        TurnStateConflict,
+    }
+    _assert_valid_sqlite_race_state(first, schedule, managed)
+    first.close()
+    second.close()
+
+
+def test_sqlite_two_connections_create_and_cancel_leave_no_executable_attempt(
+    tmp_path,
+) -> None:
+    first, second, schedule, managed = _sqlite_two_connection_active_turn(
+        tmp_path,
+        status=AgentTurnStatus.THINKING,
+    )
+
+    results = _race_two_repositories(
+        lambda: _reserve(first, schedule, managed),
+        lambda: _cancel(second, schedule, managed),
+    )
+
+    assert results.count(None) == 1
+    assert {result for result in results if result is not None} <= {
+        ScheduleStateConflict,
+        TurnStateConflict,
+    }
+    current_schedule = first.load_serial_public_schedule(schedule.schedule_id)
+    current_turn = first.load_managed_turn(managed.turn.turn_id)
+    assert current_schedule is not None
+    assert current_turn is not None
+    if current_schedule.active_turn_id == current_turn.turn.turn_id:
+        _cancel(second, current_schedule, current_turn)
+    attempt = first.load_dispatch("dispatch-1")
+    assert attempt is None or attempt.status is DispatchStatus.CANCELLED
+    _assert_valid_sqlite_race_state(first, schedule, managed)
+    first.close()
+    second.close()
+
+
+def test_sqlite_two_connections_create_and_transition_have_one_cas_winner(
+    tmp_path,
+) -> None:
+    first, second, schedule, managed = _sqlite_two_connection_active_turn(
+        tmp_path,
+        status=AgentTurnStatus.THINKING,
+    )
+
+    results = _race_two_repositories(
+        lambda: _reserve(first, schedule, managed),
+        lambda: second.transition_active_turn(
+            managed.turn.turn_id,
+            managed.state_version,
+            AgentTurnStatus.SUBMITTED,
+        ),
+    )
+
+    assert results.count(None) == 1
+    assert {result for result in results if result is not None} == {
+        TurnStateConflict,
+    }
+    _assert_valid_sqlite_race_state(first, schedule, managed)
+    first.close()
+    second.close()
 
 
 def _reservation_state(

@@ -11,10 +11,87 @@ from __future__ import annotations
 import re
 
 
+def _create_pre_fence_database(path) -> None:
+    """创建含完整历史 unfenced dispatch 的旧版 autonomous 表。"""
+
+    import sqlite3
+
+    from werewolf_agent.storage.sqlite_store import (
+        _AUTONOMOUS_DISPATCH_SCHEMA,
+        _AUTONOMOUS_SCHEDULING_SCHEMA,
+        _SCHEMA,
+    )
+
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA)
+    conn.executescript(_AUTONOMOUS_DISPATCH_SCHEMA)
+    conn.executescript(_AUTONOMOUS_SCHEDULING_SCHEMA)
+    conn.execute("INSERT INTO games (game_id, state_json) VALUES (?, ?)", ("game-1", "{}"))
+    conn.execute(
+        "INSERT INTO autonomous_dispatch_attempts ("
+        "dispatch_id, game_id, turn_id, actor_id, operation_kind, executor_id, "
+        "provider_idempotency_key, recovery_policy, request_hash, lease_hash, "
+        "view_fingerprint, deadline, status, state_version, reason_code, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "legacy-dispatch",
+            "game-1",
+            "turn-1",
+            "p01",
+            "model",
+            "legacy-provider",
+            "legacy-key",
+            "idempotent_lookup_or_reissue",
+            "a" * 64,
+            "a" * 64,
+            "a" * 64,
+            "2026-07-31T11:00:00+00:00",
+            "pending",
+            0,
+            None,
+            "2026-07-31T10:00:00+00:00",
+            "2026-07-31T10:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_sqlite_module_describes_serial_public_scheduling_responsibility() -> None:
     from werewolf_agent.storage import sqlite_store
 
     assert "串行公开调度" in (sqlite_store.__doc__ or "")
+
+
+def test_sqlite_fresh_schema_has_nullable_active_turn_fence_column(tmp_path) -> None:
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    repository = SqliteGameRepository(str(tmp_path / "fresh.db"))
+    columns = {
+        row[1]: row
+        for row in repository._conn.execute(
+            "PRAGMA table_info(autonomous_dispatch_attempts)",
+        ).fetchall()
+    }
+
+    assert "active_turn_fence_json" in columns
+    assert columns["active_turn_fence_json"][3] == 0
+    repository.close()
+
+
+def test_sqlite_legacy_dispatch_schema_adds_nullable_fence_column(tmp_path) -> None:
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    path = tmp_path / "legacy-dispatch.db"
+    _create_pre_fence_database(path)
+
+    repository = SqliteGameRepository(str(path))
+
+    assert repository.supports_active_turn_fence() is True
+    stored = repository.load_dispatch("legacy-dispatch")
+    assert stored is not None
+    assert stored.active_turn_fence is None
+    repository.close()
 
 
 def test_sqlite_uses_shared_utc_timestamp_serializer() -> None:

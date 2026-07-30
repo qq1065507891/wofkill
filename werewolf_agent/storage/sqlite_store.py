@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：SQLite 游戏仓库，支持事件兼容读写、串行公开调度持久化、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
+功能描述：SQLite 游戏仓库，支持事件兼容读写、串行公开调度持久化、活动回合围栏、自主玩家原子 CommitTurn 与 durable dispatch 状态机。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-30
+修改日期：2026-07-31
 使用示例：内部模块，无对外接口
 """
 
@@ -23,6 +23,7 @@ from werewolf_agent.core.resolution_batches import (
 )
 from werewolf_agent.player_agents.contracts._base import StrictFrozenModel
 from werewolf_agent.player_agents.contracts.dispatch import (
+    ActiveTurnDispatchFence,
     DispatchAttempt,
     DispatchOperationKind,
     DispatchRecoveryPolicy,
@@ -52,6 +53,12 @@ from werewolf_agent.runtime.event_metadata import (
 from werewolf_agent.runtime.game_termination import (
     validate_game_aborted_append,
     validate_game_state_save,
+)
+from werewolf_agent.storage.active_turn_fence import (
+    ActiveTurnFenceRejected,
+    ActiveTurnFenceTransactionError,
+    prepare_active_turn_dispatch,
+    prepare_fenced_active_finish,
 )
 from werewolf_agent.storage.autonomous_commit import (
     CommitTransactionError,
@@ -184,6 +191,7 @@ CREATE TABLE IF NOT EXISTS autonomous_dispatch_attempts (
     reason_code TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    active_turn_fence_json TEXT,
     FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
 );
 
@@ -412,6 +420,22 @@ def _ensure_event_schema_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_active_turn_fence_schema(conn: sqlite3.Connection) -> None:
+    """为历史 durable dispatch 表补齐 nullable 活动回合围栏。"""
+
+    columns = {
+        str(row[1])
+        for row in conn.execute(
+            "PRAGMA table_info(autonomous_dispatch_attempts)",
+        ).fetchall()
+    }
+    if "active_turn_fence_json" not in columns:
+        conn.execute(
+            "ALTER TABLE autonomous_dispatch_attempts "
+            "ADD COLUMN active_turn_fence_json TEXT",
+        )
+
+
 class SqliteGameRepository:
     """SQLite implementation of GameRepository."""
 
@@ -428,6 +452,7 @@ class SqliteGameRepository:
             _ensure_event_schema_v2(self._conn)
             self._conn.executescript(_AUTONOMOUS_DISPATCH_SCHEMA)
             self._conn.executescript(_AUTONOMOUS_SCHEDULING_SCHEMA)
+            _ensure_active_turn_fence_schema(self._conn)
             _ensure_managed_turn_idempotency_integrity(self._conn)
             self._normalize_dispatch_timestamps()
             self._durable_dispatch_schema_ready = True
@@ -1104,6 +1129,15 @@ class SqliteGameRepository:
         with self._lock:
             return self._durable_dispatch_schema_ready
 
+    def supports_active_turn_fence(self) -> bool:
+        """声明 SQLite 已完成活动回合围栏的 schema 初始化。"""
+
+        with self._lock:
+            return (
+                self._durable_dispatch_schema_ready
+                and self._autonomous_turn_schema_ready
+            )
+
     @staticmethod
     def _dispatch_now() -> str:
         return SqliteGameRepository._utc_timestamp(datetime.now(timezone.utc))
@@ -1176,6 +1210,11 @@ class SqliteGameRepository:
                 "reason_code": row[14],
                 "created_at": datetime.fromisoformat(row[15]),
                 "updated_at": datetime.fromisoformat(row[16]),
+                "active_turn_fence": (
+                    None
+                    if row[17] is None
+                    else ActiveTurnDispatchFence.model_validate(json.loads(row[17]))
+                ),
             },
         )
 
@@ -1207,7 +1246,7 @@ class SqliteGameRepository:
             "SELECT dispatch_id, game_id, turn_id, actor_id, operation_kind, "
             "executor_id, provider_idempotency_key, recovery_policy, request_hash, "
             "lease_hash, view_fingerprint, deadline, status, state_version, "
-            "reason_code, created_at, updated_at "
+            "reason_code, created_at, updated_at, active_turn_fence_json "
             "FROM autonomous_dispatch_attempts WHERE dispatch_id = ?",
             (dispatch_id,),
         ).fetchone()
@@ -1215,11 +1254,61 @@ class SqliteGameRepository:
             return None
         return self._dispatch_from_row(row)
 
+    @staticmethod
+    def _active_turn_fence_json(attempt: DispatchAttempt) -> str | None:
+        """将围栏以稳定紧凑 JSON 存储，保持历史 NULL 记录可读。"""
+
+        if attempt.active_turn_fence is None:
+            return None
+        return json.dumps(
+            attempt.active_turn_fence.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _insert_dispatch_unlocked(self, attempt: DispatchAttempt) -> None:
+        """插入一个已通过调用方状态校验的 durable dispatch。"""
+
+        self._conn.execute(
+            "INSERT INTO autonomous_dispatch_attempts ("
+            "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
+            "executor_id, provider_idempotency_key, recovery_policy, "
+            "request_hash, lease_hash, view_fingerprint, deadline, status, "
+            "state_version, reason_code, created_at, updated_at, "
+            "active_turn_fence_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                attempt.dispatch_id,
+                attempt.game_id,
+                attempt.turn_id,
+                attempt.actor_id,
+                attempt.operation_kind.value,
+                attempt.executor_id,
+                attempt.provider_idempotency_key,
+                attempt.recovery_policy.value,
+                attempt.request_hash,
+                attempt.lease_hash,
+                attempt.view_fingerprint,
+                self._utc_timestamp(attempt.deadline),
+                attempt.status.value,
+                attempt.state_version,
+                attempt.reason_code,
+                self._utc_timestamp(attempt.created_at),
+                self._utc_timestamp(attempt.updated_at),
+                self._active_turn_fence_json(attempt),
+            ),
+        )
+
     def create_dispatch(self, attempt: DispatchAttempt) -> DispatchAttempt:
         """在外部 I/O 前原子持久化一个 PENDING dispatch 意图。"""
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
+                if attempt.active_turn_fence is not None:
+                    raise DispatchInvalidTransition(
+                        "plain dispatch cannot include an active turn fence",
+                    )
                 if (
                     attempt.status is not DispatchStatus.PENDING
                     or attempt.state_version != 0
@@ -1257,33 +1346,7 @@ class SqliteGameRepository:
                     ),
                 ).fetchone() is not None:
                     raise DispatchRecoveryBlocked(attempt.game_id)
-                self._conn.execute(
-                    "INSERT INTO autonomous_dispatch_attempts ("
-                    "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
-                    "executor_id, provider_idempotency_key, recovery_policy, "
-                    "request_hash, lease_hash, view_fingerprint, deadline, status, "
-                    "state_version, reason_code, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        attempt.dispatch_id,
-                        attempt.game_id,
-                        attempt.turn_id,
-                        attempt.actor_id,
-                        attempt.operation_kind.value,
-                        attempt.executor_id,
-                        attempt.provider_idempotency_key,
-                        attempt.recovery_policy.value,
-                        attempt.request_hash,
-                        attempt.lease_hash,
-                        attempt.view_fingerprint,
-                        self._utc_timestamp(attempt.deadline),
-                        attempt.status.value,
-                        attempt.state_version,
-                        attempt.reason_code,
-                        self._utc_timestamp(attempt.created_at),
-                        self._utc_timestamp(attempt.updated_at),
-                    ),
-                )
+                self._insert_dispatch_unlocked(attempt)
                 stored = attempt.model_copy(deep=True)
                 self._conn.commit()
                 return stored.model_copy(deep=True)
@@ -1300,6 +1363,179 @@ class SqliteGameRepository:
                 raise DispatchTransactionError(
                     "durable dispatch create transaction failed",
                 ) from exc
+
+    def create_active_turn_dispatch(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        attempt: DispatchAttempt,
+        observed_at: datetime,
+    ) -> DispatchAttempt:
+        """在同一 SQLite 事务中预约活动回合并写入其受围栏 dispatch。"""
+
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                schedule = self._load_schedule_unlocked(schedule_id)
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
+                if schedule.state_version != expected_schedule_version:
+                    raise ScheduleStateConflict("schedule state version conflict")
+                managed = self._load_managed_turn_unlocked(turn_id)
+                if managed is None:
+                    raise ManagedTurnNotFound("managed turn not found")
+                if managed.state_version != expected_turn_version:
+                    raise TurnStateConflict("managed turn state version conflict")
+                if self._conn.execute(
+                    "SELECT 1 FROM autonomous_dispatch_attempts "
+                    "WHERE dispatch_id = ?",
+                    (attempt.dispatch_id,),
+                ).fetchone() is not None:
+                    raise DispatchIdempotencyConflict(attempt.dispatch_id)
+                key = (attempt.executor_id, attempt.provider_idempotency_key)
+                if self._conn.execute(
+                    "SELECT 1 FROM autonomous_dispatch_attempts "
+                    "WHERE executor_id = ? AND provider_idempotency_key = ?",
+                    key,
+                ).fetchone() is not None:
+                    raise DispatchIdempotencyConflict(
+                        f"provider idempotency key already exists: {key}",
+                    )
+                if self._conn.execute(
+                    "SELECT 1 FROM autonomous_dispatch_attempts "
+                    "WHERE game_id = ? AND status IN (?, ?)",
+                    (
+                        attempt.game_id,
+                        DispatchStatus.DISPATCHING.value,
+                        DispatchStatus.DISPATCHED.value,
+                    ),
+                ).fetchone() is not None:
+                    raise DispatchRecoveryBlocked(attempt.game_id)
+                updated_managed, fenced_attempt = prepare_active_turn_dispatch(
+                    schedule,
+                    managed,
+                    attempt,
+                    observed_at,
+                )
+                self._insert_dispatch_unlocked(fenced_attempt)
+                self._update_managed_turn_unlocked(
+                    updated_managed,
+                    expected_turn_version,
+                )
+                self._conn.commit()
+                return fenced_attempt.model_copy(deep=True)
+            except (
+                ScheduleNotFound,
+                ScheduleStateConflict,
+                ManagedTurnNotFound,
+                TurnStateConflict,
+                ActiveTurnFenceRejected,
+                DispatchIdempotencyConflict,
+                DispatchRecoveryBlocked,
+            ):
+                self._conn.rollback()
+                raise
+            except Exception:  # noqa: BLE001 - 后端异常必须净化为稳定事务边界。
+                self._conn.rollback()
+                raise ActiveTurnFenceTransactionError(
+                    "active turn fence transaction failed",
+                ) from None
+
+    def finish_active_turn_fenced(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        terminal_status: AgentTurnStatus,
+        disposition: TerminalDisposition,
+        reason_code: str | None,
+    ) -> SerialPublicSchedule:
+        """在同一 SQLite 事务内终结回合并取消可撤销的受围栏 dispatch。"""
+
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                schedule = self._load_schedule_unlocked(schedule_id)
+                if schedule is None:
+                    raise ScheduleNotFound("schedule not found")
+                if schedule.state_version != expected_schedule_version:
+                    raise ScheduleStateConflict("schedule state version conflict")
+                managed = self._load_managed_turn_unlocked(turn_id)
+                if managed is None:
+                    raise ManagedTurnNotFound("managed turn not found")
+                if managed.state_version != expected_turn_version:
+                    raise TurnStateConflict("managed turn state version conflict")
+                rows = self._conn.execute(
+                    "SELECT dispatch_id, game_id, turn_id, actor_id, operation_kind, "
+                    "executor_id, provider_idempotency_key, recovery_policy, request_hash, "
+                    "lease_hash, view_fingerprint, deadline, status, state_version, "
+                    "reason_code, created_at, updated_at, active_turn_fence_json "
+                    "FROM autonomous_dispatch_attempts "
+                    "WHERE game_id = ? AND turn_id = ? "
+                    "ORDER BY created_at, dispatch_id",
+                    (schedule.game_id, turn_id),
+                ).fetchall()
+                attempts = tuple(self._dispatch_from_row(row) for row in rows)
+                now = max(datetime.now(timezone.utc), schedule.updated_at)
+                updated_schedule, updated_managed, updated_attempts = (
+                    prepare_fenced_active_finish(
+                        schedule,
+                        managed,
+                        attempts,
+                        terminal_status,
+                        disposition,
+                        reason_code=reason_code,
+                        now=now,
+                    )
+                )
+                for existing, updated in zip(attempts, updated_attempts):
+                    if updated == existing:
+                        continue
+                    result = self._conn.execute(
+                        "UPDATE autonomous_dispatch_attempts SET status = ?, "
+                        "state_version = ?, reason_code = ?, updated_at = ? "
+                        "WHERE dispatch_id = ? AND state_version = ?",
+                        (
+                            updated.status.value,
+                            updated.state_version,
+                            updated.reason_code,
+                            self._utc_timestamp(updated.updated_at),
+                            updated.dispatch_id,
+                            existing.state_version,
+                        ),
+                    )
+                    if result.rowcount != 1:
+                        raise DispatchStateConflict(updated.dispatch_id)
+                self._update_managed_turn_unlocked(
+                    updated_managed,
+                    expected_turn_version,
+                )
+                self._update_schedule_unlocked(
+                    updated_schedule,
+                    expected_schedule_version,
+                )
+                self._conn.commit()
+                return updated_schedule.model_copy(deep=True)
+            except (
+                ScheduleNotFound,
+                ScheduleStateConflict,
+                ManagedTurnNotFound,
+                TurnStateConflict,
+                DispatchStateConflict,
+                ActiveTurnFenceRejected,
+                DispatchRecoveryBlocked,
+                InvalidScheduleTransition,
+            ):
+                self._conn.rollback()
+                raise
+            except Exception:  # noqa: BLE001 - 后端异常必须净化为稳定事务边界。
+                self._conn.rollback()
+                raise ActiveTurnFenceTransactionError(
+                    "active turn fence transaction failed",
+                ) from None
 
     def _transition_dispatch(
         self,
@@ -1542,7 +1778,7 @@ class SqliteGameRepository:
                 "SELECT dispatch_id, game_id, turn_id, actor_id, operation_kind, "
                 "executor_id, provider_idempotency_key, recovery_policy, request_hash, "
                 "lease_hash, view_fingerprint, deadline, status, state_version, "
-                "reason_code, created_at, updated_at "
+                "reason_code, created_at, updated_at, active_turn_fence_json "
                 "FROM autonomous_dispatch_attempts "
                 "WHERE game_id = ? AND turn_id = ? "
                 "ORDER BY created_at, dispatch_id",
@@ -1556,7 +1792,7 @@ class SqliteGameRepository:
                 "SELECT dispatch_id, game_id, turn_id, actor_id, operation_kind, "
                 "executor_id, provider_idempotency_key, recovery_policy, request_hash, "
                 "lease_hash, view_fingerprint, deadline, status, state_version, "
-                "reason_code, created_at, updated_at "
+                "reason_code, created_at, updated_at, active_turn_fence_json "
                 "FROM autonomous_dispatch_attempts "
                 "WHERE game_id = ? AND status IN (?, ?) "
                 "ORDER BY created_at, dispatch_id",
