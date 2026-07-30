@@ -6,10 +6,12 @@
 创建日期: 2026-07-30
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
 
+from werewolf_agent.core.models import GameState
 from werewolf_agent.player_agents.contracts.revisions import (
     ReadReference,
     RevisionContext,
@@ -43,6 +45,7 @@ from werewolf_agent.storage.autonomous_turns import (
     prepare_serial_public_admission,
     require_autonomous_turn_repository,
 )
+from werewolf_agent.storage.memory_store import InMemoryGameRepository
 
 HASH = "a" * 64
 NOW = datetime(2026, 7, 30, 10, tzinfo=timezone.utc)
@@ -390,3 +393,320 @@ def test_prepare_finish_rejects_wrong_identity_and_non_terminal_status() -> None
             reason_code=None,
             now=NOW,
         )
+
+
+def _memory_repository() -> InMemoryGameRepository:
+    repository = InMemoryGameRepository()
+    repository.save_game(GameState(game_id="game-1"))
+    return repository
+
+
+def _memory_admit_validating(
+    repository: InMemoryGameRepository,
+    *,
+    schedule_id: str = "schedule-1",
+    turn_id: str = "turn-1",
+    expected_schedule_version: int = 0,
+    player_id: str = "p01",
+) -> ManagedAgentTurn:
+    admission = _admission(
+        turn_id=turn_id,
+        player_id=player_id,
+        idempotency_key=f"{turn_id}:submit",
+    )
+    managed = repository.admit_serial_public_turn(
+        schedule_id,
+        expected_schedule_version,
+        admission,
+    )
+    for next_status in (
+        AgentTurnStatus.OBSERVING,
+        AgentTurnStatus.THINKING,
+        AgentTurnStatus.SUBMITTED,
+        AgentTurnStatus.VALIDATING,
+    ):
+        managed = repository.transition_active_turn(
+            turn_id,
+            managed.state_version,
+            next_status,
+        )
+    return managed
+
+
+def test_memory_schedule_creation_and_current_slot_admission() -> None:
+    repository = _memory_repository()
+    created = repository.create_serial_public_schedule(_schedule())
+
+    assert repository.supports_autonomous_turns() is True
+    assert created == _schedule()
+    assert repository.load_active_serial_public_schedule("game-1") == created
+    managed = repository.admit_serial_public_turn(
+        created.schedule_id,
+        expected_schedule_version=0,
+        admission=_admission(),
+    )
+
+    assert managed.turn.player_id == "p01"
+    stored = repository.load_serial_public_schedule(created.schedule_id)
+    assert stored is not None
+    assert stored.active_turn_id == managed.turn.turn_id
+    assert stored.state_version == 1
+
+
+def test_memory_schedule_creation_rejects_missing_game_and_duplicates() -> None:
+    repository = InMemoryGameRepository()
+    with pytest.raises(AutonomousTurnTransactionError):
+        repository.create_serial_public_schedule(_schedule())
+
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+    with pytest.raises(AutonomousTurnTransactionError):
+        repository.create_serial_public_schedule(_schedule())
+    with pytest.raises(AutonomousTurnTransactionError):
+        repository.create_serial_public_schedule(
+            _schedule(schedule_id="schedule-2"),
+        )
+
+
+def test_memory_admission_rejects_wrong_current_slot_and_stale_schedule() -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+
+    with pytest.raises(InvalidTurnAdmission):
+        repository.admit_serial_public_turn(
+            "schedule-1",
+            0,
+            _admission(player_id="p02"),
+        )
+    with pytest.raises(ScheduleStateConflict):
+        repository.admit_serial_public_turn(
+            "schedule-1",
+            4,
+            _admission(),
+        )
+    with pytest.raises(ScheduleNotFound):
+        repository.admit_serial_public_turn("missing", 0, _admission())
+    assert repository.load_managed_turn("turn-1") is None
+
+
+def test_memory_stale_admission_does_not_publish_partial_turn() -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+    repository.admit_serial_public_turn("schedule-1", 0, _admission())
+
+    with pytest.raises(ScheduleStateConflict):
+        repository.admit_serial_public_turn(
+            "schedule-1",
+            0,
+            _admission(turn_id="turn-stale", idempotency_key="turn-stale:submit"),
+        )
+    assert repository.load_managed_turn("turn-stale") is None
+    stored = repository.load_serial_public_schedule("schedule-1")
+    assert stored is not None
+    assert stored.active_turn_id == "turn-1"
+
+
+def test_memory_transition_cas_and_missing_turn_errors() -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+    managed = repository.admit_serial_public_turn("schedule-1", 0, _admission())
+
+    with pytest.raises(TurnStateConflict):
+        repository.transition_active_turn(
+            managed.turn.turn_id,
+            expected_turn_version=99,
+            next_status=AgentTurnStatus.OBSERVING,
+        )
+    with pytest.raises(ManagedTurnNotFound):
+        repository.transition_active_turn(
+            "missing-turn",
+            expected_turn_version=0,
+            next_status=AgentTurnStatus.OBSERVING,
+        )
+
+    updated = repository.transition_active_turn(
+        managed.turn.turn_id,
+        expected_turn_version=0,
+        next_status=AgentTurnStatus.OBSERVING,
+    )
+    assert updated.turn.status is AgentTurnStatus.OBSERVING
+    assert updated.state_version == 1
+
+
+def test_memory_finish_advance_replace_and_close() -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+    managed = _memory_admit_validating(repository)
+    advanced = repository.finish_active_turn(
+        "schedule-1",
+        expected_schedule_version=1,
+        turn_id=managed.turn.turn_id,
+        expected_turn_version=4,
+        terminal_status=AgentTurnStatus.COMMITTED,
+        disposition=TerminalDisposition.ADVANCE,
+        reason_code=None,
+    )
+    assert advanced.status is SerialPublicScheduleStatus.OPEN
+    assert advanced.next_slot_ordinal == 1
+    assert repository.load_active_serial_public_schedule("game-1") == advanced
+    assert repository.load_managed_turn("turn-1").turn.status is AgentTurnStatus.COMMITTED  # type: ignore[union-attr]
+
+    validating = _memory_admit_validating(
+        repository,
+        turn_id="turn-2",
+        expected_schedule_version=2,
+        player_id="p02",
+    )
+    # A replacement must retain the current slot and permit a later admission.
+    replaced = repository.finish_active_turn(
+        "schedule-1",
+        expected_schedule_version=3,
+        turn_id=validating.turn.turn_id,
+        expected_turn_version=4,
+        terminal_status=AgentTurnStatus.EXPIRED,
+        disposition=TerminalDisposition.REPLACE,
+        reason_code="expired",
+    )
+    assert replaced.status is SerialPublicScheduleStatus.OPEN
+    assert replaced.next_slot_ordinal == 1
+
+    validating = _memory_admit_validating(
+        repository,
+        turn_id="turn-3",
+        expected_schedule_version=4,
+        player_id="p02",
+    )
+
+    closed = repository.finish_active_turn(
+        "schedule-1",
+        expected_schedule_version=5,
+        turn_id=validating.turn.turn_id,
+        expected_turn_version=4,
+        terminal_status=AgentTurnStatus.CANCELLED,
+        disposition=TerminalDisposition.CLOSE,
+        reason_code="host_closed",
+    )
+    assert closed.status is SerialPublicScheduleStatus.CANCELLED
+    assert repository.load_active_serial_public_schedule("game-1") is None
+
+
+def test_memory_finish_rejects_stale_versions_and_wrong_identity() -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+    managed = _memory_admit_validating(repository)
+
+    with pytest.raises(ScheduleStateConflict):
+        repository.finish_active_turn(
+            "schedule-1",
+            expected_schedule_version=0,
+            turn_id=managed.turn.turn_id,
+            expected_turn_version=managed.state_version,
+            terminal_status=AgentTurnStatus.COMMITTED,
+            disposition=TerminalDisposition.ADVANCE,
+            reason_code=None,
+        )
+    with pytest.raises(TurnStateConflict):
+        repository.finish_active_turn(
+            "schedule-1",
+            expected_schedule_version=1,
+            turn_id=managed.turn.turn_id,
+            expected_turn_version=0,
+            terminal_status=AgentTurnStatus.COMMITTED,
+            disposition=TerminalDisposition.ADVANCE,
+            reason_code=None,
+        )
+    with pytest.raises(ManagedTurnNotFound):
+        repository.finish_active_turn(
+            "schedule-1",
+            expected_schedule_version=1,
+            turn_id="missing-turn",
+            expected_turn_version=0,
+            terminal_status=AgentTurnStatus.COMMITTED,
+            disposition=TerminalDisposition.ADVANCE,
+            reason_code=None,
+        )
+    with pytest.raises(ManagedTurnNotFound):
+        repository.finish_active_turn(
+            "schedule-1",
+            expected_schedule_version=1,
+            turn_id="other-turn",
+            expected_turn_version=managed.state_version,
+            terminal_status=AgentTurnStatus.COMMITTED,
+            disposition=TerminalDisposition.ADVANCE,
+            reason_code=None,
+        )
+
+
+def test_memory_reads_are_defensive_and_delete_game_cleans_turn_state() -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+    managed = repository.admit_serial_public_turn("schedule-1", 0, _admission())
+
+    schedule_one = repository.load_serial_public_schedule("schedule-1")
+    schedule_two = repository.load_serial_public_schedule("schedule-1")
+    managed_one = repository.load_managed_turn(managed.turn.turn_id)
+    managed_two = repository.load_managed_turn(managed.turn.turn_id)
+    assert schedule_one is not schedule_two
+    assert managed_one is not managed_two
+    assert schedule_one is not None and schedule_two is not None
+    assert schedule_one.window is not schedule_two.window
+    assert managed_one is not None and managed_two is not None
+    assert managed_one.turn is not managed_two.turn
+
+    repository.delete_game("game-1")
+    assert repository.load_serial_public_schedule("schedule-1") is None
+    assert repository.load_managed_turn(managed.turn.turn_id) is None
+    assert repository.load_active_serial_public_schedule("game-1") is None
+    assert repository.list_open_serial_public_schedules() == ()
+
+
+def test_memory_prepare_then_publish_rolls_back_on_helper_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+
+    def fail_prepare(*args: object, **kwargs: object) -> object:
+        raise AutonomousTurnTransactionError("forced failure")
+
+    monkeypatch.setattr(
+        "werewolf_agent.storage.memory_store.prepare_serial_public_admission",
+        fail_prepare,
+    )
+    with pytest.raises(AutonomousTurnTransactionError):
+        repository.admit_serial_public_turn("schedule-1", 0, _admission())
+    stored = repository.load_serial_public_schedule("schedule-1")
+    assert stored is not None
+    assert stored.active_turn_id is None
+    assert stored.state_version == 0
+    assert repository.load_managed_turn("turn-1") is None
+
+
+def test_memory_concurrent_duplicate_admission_is_single_winner() -> None:
+    repository = _memory_repository()
+    repository.create_serial_public_schedule(_schedule())
+
+    def attempt(index: int) -> tuple[str, type[BaseException] | None]:
+        try:
+            repository.admit_serial_public_turn(
+                "schedule-1",
+                expected_schedule_version=0,
+                admission=_admission(
+                    turn_id=f"turn-{index}",
+                    idempotency_key=f"turn-{index}:submit",
+                ),
+            )
+        except BaseException as exc:  # noqa: BLE001 - classify stable repository errors
+            return "error", type(exc)
+        return "success", None
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        results = list(executor.map(attempt, range(20)))
+
+    assert sum(result == "success" for result, _ in results) == 1
+    failures = [error for result, error in results if result == "error"]
+    assert len(failures) == 19
+    assert set(failures) <= {ScheduleStateConflict, InvalidTurnAdmission}
+    managed_turns = [
+        repository.load_managed_turn(f"turn-{index}")
+        for index in range(20)
+    ]
+    assert sum(turn is not None for turn in managed_turns) == 1

@@ -22,11 +22,19 @@ from werewolf_agent.player_agents.contracts.dispatch import (
     DispatchStatus,
 )
 from werewolf_agent.player_agents.contracts.records import PublicSpeechRecord
+from werewolf_agent.player_agents.contracts.scheduling import (
+    ManagedAgentTurn,
+    SerialPublicSchedule,
+    SerialPublicScheduleStatus,
+    TerminalDisposition,
+    TurnAdmission,
+)
 from werewolf_agent.player_agents.contracts.transactions import (
     CommitResult,
     CommitTurnRequest,
     ProjectionOutboxRecord,
 )
+from werewolf_agent.player_agents.contracts.turns import AgentTurnStatus
 from werewolf_agent.runtime.game_termination import (
     validate_game_aborted_append,
     validate_game_state_save,
@@ -39,6 +47,18 @@ from werewolf_agent.storage.autonomous_commit import (
     build_commit_result,
     build_committed_event,
     request_hash,
+)
+from werewolf_agent.storage.autonomous_turns import (
+    AutonomousTurnTransactionError,
+    InvalidScheduleTransition,
+    InvalidTurnAdmission,
+    ManagedTurnNotFound,
+    ScheduleNotFound,
+    ScheduleStateConflict,
+    TurnStateConflict,
+    prepare_active_finish,
+    prepare_active_transition,
+    prepare_serial_public_admission,
 )
 from werewolf_agent.storage.durable_dispatch import (
     DispatchIdempotencyConflict,
@@ -77,6 +97,9 @@ class InMemoryGameRepository:
         self._dispatch_attempts: dict[str, DispatchAttempt] = {}
         self._dispatch_results: dict[str, DispatchResultRecord] = {}
         self._dispatch_key_index: dict[tuple[str, str], str] = {}
+        self._serial_public_schedules: dict[str, SerialPublicSchedule] = {}
+        self._managed_agent_turns: dict[str, ManagedAgentTurn] = {}
+        self._active_schedule_by_game: dict[str, str] = {}
 
     def save_game(self, state: GameState) -> None:
         with self._lock:
@@ -103,6 +126,204 @@ class InMemoryGameRepository:
     def load_events(self, game_id: str) -> list[GameEvent]:
         with self._lock:
             return list(self._events.get(game_id, []))
+
+    # -- Autonomous serial-public turns -----------------------------------
+
+    def supports_autonomous_turns(self) -> bool:
+        """声明内存仓储提供串行公开托管回合能力。"""
+        return True
+
+    def create_serial_public_schedule(
+        self,
+        schedule: SerialPublicSchedule,
+    ) -> SerialPublicSchedule:
+        """创建一个新的公开调度并建立游戏级活动索引。"""
+        with self._lock:
+            if schedule.game_id not in self._games:
+                raise AutonomousTurnTransactionError(
+                    "game is required before creating a schedule",
+                )
+            if schedule.schedule_id in self._serial_public_schedules:
+                raise AutonomousTurnTransactionError(
+                    "schedule already exists",
+                )
+            if (
+                schedule.status is SerialPublicScheduleStatus.OPEN
+                and schedule.game_id in self._active_schedule_by_game
+            ):
+                raise AutonomousTurnTransactionError(
+                    "game already has an open schedule",
+                )
+            if (
+                schedule.status is SerialPublicScheduleStatus.OPEN
+                and schedule.active_turn_id is not None
+            ):
+                raise InvalidScheduleTransition(
+                    "invalid autonomous turn transition",
+                )
+            stored = schedule.model_copy(deep=True)
+            self._serial_public_schedules[stored.schedule_id] = stored
+            if stored.status is SerialPublicScheduleStatus.OPEN:
+                self._active_schedule_by_game[stored.game_id] = stored.schedule_id
+            return stored.model_copy(deep=True)
+
+    def load_serial_public_schedule(
+        self,
+        schedule_id: str,
+    ) -> SerialPublicSchedule | None:
+        with self._lock:
+            schedule = self._serial_public_schedules.get(schedule_id)
+            return schedule.model_copy(deep=True) if schedule is not None else None
+
+    def load_active_serial_public_schedule(
+        self,
+        game_id: str,
+    ) -> SerialPublicSchedule | None:
+        with self._lock:
+            schedule_id = self._active_schedule_by_game.get(game_id)
+            if schedule_id is None:
+                return None
+            schedule = self._serial_public_schedules.get(schedule_id)
+            if schedule is None or schedule.status is not SerialPublicScheduleStatus.OPEN:
+                return None
+            return schedule.model_copy(deep=True)
+
+    def list_open_serial_public_schedules(
+        self,
+    ) -> tuple[SerialPublicSchedule, ...]:
+        with self._lock:
+            schedules = [
+                schedule
+                for schedule in self._serial_public_schedules.values()
+                if schedule.status is SerialPublicScheduleStatus.OPEN
+            ]
+            schedules.sort(key=lambda item: (item.created_at, item.schedule_id))
+            return tuple(schedule.model_copy(deep=True) for schedule in schedules)
+
+    def load_managed_turn(self, turn_id: str) -> ManagedAgentTurn | None:
+        with self._lock:
+            managed = self._managed_agent_turns.get(turn_id)
+            return managed.model_copy(deep=True) if managed is not None else None
+
+    def admit_serial_public_turn(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        admission: TurnAdmission,
+    ) -> ManagedAgentTurn:
+        """在 schedule CAS 成功后原子发布一个新的活动托管回合。"""
+        with self._lock:
+            schedule = self._serial_public_schedules.get(schedule_id)
+            if schedule is None:
+                raise ScheduleNotFound("schedule not found")
+            if schedule.state_version != expected_schedule_version:
+                raise ScheduleStateConflict("schedule state version conflict")
+            try:
+                now = max(datetime.now(timezone.utc), schedule.updated_at)
+                updated_schedule, managed = prepare_serial_public_admission(
+                    schedule,
+                    admission,
+                    now,
+                )
+                if managed.turn.turn_id in self._managed_agent_turns:
+                    raise AutonomousTurnTransactionError(
+                        "managed turn already exists",
+                    )
+            except (
+                InvalidTurnAdmission,
+                InvalidScheduleTransition,
+                AutonomousTurnTransactionError,
+            ):
+                raise
+            except Exception as exc:
+                raise AutonomousTurnTransactionError(
+                    "autonomous turn admission transaction failed",
+                ) from exc
+
+            self._managed_agent_turns[managed.turn.turn_id] = managed.model_copy(
+                deep=True,
+            )
+            self._serial_public_schedules[schedule_id] = updated_schedule.model_copy(
+                deep=True,
+            )
+            self._active_schedule_by_game[schedule.game_id] = schedule_id
+            return managed.model_copy(deep=True)
+
+    def transition_active_turn(
+        self,
+        turn_id: str,
+        expected_turn_version: int,
+        next_status: AgentTurnStatus,
+    ) -> ManagedAgentTurn:
+        """使用托管回合 CAS 版本推进一个非终态活动回合。"""
+        with self._lock:
+            managed = self._managed_agent_turns.get(turn_id)
+            if managed is None:
+                raise ManagedTurnNotFound("managed turn not found")
+            if managed.state_version != expected_turn_version:
+                raise TurnStateConflict("managed turn state version conflict")
+            schedule = self._serial_public_schedules.get(managed.schedule_id)
+            if schedule is None:
+                raise ScheduleNotFound("schedule not found")
+            try:
+                updated = prepare_active_transition(schedule, managed, next_status)
+            except InvalidScheduleTransition:
+                raise
+            except Exception as exc:
+                raise AutonomousTurnTransactionError(
+                    "autonomous turn transition transaction failed",
+                ) from exc
+            self._managed_agent_turns[turn_id] = updated.model_copy(deep=True)
+            return updated.model_copy(deep=True)
+
+    def finish_active_turn(
+        self,
+        schedule_id: str,
+        expected_schedule_version: int,
+        turn_id: str,
+        expected_turn_version: int,
+        terminal_status: AgentTurnStatus,
+        disposition: TerminalDisposition,
+        reason_code: str | None,
+    ) -> SerialPublicSchedule:
+        """原子终结活动回合并推进、替换或关闭公开调度。"""
+        with self._lock:
+            schedule = self._serial_public_schedules.get(schedule_id)
+            if schedule is None:
+                raise ScheduleNotFound("schedule not found")
+            if schedule.state_version != expected_schedule_version:
+                raise ScheduleStateConflict("schedule state version conflict")
+            managed = self._managed_agent_turns.get(turn_id)
+            if managed is None:
+                raise ManagedTurnNotFound("managed turn not found")
+            if managed.state_version != expected_turn_version:
+                raise TurnStateConflict("managed turn state version conflict")
+            try:
+                now = max(datetime.now(timezone.utc), schedule.updated_at)
+                updated_schedule, updated_turn = prepare_active_finish(
+                    schedule,
+                    managed,
+                    terminal_status,
+                    disposition,
+                    reason_code=reason_code,
+                    now=now,
+                )
+            except InvalidScheduleTransition:
+                raise
+            except Exception as exc:
+                raise AutonomousTurnTransactionError(
+                    "autonomous turn finish transaction failed",
+                ) from exc
+
+            self._managed_agent_turns[turn_id] = updated_turn.model_copy(deep=True)
+            self._serial_public_schedules[schedule_id] = updated_schedule.model_copy(
+                deep=True,
+            )
+            if updated_schedule.status is SerialPublicScheduleStatus.OPEN:
+                self._active_schedule_by_game[updated_schedule.game_id] = schedule_id
+            else:
+                self._active_schedule_by_game.pop(updated_schedule.game_id, None)
+            return updated_schedule.model_copy(deep=True)
 
     # -- Autonomous CommitTurn --------------------------------------------
 
@@ -553,6 +774,20 @@ class InMemoryGameRepository:
             self._evaluations.pop(game_id, None)
             self._configs.pop(game_id, None)
             self._autonomous_revision_by_game.pop(game_id, None)
+            schedule_ids = {
+                schedule_id
+                for schedule_id, schedule in self._serial_public_schedules.items()
+                if schedule.game_id == game_id
+            }
+            for schedule_id in schedule_ids:
+                self._serial_public_schedules.pop(schedule_id, None)
+            self._managed_agent_turns = {
+                turn_id: managed
+                for turn_id, managed in self._managed_agent_turns.items()
+                if managed.turn.game_id != game_id
+                and managed.schedule_id not in schedule_ids
+            }
+            self._active_schedule_by_game.pop(game_id, None)
             self._autonomous_commits = {
                 key: result
                 for key, result in self._autonomous_commits.items()
