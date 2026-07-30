@@ -333,6 +333,20 @@ def test_restarted_host_requires_recovery_before_admission() -> None:
         restarted.admit_next_turn(schedule.schedule_id, _admission(schedule=schedule))
 
 
+def test_restarted_host_requires_recovery_before_cancel() -> None:
+    repository, _active_host, managed = _host_with_active_turn()
+    restarted = _host(repository)
+
+    with pytest.raises(HostRecoveryRequired):
+        restarted.cancel_active_turn(
+            managed.schedule_id,
+            "operator_cancelled",
+            TerminalDisposition.ADVANCE,
+        )
+
+    assert repository.load_managed_turn(managed.turn.turn_id) == managed
+
+
 def test_recovery_without_pending_dispatch_opens_barrier() -> None:
     schedule = _schedule()
     repository = _repository(schedule)
@@ -476,6 +490,38 @@ def test_cancel_active_turn_cancels_unresolved_dispatches_and_applies_dispositio
     assert stored.terminal_reason == "operator_cancelled"
 
 
+def test_dispatch_block_after_recovery_still_allows_active_turn_cancel() -> None:
+    repository, _active_host, managed = _host_with_active_turn()
+    restarted = _host(repository)
+    report = restarted.recover_game(managed.turn.game_id)
+    attempt = repository.create_dispatch(_attempt(managed))
+    attempt = repository.mark_dispatching(
+        attempt.dispatch_id,
+        attempt.state_version,
+    )
+
+    with pytest.raises(HostRecoveryBlocked):
+        restarted.transition_active_turn(
+            managed.turn.turn_id,
+            managed.state_version,
+            AgentTurnStatus.OBSERVING,
+        )
+
+    schedule = restarted.cancel_active_turn(
+        managed.schedule_id,
+        "operator_cancelled",
+        TerminalDisposition.ADVANCE,
+    )
+
+    assert report.barrier_open is True
+    assert schedule.next_slot_ordinal == 1
+    assert repository.load_dispatch(attempt.dispatch_id).status is DispatchStatus.CANCELLED  # type: ignore[union-attr]
+    stored = repository.load_managed_turn(managed.turn.turn_id)
+    assert stored is not None
+    assert stored.turn.status is AgentTurnStatus.CANCELLED
+    assert stored.terminal_reason == "operator_cancelled"
+
+
 def test_cancel_keeps_captured_turn_identity_across_replace_interleaving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -613,6 +659,39 @@ def test_expire_due_turns_is_aware_recovered_and_deterministic() -> None:
     )
     assert future is not None
     assert future.turn.status is AgentTurnStatus.OPEN
+
+
+def test_dispatch_block_after_schedule_creation_still_allows_due_turn_expiry() -> None:
+    schedule = _schedule(deadline=NOW)
+    repository = InMemoryGameRepository()
+    repository.save_game(GameState(game_id=schedule.game_id))
+    host = _host(repository, now=NOW - timedelta(minutes=1))
+    schedule = host.create_schedule(schedule)
+    managed = host.admit_next_turn(
+        schedule.schedule_id,
+        _admission(schedule=schedule),
+    )
+    attempt = repository.create_dispatch(_attempt(managed))
+    attempt = repository.mark_dispatching(
+        attempt.dispatch_id,
+        attempt.state_version,
+    )
+
+    with pytest.raises(HostRecoveryBlocked):
+        host.transition_active_turn(
+            managed.turn.turn_id,
+            managed.state_version,
+            AgentTurnStatus.OBSERVING,
+        )
+
+    changed = host.expire_due_turns(NOW)
+
+    assert tuple(item.schedule_id for item in changed) == (schedule.schedule_id,)
+    assert repository.load_dispatch(attempt.dispatch_id).status is DispatchStatus.CANCELLED  # type: ignore[union-attr]
+    stored = repository.load_managed_turn(managed.turn.turn_id)
+    assert stored is not None
+    assert stored.turn.status is AgentTurnStatus.EXPIRED
+    assert stored.terminal_reason == "deadline_expired"
 
 
 def test_expire_due_turns_skips_unrecovered_persisted_game() -> None:

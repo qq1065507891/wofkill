@@ -266,7 +266,6 @@ class HostRuntime:
         try:
             self._dispatch_repository.assert_dispatch_allowed(game_id)
         except DispatchRecoveryBlocked as exc:
-            self._recovered_games.discard(game_id)
             self._blocked_games.add(game_id)
             raise HostRecoveryBlocked(
                 f"host recovery blocked for {game_id}",
