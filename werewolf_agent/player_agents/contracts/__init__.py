@@ -4,11 +4,12 @@
 
 作者: Project contributors
 创建日期: 2026-07-29
-修改日期: 2026-07-30
+修改日期: 2026-07-31
 """
 
 from werewolf_agent.player_agents.contracts.disclosure import DisclosureGrant
 from werewolf_agent.player_agents.contracts.dispatch import (
+    ActiveTurnDispatchFence,
     DispatchAttempt,
     DispatchOperationKind,
     DispatchRecoveryPolicy,
@@ -95,6 +96,7 @@ from werewolf_agent.player_agents.contracts.turns import (
 
 __all__ = [
     "SCHEMA_VERSION",
+    "ActiveTurnDispatchFence",
     "AddressStyle",
     "AgentTurn",
     "AgentTurnStatus",

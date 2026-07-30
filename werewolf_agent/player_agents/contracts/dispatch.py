@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-定义自主玩家 model/tool durable dispatch 的严格请求、状态与结果契约。
+定义自主玩家 model/tool durable dispatch、活动回合围栏与结果的严格契约。
 
 作者: Project contributors
 创建日期: 2026-07-29
+修改日期: 2026-07-31
 """
 
 from __future__ import annotations
@@ -70,6 +71,17 @@ def _require_aware(value: datetime, *, field_name: str) -> datetime:
     return value
 
 
+class ActiveTurnDispatchFence(StrictFrozenModel):
+    """把一次生产 dispatch 绑定到持久化活动回合身份。"""
+
+    schedule_id: NonEmptyId
+    schedule_state_version: int = Field(ge=0)
+    turn_state_version: int = Field(ge=1)
+    window_id: NonEmptyId
+    window_version: int = Field(ge=1)
+    base_game_revision: int = Field(ge=0)
+
+
 class DispatchAttempt(StrictFrozenModel):
     """网络 I/O 前写入的可恢复 dispatch 意图。"""
 
@@ -90,6 +102,7 @@ class DispatchAttempt(StrictFrozenModel):
     status: DispatchStatus
     state_version: int = Field(ge=0)
     reason_code: NonEmptyId | None = None
+    active_turn_fence: ActiveTurnDispatchFence | None = None
 
     @field_validator("deadline", "created_at", "updated_at")
     @classmethod
@@ -126,6 +139,7 @@ class DispatchResultRecord(StrictFrozenModel):
 
 
 __all__ = [
+    "ActiveTurnDispatchFence",
     "DispatchAttempt",
     "DispatchOperationKind",
     "DispatchRecoveryPolicy",
