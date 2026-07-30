@@ -6,6 +6,7 @@
 创建日期: 2026-07-31
 """
 
+import traceback
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -46,6 +47,17 @@ from werewolf_agent.storage.durable_dispatch import DispatchRecoveryBlocked
 HASH = "a" * 64
 NOW = datetime(2026, 7, 31, 10, tzinfo=timezone.utc)
 DEADLINE = datetime(2026, 7, 31, 11, tzinfo=timezone.utc)
+
+
+class _PrivateDatetime(datetime):
+    """在时间戳校验期间模拟不能泄漏的内部异常。"""
+
+    def utcoffset(self) -> timedelta | None:
+        raise ValueError("private payload")
+
+
+def _formatted_traceback(error: BaseException) -> str:
+    return "".join(traceback.format_exception(type(error), error, error.__traceback__))
 
 
 def _window(**updates: object) -> LegalActionWindow:
@@ -282,6 +294,37 @@ def test_prepare_active_turn_dispatch_rejects_window_deadline_at_observation() -
         )
 
 
+def test_prepare_active_turn_dispatch_rejects_divergent_window_deadline() -> None:
+    schedule, managed = _active_turn()
+    schedule = schedule.model_copy(
+        update={
+            "window": schedule.window.model_copy(
+                update={"deadline": DEADLINE + timedelta(hours=1)},
+            ),
+        },
+    )
+    with pytest.raises(ActiveTurnFenceRejected):
+        prepare_active_turn_dispatch(
+            schedule,
+            managed,
+            _attempt_for(managed, deadline=DEADLINE + timedelta(minutes=30)),
+            NOW,
+        )
+
+
+def test_prepare_active_turn_dispatch_sanitizes_private_time_failure() -> None:
+    schedule, managed = _active_turn()
+    private_now = _PrivateDatetime(2026, 7, 31, 10, tzinfo=timezone.utc)
+    with pytest.raises(ActiveTurnFenceRejected) as exc_info:
+        prepare_active_turn_dispatch(
+            schedule,
+            managed,
+            _attempt_for(managed),
+            private_now,
+        )
+    assert "private payload" not in _formatted_traceback(exc_info.value)
+
+
 def test_prepare_fenced_cancel_cancels_only_cancellable_attempts() -> None:
     schedule, managed = _active_turn(status=AgentTurnStatus.THINKING)
     attempts = (
@@ -416,6 +459,22 @@ def test_prepare_fenced_finish_rejects_attempt_for_another_turn() -> None:
         )
 
 
+def test_prepare_fenced_finish_sanitizes_private_time_failure() -> None:
+    schedule, managed = _active_turn()
+    private_now = _PrivateDatetime(2026, 7, 31, 10, tzinfo=timezone.utc)
+    with pytest.raises(ActiveTurnFenceRejected) as exc_info:
+        prepare_fenced_active_finish(
+            schedule,
+            managed,
+            (_attempt_for(managed),),
+            AgentTurnStatus.CANCELLED,
+            TerminalDisposition.REPLACE,
+            reason_code="operator_cancelled",
+            now=private_now,
+        )
+    assert "private payload" not in _formatted_traceback(exc_info.value)
+
+
 def test_fence_capability_guard_requires_one_explicit_repository() -> None:
     class CompleteRepository:
         def supports_autonomous_turns(self) -> bool:
@@ -434,32 +493,35 @@ def test_fence_capability_guard_requires_one_explicit_repository() -> None:
 
 
 @pytest.mark.parametrize(
-    "capability_name",
+    ("capability_name", "failure_mode"),
     [
-        "supports_autonomous_turns",
-        "supports_durable_dispatch",
-        "supports_active_turn_fence",
+        ("supports_autonomous_turns", "missing"),
+        ("supports_durable_dispatch", "false"),
+        ("supports_active_turn_fence", "raising"),
     ],
 )
 def test_fence_capability_guard_rejects_missing_false_or_raising_capability(
     capability_name: str,
+    failure_mode: str,
 ) -> None:
     class Repository:
-        def supports_autonomous_turns(self) -> bool:
-            return capability_name != "supports_autonomous_turns"
+        def __getattr__(self, name: str):
+            if name != capability_name:
+                return lambda: True
+            if failure_mode == "missing":
+                raise AttributeError(name)
+            if failure_mode == "false":
+                return lambda: False
 
-        def supports_durable_dispatch(self) -> bool:
-            return capability_name != "supports_durable_dispatch"
-
-        def supports_active_turn_fence(self) -> bool:
-            if capability_name == "supports_active_turn_fence":
+            def _raising() -> bool:
                 raise RuntimeError("private payload")
-            return True
+
+            return _raising
 
     repository = Repository()
     with pytest.raises(ActiveTurnFenceUnsupported) as exc_info:
         require_active_turn_fence_repository(repository, repository)
-    assert "private payload" not in str(exc_info.value)
+    assert "private payload" not in _formatted_traceback(exc_info.value)
 
 
 def test_fence_errors_expose_stable_codes() -> None:

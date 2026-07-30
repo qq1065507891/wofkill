@@ -103,10 +103,10 @@ def require_active_turn_fence_repository(
         try:
             capability = getattr(turn_repository, capability_name)
             supported = capability() if callable(capability) else False
-        except Exception as exc:
+        except Exception:  # noqa: BLE001 - capability 异常必须映射为稳定边界。
             raise ActiveTurnFenceUnsupported(
                 "repository does not support active turn fence",
-            ) from exc
+            ) from None
         if not supported:
             raise ActiveTurnFenceUnsupported(
                 "repository does not support active turn fence",
@@ -143,6 +143,8 @@ def _require_active_context(
     if managed.turn.window.window_id != schedule.window.window_id:
         raise _rejected()
     if managed.turn.window.version != schedule.window.version:
+        raise _rejected()
+    if managed.turn.window.deadline != schedule.window.deadline:
         raise _rejected()
     if managed.turn.revision.window_id != schedule.window.window_id:
         raise _rejected()
@@ -187,9 +189,12 @@ def prepare_active_turn_dispatch(
             raise _rejected()
         if not _is_aware(observed_at):
             raise _rejected()
-        if attempt.deadline <= observed_at or schedule.window.deadline <= observed_at:
+        if (
+            attempt.deadline <= observed_at
+            or managed.turn.window.deadline <= observed_at
+        ):
             raise _rejected()
-        if attempt.deadline > schedule.window.deadline:
+        if attempt.deadline > managed.turn.window.deadline:
             raise _rejected()
 
         updated_managed = managed.model_copy(
@@ -211,8 +216,8 @@ def prepare_active_turn_dispatch(
         )
     except ActiveTurnFenceRejected:
         raise
-    except (ValidationError, TypeError, ValueError, AttributeError) as exc:
-        raise _rejected() from exc
+    except (ValidationError, TypeError, ValueError, AttributeError):
+        raise _rejected() from None
     return updated_managed, fenced_attempt
 
 
@@ -271,8 +276,8 @@ def prepare_fenced_active_finish(
         )
     except (ActiveTurnFenceRejected, DispatchRecoveryBlocked):
         raise
-    except (ValidationError, TypeError, ValueError, AttributeError) as exc:
-        raise _rejected() from exc
+    except (ValidationError, TypeError, ValueError, AttributeError):
+        raise _rejected() from None
     return updated_schedule, updated_managed, updated_attempts
 
 
