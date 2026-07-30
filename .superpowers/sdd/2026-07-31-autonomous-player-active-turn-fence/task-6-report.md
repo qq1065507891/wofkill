@@ -58,3 +58,12 @@ changed.
 - Corrected handoff wording to distinguish full-suite exit status from the
   independent collection count, and made real PostgreSQL service validation a
   pre-production gate rather than the next milestone.
+
+## Fix round 2/5
+
+- Strengthened the same shared terminal scenario to reload the schedule after
+  `finish_active_turn_fenced()`. Both Memory and SQLite now prove the
+  persisted schedule equals the returned terminal value, clears the active
+  turn identity, and advances its cursor to ordinal 1.
+- The strengthened seven-test characterization passed on its first run. No
+  production regression was found and no production code changed.

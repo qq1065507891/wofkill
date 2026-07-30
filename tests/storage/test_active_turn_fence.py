@@ -798,8 +798,13 @@ def test_fence_backend_conformance_reserves_and_cancels(
 
     stored = repository.load_dispatch(attempt.dispatch_id)
     finished = repository.load_managed_turn(managed.turn.turn_id)
+    persisted_schedule = repository.load_serial_public_schedule(schedule.schedule_id)
     assert terminal.active_turn_id is None
     assert terminal.next_slot_ordinal == 1
+    assert persisted_schedule is not None
+    assert persisted_schedule == terminal
+    assert persisted_schedule.active_turn_id is None
+    assert persisted_schedule.next_slot_ordinal == 1
     assert stored is not None
     assert finished is not None
     assert stored.status is DispatchStatus.CANCELLED
