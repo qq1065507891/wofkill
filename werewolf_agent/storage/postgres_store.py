@@ -594,9 +594,13 @@ class PostgresGameRepository:
                     "constraint_name",
                     None,
                 )
+                unique_violation = (
+                    getattr(exc, "sqlstate", None) == "23505"
+                    or getattr(exc, "pgcode", None) == "23505"
+                )
                 if (
                     constraint_name == "uq_managed_turn_schedule_idempotency_key"
-                    or "uq_managed_turn_schedule_idempotency_key" in str(exc)
+                    and unique_violation
                 ):
                     raise InvalidTurnAdmission(
                         "invalid autonomous turn admission",

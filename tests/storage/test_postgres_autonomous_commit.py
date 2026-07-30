@@ -308,6 +308,22 @@ class _TurnConnection:
         self._snapshot = None
 
 
+class _InsertFailureConnection(_TurnConnection):
+    """在托管回合写入时注入数据库异常，验证 admission 异常映射。"""
+
+    def __init__(self, insert_error: BaseException, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._insert_error = insert_error
+
+    def execute(self, sql: str, params=()):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("INSERT INTO autonomous_managed_turns"):
+            self._begin()
+            self.executed.append((normalized, tuple(params)))
+            raise self._insert_error
+        return super().execute(sql, params)
+
+
 def _turn_repository(connection: _TurnConnection):
     repository = _repository_without_connection()
     repository._conn = connection
@@ -635,6 +651,62 @@ def test_postgres_replacement_rejects_reused_idempotency_key() -> None:
         _admission(turn_id="turn-3", idempotency_key="turn-3:submit"),
     )
     assert fresh.turn.turn_id == "turn-3"
+
+
+@pytest.mark.parametrize("code_attribute", ("sqlstate", "pgcode"))
+def test_postgres_admission_maps_target_unique_violation(
+    code_attribute: str,
+) -> None:
+    schedule = _schedule()
+    insert_error = RuntimeError(
+        "duplicate key value violates unique constraint "
+        '"uq_managed_turn_schedule_idempotency_key"',
+    )
+    setattr(insert_error, code_attribute, "23505")
+    insert_error.diag = SimpleNamespace(
+        constraint_name="uq_managed_turn_schedule_idempotency_key",
+    )
+    connection = _InsertFailureConnection(
+        insert_error,
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+    )
+    repository = _turn_repository(connection)
+
+    with pytest.raises(InvalidTurnAdmission) as exc_info:
+        repository.admit_serial_public_turn(
+            schedule.schedule_id,
+            expected_schedule_version=schedule.state_version,
+            admission=_admission(),
+        )
+
+    assert str(exc_info.value) == "invalid autonomous turn admission"
+    assert connection.rolled_back == 1
+
+
+def test_postgres_admission_does_not_map_constraint_text_without_unique_sqlstate() -> None:
+    schedule = _schedule()
+    insert_error = RuntimeError(
+        "database connection failed near "
+        '"uq_managed_turn_schedule_idempotency_key"',
+    )
+    insert_error.diag = SimpleNamespace(
+        constraint_name="uq_managed_turn_schedule_idempotency_key",
+    )
+    connection = _InsertFailureConnection(
+        insert_error,
+        schedules={schedule.schedule_id: schedule.model_dump(mode="json")},
+    )
+    repository = _turn_repository(connection)
+
+    with pytest.raises(AutonomousTurnTransactionError) as exc_info:
+        repository.admit_serial_public_turn(
+            schedule.schedule_id,
+            expected_schedule_version=schedule.state_version,
+            admission=_admission(),
+        )
+
+    assert not isinstance(exc_info.value, InvalidTurnAdmission)
+    assert connection.rolled_back == 1
 
 
 def test_postgres_transition_cas_miss_preserves_managed_turn() -> None:
