@@ -777,12 +777,14 @@ def test_fence_backend_conformance_reserves_and_cancels(
     """Memory 与 SQLite 对同一预约和取消场景给出相同可观察结果。"""
 
     repository, schedule, managed = repository_factory(tmp_path)
+    previous_turn_version = managed.state_version
 
     attempt = _reserve(repository, schedule, managed)
     managed = repository.load_managed_turn(managed.turn.turn_id)
     assert managed is not None
     assert attempt.active_turn_fence is not None
-    assert attempt.active_turn_fence.turn_state_version == managed.state_version
+    assert managed.state_version == previous_turn_version + 1
+    assert attempt.active_turn_fence.turn_state_version == previous_turn_version + 1
 
     terminal = repository.finish_active_turn_fenced(
         schedule.schedule_id,
@@ -795,9 +797,13 @@ def test_fence_backend_conformance_reserves_and_cancels(
     )
 
     stored = repository.load_dispatch(attempt.dispatch_id)
+    finished = repository.load_managed_turn(managed.turn.turn_id)
     assert terminal.active_turn_id is None
+    assert terminal.next_slot_ordinal == 1
     assert stored is not None
+    assert finished is not None
     assert stored.status is DispatchStatus.CANCELLED
+    assert finished.turn.status is AgentTurnStatus.CANCELLED
     if isinstance(repository, SqliteGameRepository):
         repository.close()
 

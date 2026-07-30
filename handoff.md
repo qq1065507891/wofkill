@@ -45,7 +45,7 @@
 - 本阶段实现基线：`7597753`（`fix: order PostgreSQL transition locks`）；交付提交会在本文件与测试变更一并产生
 - 本阶段交付前未提交变更仅为 `handoff.md`、活动回合围栏 conformance 测试和 HostRuntime defensive-copy 测试
 - 新运行时聚焦测试：416 passed，0 skipped，0 warnings
-- 当前全量 pytest：6196 passed，0 skipped；10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）
+- 当前全量 pytest：fresh `pytest -q` exit 0；独立 fresh collect 发现 6196 项测试；观察到 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）
 
 新会话不要直接相信以上动态值。先在仓库根目录执行：
 
@@ -98,7 +98,7 @@ git diff --check
 conda run -n wofkill python -m pytest -q
 ```
 
-上述 focused/full pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；full 计数由同一次新鲜测试集 collect 得到。没有运行真实 PostgreSQL service integration。
+上述 focused pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；full `pytest -q` fresh exit 0，独立 fresh collect 发现 6196 项测试，并观察到 10 条既有第三方 warning。没有运行真实 PostgreSQL service integration。
 
 ## 4. 已经实现的功能
 
@@ -197,7 +197,7 @@ conda run -n wofkill python -m pytest -q
 - `create_active_turn_dispatch()` 在同一后端事务中校验精确身份、恢复门禁和截止时间，并只增加 managed-turn `state_version` 后写入仓储生成的 fence；历史 unfenced rows 仍可读取，但不能作为生产授权。
 - `finish_active_turn_fenced()` 与预约共享 game → schedule → managed turn → dispatch attempts 的竞争边界：cancel/expire 原子取消 `PENDING`/`DISPATCHING`，complete 拒绝 unresolved work，再原子更新回合和调度。
 - Memory、SQLite 与 PostgreSQL 都声明显式 capability。Memory/SQLite 的共享 conformance 覆盖预约、取消、稳定 CAS error code 和 defensive copies；PostgreSQL 仅有 schema/lock/CAS/rollback 的 fake-connection 合同验证。
-- 本次新增 conformance 首次即绿，属于对已审查行为的 characterization，不代表重新实现生产逻辑。
+- 本次新增 conformance（包括预约后 managed-turn 版本、fence version、advance 后 cursor/identity 及 terminal turn status）首次即绿，属于对已审查行为的 characterization，不代表重新实现生产逻辑。
 
 主要文件：
 
@@ -417,18 +417,19 @@ conda run -n wofkill python -m pytest -q
 
 当前 fence 完成后，继续严格按以下顺序推进：
 
-1. 真实 PostgreSQL 集成验证；
-2. ObservationProjector 和隔离 player workspace；
-3. context budget、compaction checkpoint 和 rehydration；
-4. 最小 ToolGateway、working reflection，以及专用 ToolResult Markdown
+1. ObservationProjector 和隔离 player workspace；
+2. context budget、compaction checkpoint 和 rehydration；
+3. 最小 ToolGateway、working reflection，以及专用 ToolResult Markdown
    模型展示层；Markdown 只作为结构化结果的确定性只读投影，并按
    `result_kind` 通过 JSON/Markdown A/B 门槛后启用；
-5. 第一版 daytime-speech AgentLoop；
-6. 完整 Host validation、RuleEngine resolution、`CommitTurn` 编排；
-7. commitment/game projections、deterministic player renderer 和 JudgePresenter；
-8. stage-1 feature gate 与全部可执行验收门槛；
-9. vote、private role windows 和 wolf coordinator；
-10. world model、RAG、skills、reflection 和 cross-game memory 的独立 feature/ablation gates；
-11. 默认启用评估、历史 replay 兼容和最终 legacy cutover。
+4. 第一版 daytime-speech AgentLoop；
+5. 完整 Host validation、RuleEngine resolution、`CommitTurn` 编排；
+6. commitment/game projections、deterministic player renderer 和 JudgePresenter；
+7. stage-1 feature gate 与全部可执行验收门槛；
+8. vote、private role windows 和 wolf coordinator；
+9. world model、RAG、skills、reflection 和 cross-game memory 的独立 feature/ablation gates；
+10. 默认启用评估、历史 replay 兼容和最终 legacy cutover。
+
+真实 PostgreSQL service integration 是所有生产接入前必须通过的 repository gate，不是当前隔离 projection 里程碑之前的独立第一步。
 
 在第一条真实昼间发言纵向链路通过 replay、隐私、并发和确定性渲染门槛之前，不要扩展到投票、夜间能力或 cognition extensions。
