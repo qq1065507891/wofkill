@@ -348,6 +348,68 @@ def test_postgres_schema_contains_autonomous_turn_tables() -> None:
     assert "turn_json #>> '{turn,idempotency_key}'" in sql
 
 
+def test_postgres_rejects_duplicate_historical_idempotency_keys_during_initialization() -> None:
+    from werewolf_agent.storage.postgres_store import PostgresSchemaMigrationError
+
+    class FakeCursor:
+        def __init__(self, rows=(), row=None) -> None:
+            self._rows = list(rows)
+            self._row = row
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._row
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.committed = 0
+            self.rolled_back = 0
+            self.executed: list[str] = []
+
+        def execute(self, sql: str, params=()):
+            del params
+            normalized = " ".join(sql.split()).lower()
+            self.executed.append(normalized)
+            if (
+                "from autonomous_managed_turns" in normalized
+                and "group by schedule_id" in normalized
+                and "having count(*) > 1" in normalized
+            ):
+                return FakeCursor(
+                    rows=[
+                        ("schedule-1", "historical-key", 2, ["turn-a", "turn-b"]),
+                    ],
+                )
+            if "select to_regclass" in normalized:
+                return FakeCursor(
+                    row=("uq_events_game_seq", "uq_events_game_event_id"),
+                )
+            return FakeCursor()
+
+        def commit(self) -> None:
+            self.committed += 1
+
+        def rollback(self) -> None:
+            self.rolled_back += 1
+
+    connection = FakeConnection()
+    repository = _repository_without_connection()
+    repository._conn = connection
+
+    with pytest.raises(PostgresSchemaMigrationError) as exc_info:
+        repository._ensure_schema()
+
+    error_text = str(exc_info.value)
+    assert "schedule-1" in error_text
+    assert "historical-key" in error_text
+    assert "turn-a" in str(exc_info.value)
+    assert connection.rolled_back == 1
+    assert connection.committed == 0
+    assert repository._autonomous_schema_ready is False
+
+
 def test_postgres_autonomous_turn_jsonb_decoders_accept_dicts_and_strings() -> None:
     from werewolf_agent.storage.postgres_store import PostgresGameRepository
 
