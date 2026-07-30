@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** In progress (`30/52` implementation steps).
+**Progress:** In progress (`38/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -880,7 +880,7 @@ git commit -m "feat: persist serial public turns in sqlite"
 - Modify: `werewolf_agent/storage/postgres_store.py`
 - Modify: `tests/storage/test_postgres_autonomous_commit.py`
 
-- [ ] **Step 1: Write failing PostgreSQL DDL and capability tests**
+- [x] **Step 1: Write failing PostgreSQL DDL and capability tests**
 
 Add assertions for both tables, JSONB, TIMESTAMPTZ, the partial unique open
 schedule index, the managed-turn index, and unsupported capability without an
@@ -906,7 +906,7 @@ def test_uninitialized_postgres_reports_autonomous_turns_unsupported() -> None:
     assert repository.supports_autonomous_turns() is False
 ```
 
-- [ ] **Step 2: Run PostgreSQL tests and verify RED**
+- [x] **Step 2: Run PostgreSQL tests and verify RED**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_postgres_autonomous_commit.py -k "autonomous_turn or serial_public" -v
@@ -914,7 +914,7 @@ conda run -n wofkill python -m pytest tests/storage/test_postgres_autonomous_com
 
 Expected: DDL and capability are absent.
 
-- [ ] **Step 3: Add PostgreSQL JSONB scheduling schema**
+- [x] **Step 3: Add PostgreSQL JSONB scheduling schema**
 
 Add equivalent tables in `_ensure_schema_transaction`, using `BIGINT`,
 `JSONB`, `TIMESTAMPTZ`, game/schedule foreign keys, and:
@@ -928,7 +928,7 @@ WHERE status = 'open'
 Set no separate readiness flag; reuse the existing successful autonomous schema
 initialization state.
 
-- [ ] **Step 4: Implement row decoders and read/capability methods**
+- [x] **Step 4: Implement row decoders and read/capability methods**
 
 Accept both psycopg dictionaries and JSON strings for JSONB payloads. Load
 strict `SerialPublicSchedule` and `ManagedAgentTurn` objects, return defensive
@@ -947,7 +947,7 @@ def supports_autonomous_turns(self) -> bool:
     )
 ```
 
-- [ ] **Step 5: Implement PostgreSQL CAS transactions**
+- [x] **Step 5: Implement PostgreSQL CAS transactions**
 
 For every mutation, acquire the existing game advisory transaction lock, select
 the schedule and active turn `FOR UPDATE`, validate expected versions, run the
@@ -984,14 +984,14 @@ updated_schedule, updated_turn = prepare_active_finish(
 )
 ```
 
-- [ ] **Step 6: Add fake-connection atomicity tests**
+- [x] **Step 6: Add fake-connection atomicity tests**
 
 Use a stateful fake connection that records schedule and managed-turn payloads.
 Force the second write of `finish_active_turn` to fail and assert rollback
 leaves both records unchanged. Also assert SQL contains `FOR UPDATE`, the
 advisory lock, `state_version`, and `%s` placeholders.
 
-- [ ] **Step 7: Run PostgreSQL and adjacent storage checks**
+- [x] **Step 7: Run PostgreSQL and adjacent storage checks**
 
 ```bash
 conda run -n wofkill python -m pytest tests/storage/test_postgres_autonomous_commit.py tests/storage/test_postgres_store.py -q
@@ -1001,7 +1001,7 @@ conda run -n wofkill python -m mypy --follow-imports=skip werewolf_agent/storage
 
 Expected: PostgreSQL tests pass without a live server; static checks pass.
 
-- [ ] **Step 8: Commit PostgreSQL persistence**
+- [x] **Step 8: Commit PostgreSQL persistence**
 
 ```bash
 git add werewolf_agent/storage/postgres_store.py tests/storage/test_postgres_autonomous_commit.py
