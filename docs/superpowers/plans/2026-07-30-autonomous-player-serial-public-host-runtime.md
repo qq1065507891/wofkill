@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, dataclasses/protocols, in-memory RLock, SQLite transactions, PostgreSQL JSONB/row locks, pytest, Ruff, mypy; all Python commands use `conda run -n wofkill`.
 
-**Progress:** Not started (`0/52` implementation steps).
+**Progress:** In progress (`6/52` implementation steps).
 
 **Design:** `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
 
@@ -41,7 +41,7 @@
 - Modify: `werewolf_agent/player_agents/contracts/__init__.py`
 - Test: `tests/player_agents/test_scheduling_contracts.py`
 
-- [ ] **Step 1: Write failing schedule and admission contract tests**
+- [x] **Step 1: Write failing schedule and admission contract tests**
 
 Create fixed UTC fixtures and cover the public invariants with these tests:
 
@@ -93,7 +93,7 @@ The fixture uses a `LegalActionWindow` with participants `("p01", "p02")`,
 `ConflictClass.SERIAL_PUBLIC`, revision 4, and an aware deadline. It creates an
 open schedule at state version 0, no active turn, and `next_slot_ordinal=0`.
 
-- [ ] **Step 2: Run the contract tests and verify RED**
+- [x] **Step 2: Run the contract tests and verify RED**
 
 Run:
 
@@ -103,7 +103,7 @@ conda run -n wofkill python -m pytest tests/player_agents/test_scheduling_contra
 
 Expected: collection fails because `contracts.scheduling` does not exist.
 
-- [ ] **Step 3: Implement the closed enums and strict models**
+- [x] **Step 3: Implement the closed enums and strict models**
 
 Create the module with the required project header and these exact public fields:
 
@@ -216,7 +216,7 @@ class ManagedAgentTurn(StrictFrozenModel):
 Add an aware-datetime validator for `ManagedAgentTurn` and keep
 `AgentTurn.status` as its only status field.
 
-- [ ] **Step 4: Add contract cross-field rejection tests**
+- [x] **Step 4: Add contract cross-field rejection tests**
 
 Add tests that reject an open schedule at the end of its slots, a terminal
 schedule with an active turn, a naive timestamp, duplicate read references,
@@ -242,7 +242,7 @@ def test_schedule_rejects_inconsistent_state(updates: dict[str, object]) -> None
         })
 ```
 
-- [ ] **Step 5: Export contracts and verify GREEN**
+- [x] **Step 5: Export contracts and verify GREEN**
 
 Export all six public contract names from `contracts/__init__.py`, update its
 `修改日期` to `2026-07-30`, then run:
@@ -254,7 +254,7 @@ conda run -n wofkill python -m ruff check --ignore UP009 werewolf_agent/player_a
 
 Expected: all tests and Ruff checks pass.
 
-- [ ] **Step 6: Commit the scheduling contract layer**
+- [x] **Step 6: Commit the scheduling contract layer**
 
 ```bash
 git add werewolf_agent/player_agents/contracts tests/player_agents/test_scheduling_contracts.py
