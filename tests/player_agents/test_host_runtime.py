@@ -413,6 +413,21 @@ def test_host_creates_repository_generated_fenced_attempt() -> None:
     assert attempt.active_turn_fence.turn_state_version == current.state_version
 
 
+def test_host_load_active_turn_returns_defensive_repository_copies() -> None:
+    """Host 的活动回合读取不暴露仓储持有的可变对象引用。"""
+
+    _repository, host, managed = _host_with_active_turn()
+
+    first = host.load_active_turn(managed.turn.game_id)
+    second = host.load_active_turn(managed.turn.game_id)
+
+    assert first == second == managed
+    assert first is not None
+    assert second is not None
+    assert first is not second
+    assert first.turn is not second.turn
+
+
 def test_fence_fixture_uses_repository_lifecycle_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -24,14 +24,14 @@
 
 ## 2. 一句话进度结论
 
-新运行时已经完成“严格合约、三后端原子提交、durable dispatch、`serial_public` 调度和 HostRuntime 生命周期”基础层，但尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
+新运行时已经完成“严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期和 durable active-turn fence”基础层，但尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
 
 按总体设计第 28 节的 13 步实施序列判断：
 
 - 第 1 步已完成；
 - 第 2 步已完成 stage-1 昼间发言所需的主要合约，但其他终端提案仍未实现；
 - 第 3 步已完成 Memory、SQLite、PostgreSQL 的基础事务能力；
-- 第 4 步部分完成：调度、Host 生命周期、取消、过期和重启协调已完成，生产 dispatcher 与 durable active-turn fence 未完成；
+- 第 4 步完成 durable active-turn fence：调度、Host 生命周期、取消、过期和重启协调均通过同一持久化围栏竞争边界；生产 dispatcher 仍未实现；
 - 第 7 步中的 `SpeechProposal`、`PublicSpeechRecord` 和原子 commit 合约被提前实现，但完整纵向链路没有闭环；
 - 第 5～13 步的主体尚未开始。
 
@@ -41,12 +41,11 @@
 
 记录本文件时：
 
-- 分支：`master`
-- 本文件内容基线：`5d9b7ed`（`docs: design tool result markdown projections`）
-- 提交本文件前相对 `origin/master`：ahead 100；实际值必须用下方命令刷新
-- 提交本文件前除 `handoff.md` 外没有未提交变更
-- 新运行时聚焦测试：306 passed
-- 当前全量 pytest：退出码 0；只有既有 skips 和 10 条第三方弃用 warning
+- 分支：`codex/autonomous-active-turn-fence`
+- 本阶段实现基线：`7597753`（`fix: order PostgreSQL transition locks`）；交付提交会在本文件与测试变更一并产生
+- 本阶段交付前未提交变更仅为 `handoff.md`、活动回合围栏 conformance 测试和 HostRuntime defensive-copy 测试
+- 新运行时聚焦测试：416 passed，0 skipped，0 warnings
+- 当前全量 pytest：6196 passed，0 skipped；10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）
 
 新会话不要直接相信以上动态值。先在仓库根目录执行：
 
@@ -56,6 +55,7 @@ git log --oneline -12
 conda run -n wofkill python -m pytest tests/player_agents \
   tests/storage/test_autonomous_commit.py \
   tests/storage/test_autonomous_turns.py \
+  tests/storage/test_active_turn_fence.py \
   tests/storage/test_durable_dispatch_protocol.py \
   tests/storage/test_postgres_autonomous_commit.py -q
 ```
@@ -67,6 +67,38 @@ conda run -n wofkill python -m pytest -q
 ```
 
 项目所有 Python、pytest、ruff 和 mypy 命令都必须通过 `conda run -n wofkill` 执行。
+
+本阶段的 fresh 验证证据：
+
+```bash
+conda run -n wofkill python -m pytest tests/player_agents \
+  tests/storage/test_autonomous_commit.py \
+  tests/storage/test_autonomous_turns.py \
+  tests/storage/test_active_turn_fence.py \
+  tests/storage/test_durable_dispatch_protocol.py \
+  tests/storage/test_postgres_autonomous_commit.py -q
+conda run -n wofkill python -m ruff check --ignore UP009 \
+  werewolf_agent/player_agents \
+  werewolf_agent/storage/active_turn_fence.py \
+  werewolf_agent/storage/memory_store.py \
+  werewolf_agent/storage/sqlite_store.py \
+  werewolf_agent/storage/postgres_store.py \
+  tests/player_agents \
+  tests/storage/test_active_turn_fence.py \
+  tests/storage/test_autonomous_commit.py \
+  tests/storage/test_autonomous_turns.py \
+  tests/storage/test_durable_dispatch_protocol.py \
+  tests/storage/test_postgres_autonomous_commit.py
+conda run -n wofkill python -m mypy --follow-imports=skip \
+  werewolf_agent/player_agents \
+  werewolf_agent/storage/active_turn_fence.py \
+  werewolf_agent/storage/autonomous_turns.py \
+  werewolf_agent/storage/durable_dispatch.py
+git diff --check
+conda run -n wofkill python -m pytest -q
+```
+
+上述 focused/full pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；full 计数由同一次新鲜测试集 collect 得到。没有运行真实 PostgreSQL service integration。
 
 ## 4. 已经实现的功能
 
@@ -149,7 +181,7 @@ conda run -n wofkill python -m pytest -q
 - 新 schedule 必须从 `open / slot 0 / no active turn / version 0` 开始。
 - 同一 schedule 的 replacement 必须使用新的 turn ID 和未使用过的 idempotency key。
 - `HostRuntime` 覆盖 create、recover、admit、transition、complete、cancel、expire 和 load active turn。
-- cancel/expire 会先处理可取消的 `PENDING`、`DISPATCHING` attempts，再原子终结 managed turn。
+- cancel/expire/complete 均通过 active-turn fence 原子终结；它们不在 Host 内预扫描 dispatch。
 
 主要文件：
 
@@ -159,11 +191,28 @@ conda run -n wofkill python -m pytest -q
 - `tests/storage/test_autonomous_turns.py`
 - `tests/player_agents/test_host_runtime.py`
 
+### 4.6 Durable active-turn fence
+
+- `ActiveTurnDispatchFence` 将 dispatch 绑定到持久化 `schedule_id`、schedule CAS、预约后的 managed-turn CAS、window ID/version 和 base game revision；attempt 原有 game、turn、actor、lease、view 和 deadline 字段完成其余身份绑定。
+- `create_active_turn_dispatch()` 在同一后端事务中校验精确身份、恢复门禁和截止时间，并只增加 managed-turn `state_version` 后写入仓储生成的 fence；历史 unfenced rows 仍可读取，但不能作为生产授权。
+- `finish_active_turn_fenced()` 与预约共享 game → schedule → managed turn → dispatch attempts 的竞争边界：cancel/expire 原子取消 `PENDING`/`DISPATCHING`，complete 拒绝 unresolved work，再原子更新回合和调度。
+- Memory、SQLite 与 PostgreSQL 都声明显式 capability。Memory/SQLite 的共享 conformance 覆盖预约、取消、稳定 CAS error code 和 defensive copies；PostgreSQL 仅有 schema/lock/CAS/rollback 的 fake-connection 合同验证。
+- 本次新增 conformance 首次即绿，属于对已审查行为的 characterization，不代表重新实现生产逻辑。
+
+主要文件：
+
+- `werewolf_agent/storage/active_turn_fence.py`
+- `werewolf_agent/storage/memory_store.py`
+- `werewolf_agent/storage/sqlite_store.py`
+- `werewolf_agent/storage/postgres_store.py`
+- `tests/storage/test_active_turn_fence.py`
+- `tests/player_agents/test_host_runtime.py`
+
 ## 5. 只有部分实现，不能误判为完成
 
 ### 5.1 HostRuntime 还不是完整 Host
 
-当前 HostRuntime 只协调持久化调度、恢复门禁、回合生命周期、取消和过期。它还不会：
+当前 HostRuntime 只协调持久化调度、恢复门禁、围栏预约和回合生命周期。它还不会：
 
 - 构建 observation；
 - 建立 player workspace；
@@ -231,24 +280,11 @@ conda run -n wofkill python -m pytest -q
 
 ## 7. 当前唯一下一里程碑
 
-### Durable active-turn fence
+### 隔离 player documents 与 `ObservationFrame`
 
-在实现生产 dispatcher 或调用 `create_dispatch()` 之前，先设计并实现 durable active-turn fence。这是当前最高优先级，原因是没有它会存在多进程竞态：一个进程可能在另一个进程取消、过期、replace 或推进 turn 后仍创建新的外部请求。
+下一阶段只实现 player-facing read-only projections：每玩家隔离的 `PLAYER.md`、`ROLE.md`、`GAME.md`、`BELIEFS.md`、`COMMITMENTS.md`、`MEMORY.md`、`WORKING.md`、`INDEX.md`，以及 revision/visibility-pinned `ObservationFrame`。同时实现 context-budget accounting、80% compaction trigger、55% rehydration target、结构化 compaction checkpoint 和 checkpoint rehydration。
 
-该里程碑至少必须保证：
-
-1. 创建 dispatch attempt 时，在同一后端事务中验证 schedule、managed turn 和 admission identity；
-2. schedule 仍为 open，且 `active_turn_id` 精确匹配；
-3. managed turn 尚未进入 terminal 状态；
-4. turn、window、window version、base game revision、view fingerprint 和 model lease hash 与 attempt 精确绑定；
-5. deadline 尚未失效，且 dispatch recovery barrier 开放；
-6. fence 与 cancel、expire、replace、advance 和 terminal completion 使用相同的持久化竞争边界；
-7. CAS 失败或任何中间异常不留下 partial attempt；
-8. Memory、SQLite、PostgreSQL 行为等价；
-9. 并发测试能够证明“dispatch 创建”和“turn 终态化”只能有一个合法赢家；
-10. 本阶段仍不接入旧 PlayerAgent、旧 prompt、真实模型或 live game path。
-
-不要在没有专题设计和实施计划的情况下直接修改生产 dispatcher。推荐先创建新的专题设计，再按测试驱动方式实施。
+该阶段仍不实现 production dispatcher、真实 provider/model/tool 调用、AgentLoop、proposal validation、RuleEngine/`CommitTurn` 编排、live game path、旧 `PlayerAgent` 接入或 ToolResult Markdown projection；因此当前绝不是 playable vertical slice。
 
 ## 8. 下一会话必读文件
 
@@ -263,46 +299,33 @@ conda run -n wofkill python -m pytest -q
 
 ### 第二层：刚完成阶段的专题设计和计划
 
-4. `docs/superpowers/specs/2026-07-29-autonomous-player-durable-dispatch-design.md`
-5. `docs/superpowers/plans/2026-07-29-autonomous-player-durable-dispatch.md`
-6. `docs/superpowers/specs/2026-07-30-serial-public-scheduler-host-runtime-design.md`
-7. `docs/superpowers/plans/2026-07-30-autonomous-player-serial-public-host-runtime.md`
+4. `docs/superpowers/specs/2026-07-31-autonomous-player-active-turn-fence-design.md`
+5. `docs/superpowers/plans/2026-07-31-autonomous-player-active-turn-fence.md`
 
 ### 第三层：下一任务直接相关代码
 
-8. `werewolf_agent/player_agents/contracts/dispatch.py`
-9. `werewolf_agent/player_agents/contracts/scheduling.py`
-10. `werewolf_agent/player_agents/contracts/turns.py`
-11. `werewolf_agent/storage/durable_dispatch.py`
-12. `werewolf_agent/storage/autonomous_turns.py`
-13. `werewolf_agent/player_agents/runtime/host.py`
-14. `werewolf_agent/storage/memory_store.py`
-15. `werewolf_agent/storage/sqlite_store.py`
-16. `werewolf_agent/storage/postgres_store.py`
+6. `werewolf_agent/player_agents/contracts/turns.py`
+7. `werewolf_agent/player_agents/contracts/revisions.py`
+8. `werewolf_agent/player_agents/contracts/scheduling.py`
+9. `werewolf_agent/player_agents/runtime/host.py`
+10. `werewolf_agent/storage/active_turn_fence.py`
 
 ### 第四层：下一任务直接相关测试
 
-17. `tests/storage/test_durable_dispatch_protocol.py`
-18. `tests/storage/test_autonomous_turns.py`
-19. `tests/player_agents/test_host_runtime.py`
-20. `tests/storage/test_autonomous_commit.py`
-21. `tests/storage/test_postgres_autonomous_commit.py`
-22. `tests/player_agents/test_runtime_import_boundary.py`
+11. `tests/storage/test_active_turn_fence.py`
+12. `tests/player_agents/test_host_runtime.py`
+13. `tests/player_agents/test_runtime_import_boundary.py`
 
 仓库存在 `.codegraph/`。理解或定位代码时先运行 `codegraph explore "<问题或符号>"`，然后再做局部 `rg` 和文件读取。
 
 ## 9. 下一任务建议执行顺序
 
-1. 刷新 Git 状态和聚焦测试基线。
-2. 用 CodeGraph 查清 `create_dispatch`、`finish_active_turn`、cancel/expire/recovery 的所有后端路径。
-3. 写 durable active-turn fence 专题设计，明确事务身份、锁顺序、CAS 和稳定错误。
-4. 设计评审通过后写实施计划。
-5. 从纯状态准备函数和失败测试开始，再实现 Memory 后端。
-6. 实现 SQLite，并覆盖真实并发、rollback 和 migration 行为。
-7. 实现 PostgreSQL schema/transaction，并补真实 PostgreSQL 集成测试。
-8. 把 HostRuntime/dispatcher 收口到新 fence，禁止绕过仓储原子边界。
-9. 运行跨后端聚焦测试、ruff、mypy 和 `git diff --check`。
-10. 合并前运行全量 pytest，并更新本文件的进度、验证证据和唯一下一里程碑。
+1. 刷新 Git 状态和围栏聚焦测试基线。
+2. 用 CodeGraph 查清 projection、visibility、revision/read-set 和 workspace 现有边界。
+3. 为隔离 document projections、`ObservationFrame` 和 context checkpoint 写专题设计与实施计划。
+4. 先写不可越权、revision/visibility-pinned 的失败测试，再实现最小 projection capability。
+5. 在不接入 provider、ToolResult Markdown、旧玩家或 live game path 的前提下，加入 context accounting 与结构化 compaction/rehydration。
+6. 运行跨后端聚焦测试、ruff、mypy 和 `git diff --check`，之后再运行全量 pytest。
 
 ## 10. 必须保持的架构红线
 
@@ -314,7 +337,7 @@ conda run -n wofkill python -m pytest -q
 - 当前阶段不得把新 HostRuntime 接回 live game path；必须等第一条纵向链路和 feature gate 设计完成。
 - 新建 schedule 必须从 fresh initial state 开始，不能伪造推进状态。
 - replacement 必须同时使用新的 turn ID 和新的 idempotency key。
-- cancel/expire 必须先处理可取消的 unresolved dispatch，再完成 terminal advancement。
+- cancel/expire/complete 必须在同一 durable fence transaction 中处理精确 turn 的 unresolved dispatch 与 terminal advancement，不能由 Host 的二次扫描实现。
 - `DISPATCHED` 和 `UNKNOWN_OUTCOME` 不能被静默删除、重用或伪装成一次新请求。
 - transient `assert_dispatch_allowed` 失败不能抹掉已经完成的 recovery qualification；真正的 recovery 失败仍必须阻止新工作。
 - 不得用进程内锁、二次扫描或先写后检查模拟跨进程 durable fence。
@@ -343,6 +366,7 @@ conda run -n wofkill python -m pytest -q
 conda run -n wofkill python -m pytest tests/player_agents \
   tests/storage/test_autonomous_commit.py \
   tests/storage/test_autonomous_turns.py \
+  tests/storage/test_active_turn_fence.py \
   tests/storage/test_durable_dispatch_protocol.py \
   tests/storage/test_postgres_autonomous_commit.py -q
 ```

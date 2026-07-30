@@ -255,6 +255,26 @@ def _sqlite_active_turn(
     return repository, current_schedule, admitted
 
 
+def _memory_factory(_tmp_path) -> tuple[
+    InMemoryGameRepository,
+    SerialPublicSchedule,
+    ManagedAgentTurn,
+]:
+    """为跨后端契约矩阵提供内存仓储。"""
+
+    return _memory_active_turn()
+
+
+def _sqlite_factory(tmp_path) -> tuple[
+    SqliteGameRepository,
+    SerialPublicSchedule,
+    ManagedAgentTurn,
+]:
+    """为跨后端契约矩阵提供 SQLite 仓储。"""
+
+    return _sqlite_active_turn(tmp_path)
+
+
 def test_postgres_plain_create_rejects_caller_supplied_fence() -> None:
     from werewolf_agent.storage.postgres_store import PostgresGameRepository
 
@@ -747,6 +767,100 @@ def _reserve(
         _attempt_for(managed, dispatch_id=dispatch_id),
         NOW,
     )
+
+
+@pytest.mark.parametrize("repository_factory", [_memory_factory, _sqlite_factory])
+def test_fence_backend_conformance_reserves_and_cancels(
+    repository_factory,
+    tmp_path,
+) -> None:
+    """Memory 与 SQLite 对同一预约和取消场景给出相同可观察结果。"""
+
+    repository, schedule, managed = repository_factory(tmp_path)
+
+    attempt = _reserve(repository, schedule, managed)
+    managed = repository.load_managed_turn(managed.turn.turn_id)
+    assert managed is not None
+    assert attempt.active_turn_fence is not None
+    assert attempt.active_turn_fence.turn_state_version == managed.state_version
+
+    terminal = repository.finish_active_turn_fenced(
+        schedule.schedule_id,
+        schedule.state_version,
+        managed.turn.turn_id,
+        managed.state_version,
+        AgentTurnStatus.CANCELLED,
+        TerminalDisposition.ADVANCE,
+        "operator_cancelled",
+    )
+
+    stored = repository.load_dispatch(attempt.dispatch_id)
+    assert terminal.active_turn_id is None
+    assert stored is not None
+    assert stored.status is DispatchStatus.CANCELLED
+    if isinstance(repository, SqliteGameRepository):
+        repository.close()
+
+
+@pytest.mark.parametrize("repository_factory", [_memory_factory, _sqlite_factory])
+def test_fence_backend_conformance_preserves_stable_cas_error_codes(
+    repository_factory,
+    tmp_path,
+) -> None:
+    """两种后端都把过期的调度 CAS 映射为同一稳定错误码。"""
+
+    repository, schedule, managed = repository_factory(tmp_path)
+
+    with pytest.raises(ScheduleStateConflict) as exc_info:
+        repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version - 1,
+            managed.turn.turn_id,
+            managed.state_version,
+            _attempt_for(managed),
+            NOW,
+        )
+
+    assert exc_info.value.code == ScheduleStateConflict.code
+    assert repository.load_managed_turn(managed.turn.turn_id) == managed
+    assert repository.load_dispatch("dispatch-1") is None
+    if isinstance(repository, SqliteGameRepository):
+        repository.close()
+
+
+@pytest.mark.parametrize("repository_factory", [_memory_factory, _sqlite_factory])
+def test_fence_backend_conformance_returns_defensive_copies(
+    repository_factory,
+    tmp_path,
+) -> None:
+    """后端读取不会泄漏持久化对象或其嵌套围栏引用。"""
+
+    repository, schedule, managed = repository_factory(tmp_path)
+    first_schedule = repository.load_serial_public_schedule(schedule.schedule_id)
+    second_schedule = repository.load_serial_public_schedule(schedule.schedule_id)
+    first_managed = repository.load_managed_turn(managed.turn.turn_id)
+    second_managed = repository.load_managed_turn(managed.turn.turn_id)
+    attempt = _reserve(repository, schedule, managed)
+    first_attempt = repository.load_dispatch(attempt.dispatch_id)
+    second_attempt = repository.load_dispatch(attempt.dispatch_id)
+
+    assert first_schedule is not None
+    assert second_schedule is not None
+    assert first_managed is not None
+    assert second_managed is not None
+    assert first_attempt is not None
+    assert second_attempt is not None
+    assert first_schedule == second_schedule
+    assert first_schedule is not second_schedule
+    assert first_schedule.window is not second_schedule.window
+    assert first_managed == second_managed
+    assert first_managed is not second_managed
+    assert first_managed.turn is not second_managed.turn
+    assert first_attempt == second_attempt
+    assert first_attempt is not second_attempt
+    assert first_attempt.active_turn_fence is not second_attempt.active_turn_fence
+    if isinstance(repository, SqliteGameRepository):
+        repository.close()
 
 
 def test_memory_fenced_cancel_rolls_attempts_and_turn_forward_together() -> None:
