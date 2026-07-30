@@ -998,6 +998,102 @@ def test_dispatches_for_turn_orders_offsets_identically_in_memory_and_sqlite(
         sqlite.close()
 
 
+def test_sqlite_legacy_dispatch_offsets_are_backfilled_before_ordering(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "dispatch-legacy-offset-order.db"
+    sqlite = SqliteGameRepository(str(db_path))
+    sqlite.save_game(GameState(game_id="g1"))
+    sqlite.close()
+
+    legacy_rows = (
+        (
+            "dispatch-earlier",
+            "provider-earlier",
+            "2026-07-29T10:00:00+02:00",
+            "2026-07-29T12:00:00+02:00",
+        ),
+        (
+            "dispatch-later",
+            "provider-later",
+            "2026-07-29T09:00:00+00:00",
+            "2026-07-29T11:00:00+00:00",
+        ),
+    )
+    with sqlite3.connect(str(db_path)) as connection:
+        for dispatch_id, provider_key, created_at, deadline in legacy_rows:
+            connection.execute(
+                "INSERT INTO autonomous_dispatch_attempts ("
+                "dispatch_id, game_id, turn_id, actor_id, operation_kind, "
+                "executor_id, provider_idempotency_key, recovery_policy, "
+                "request_hash, lease_hash, view_fingerprint, deadline, status, "
+                "state_version, reason_code, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    dispatch_id,
+                    "g1",
+                    "turn-1",
+                    "p01",
+                    DispatchOperationKind.MODEL.value,
+                    "mock-provider",
+                    provider_key,
+                    DispatchRecoveryPolicy.IDEMPOTENT_LOOKUP_OR_REISSUE.value,
+                    DISPATCH_HASH,
+                    DISPATCH_HASH,
+                    DISPATCH_HASH,
+                    deadline,
+                    DispatchStatus.PENDING.value,
+                    0,
+                    None,
+                    created_at,
+                    created_at,
+                ),
+            )
+
+    memory = _memory_dispatch_repository()
+    for dispatch_id, provider_key, created_at, deadline in legacy_rows:
+        memory.create_dispatch(
+            _dispatch_attempt(
+                dispatch_id=dispatch_id,
+                provider_idempotency_key=provider_key,
+                created_at=datetime.fromisoformat(created_at),
+                updated_at=datetime.fromisoformat(created_at),
+                deadline=datetime.fromisoformat(deadline),
+            )
+        )
+
+    reopened = SqliteGameRepository(str(db_path))
+    try:
+        expected = ["dispatch-earlier", "dispatch-later"]
+        assert [
+            item.dispatch_id
+            for item in memory.list_dispatches_for_turn("g1", "turn-1")
+        ] == expected
+        assert [
+            item.dispatch_id
+            for item in reopened.list_dispatches_for_turn("g1", "turn-1")
+        ] == expected
+        assert reopened._conn.execute(
+            "SELECT dispatch_id, deadline, created_at, updated_at "
+            "FROM autonomous_dispatch_attempts ORDER BY dispatch_id"
+        ).fetchall() == [
+            (
+                "dispatch-earlier",
+                "2026-07-29T10:00:00+00:00",
+                "2026-07-29T08:00:00+00:00",
+                "2026-07-29T08:00:00+00:00",
+            ),
+            (
+                "dispatch-later",
+                "2026-07-29T11:00:00+00:00",
+                "2026-07-29T09:00:00+00:00",
+                "2026-07-29T09:00:00+00:00",
+            ),
+        ]
+    finally:
+        reopened.close()
+
+
 def test_found_recovery_records_result_from_dispatching_state(dispatch_repository) -> None:
     dispatch_repository.create_dispatch(_dispatch_attempt())
     dispatch_repository.mark_dispatching("dispatch-1", 0)

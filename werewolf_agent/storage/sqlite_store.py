@@ -328,6 +328,7 @@ class SqliteGameRepository:
             self._conn.executescript(_SCHEMA)
             _ensure_event_schema_v2(self._conn)
             self._conn.executescript(_AUTONOMOUS_DISPATCH_SCHEMA)
+            self._normalize_dispatch_timestamps()
             self._durable_dispatch_schema_ready = True
             _ensure_event_sequence_integrity(self._conn)
             self._conn.commit()
@@ -637,6 +638,48 @@ class SqliteGameRepository:
         """将带时区 dispatch 时间统一为 UTC，确保文本排序等价于时间排序。"""
         return value.astimezone(timezone.utc).isoformat()
 
+    @classmethod
+    def _normalize_dispatch_timestamp(cls, value: str) -> str:
+        """将可解析的旧版带时区字符串规范化为 UTC，异常值保持原样。"""
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return value
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return value
+        return cls._dispatch_timestamp(parsed)
+
+    def _normalize_dispatch_timestamps(self) -> None:
+        """幂等回填历史 dispatch 时间，避免 offset 文本造成跨后端错序。"""
+        attempt_rows = self._conn.execute(
+            "SELECT dispatch_id, deadline, created_at, updated_at "
+            "FROM autonomous_dispatch_attempts"
+        ).fetchall()
+        for dispatch_id, deadline, created_at, updated_at in attempt_rows:
+            normalized = (
+                self._normalize_dispatch_timestamp(deadline),
+                self._normalize_dispatch_timestamp(created_at),
+                self._normalize_dispatch_timestamp(updated_at),
+            )
+            if normalized != (deadline, created_at, updated_at):
+                self._conn.execute(
+                    "UPDATE autonomous_dispatch_attempts SET deadline = ?, "
+                    "created_at = ?, updated_at = ? WHERE dispatch_id = ?",
+                    (*normalized, dispatch_id),
+                )
+
+        result_rows = self._conn.execute(
+            "SELECT result_id, recorded_at FROM autonomous_dispatch_results"
+        ).fetchall()
+        for result_id, recorded_at in result_rows:
+            normalized = self._normalize_dispatch_timestamp(recorded_at)
+            if normalized != recorded_at:
+                self._conn.execute(
+                    "UPDATE autonomous_dispatch_results SET recorded_at = ? "
+                    "WHERE result_id = ?",
+                    (normalized, result_id),
+                )
+
     @staticmethod
     def _dispatch_from_row(row: sqlite3.Row | tuple[Any, ...]) -> DispatchAttempt:
         return DispatchAttempt.model_validate(
@@ -805,7 +848,7 @@ class SqliteGameRepository:
                 (
                     target_status.value,
                     reason_code,
-                    updated_at.isoformat(),
+                    self._dispatch_timestamp(updated_at),
                     dispatch_id,
                     expected_version,
                     *(status.value for status in allowed_statuses),
