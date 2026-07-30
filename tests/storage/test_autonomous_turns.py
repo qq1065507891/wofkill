@@ -1419,7 +1419,7 @@ def test_shared_twenty_duplicate_admissions_have_one_winner(
     if isinstance(seed, SqliteGameRepository):
         seed.close()
 
-    def attempt(index: int) -> tuple[str, type[BaseException] | None]:
+    def attempt(index: int) -> tuple[str, type[Exception] | None]:
         repository = (
             seed
             if repository_kind == "memory"
@@ -1434,7 +1434,7 @@ def test_shared_twenty_duplicate_admissions_have_one_winner(
                     idempotency_key=f"shared-turn-{index}:submit",
                 ),
             )
-        except BaseException as exc:  # noqa: BLE001 - 验证稳定仓储错误分类
+        except Exception as exc:  # noqa: BLE001 - 验证稳定仓储错误分类
             return "error", type(exc)
         finally:
             if repository_kind == "sqlite":
@@ -1495,32 +1495,61 @@ def test_shared_forced_admission_failure_rolls_back_atomically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _freeze_repository_clocks(monkeypatch)
-    repository = _shared_repository(repository_kind, tmp_path)
+    database_name = "shared-rollback.db"
+    repository = _shared_repository(
+        repository_kind,
+        tmp_path,
+        database_name=database_name,
+    )
     created = repository.create_serial_public_schedule(_schedule())
 
     def fail_prepare(*args: object, **kwargs: object) -> object:
         raise AutonomousTurnTransactionError("forced shared failure")
 
-    module_name = (
-        "werewolf_agent.storage.memory_store"
-        if repository_kind == "memory"
-        else "werewolf_agent.storage.sqlite_store"
-    )
-    monkeypatch.setattr(
-        f"{module_name}.prepare_serial_public_admission",
-        fail_prepare,
-    )
+    def fail_schedule_update(
+        schedule: SerialPublicSchedule,
+        expected_version: int,
+    ) -> None:
+        del schedule, expected_version
+        raise ScheduleStateConflict("forced shared schedule conflict")
+
+    def assert_admission_rolled_back(current: SharedTurnRepository) -> None:
+        stored = current.load_serial_public_schedule(created.schedule_id)
+        assert stored is not None
+        assert _canonical_contract_bytes(stored) == _canonical_contract_bytes(created)
+        assert current.load_managed_turn("turn-1") is None
+
     try:
-        with pytest.raises(AutonomousTurnTransactionError):
+        if repository_kind == "memory":
+            monkeypatch.setattr(
+                "werewolf_agent.storage.memory_store.prepare_serial_public_admission",
+                fail_prepare,
+            )
+            expected_error = AutonomousTurnTransactionError
+        else:
+            assert isinstance(repository, SqliteGameRepository)
+            monkeypatch.setattr(
+                repository,
+                "_update_schedule_unlocked",
+                fail_schedule_update,
+            )
+            expected_error = ScheduleStateConflict
+
+        with pytest.raises(expected_error):
             repository.admit_serial_public_turn(
                 created.schedule_id,
                 created.state_version,
                 _admission(),
             )
-        stored = repository.load_serial_public_schedule(created.schedule_id)
-        assert stored is not None
-        assert _canonical_contract_bytes(stored) == _canonical_contract_bytes(created)
-        assert repository.load_managed_turn("turn-1") is None
+        assert_admission_rolled_back(repository)
+
+        if repository_kind == "sqlite":
+            repository.close()
+            reopened = SqliteGameRepository(str(tmp_path / database_name))
+            try:
+                assert_admission_rolled_back(reopened)
+            finally:
+                reopened.close()
     finally:
         _close_shared_repository(repository)
 
