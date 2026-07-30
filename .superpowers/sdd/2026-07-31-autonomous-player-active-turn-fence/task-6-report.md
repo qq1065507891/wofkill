@@ -23,14 +23,16 @@ changed.
 
 ## Verification
 
-- Focused new-runtime suite: 416 passed, 0 skipped, 0 warnings, exit 0.
+- Focused new-runtime suite: fresh exit 0; an independent fresh collection
+  found 419 tests. Execution output showed no failure, skip, or warning marker.
 - Scoped Ruff: passed.
 - Scoped mypy: passed, 20 source files.
 - `git diff --check`: passed.
-- Full `pytest -q`: fresh exit 0; an independent fresh collection found 6196
-  tests, and the run observed the existing 10 third-party
-  `StarletteDeprecationWarning` warnings. This is not stated as a pass/skip
-  summary because this pytest configuration does not emit one.
+- Full `pytest -q`: fresh exit 0; an independent fresh collection found 6199
+  tests. The execution progress showed 12 skip markers and its warning summary
+  showed the existing 10 third-party `StarletteDeprecationWarning` warnings.
+  This is not stated as a pass/skip summary because this pytest configuration
+  does not emit one.
 
 ## Self-review
 
@@ -67,3 +69,18 @@ changed.
   turn identity, and advances its cursor to ordinal 1.
 - The strengthened seven-test characterization passed on its first run. No
   production regression was found and no production code changed.
+
+## Final review fix wave 1
+
+- Replaced the stale handoff snapshot with final implementation HEAD
+  `7327b7c` and recorded that fresh verification started from a clean tracked
+  worktree.
+- Re-ran the focused and full suites and recorded exit status separately from
+  independent collection counts: focused exit 0 / 419 collected; full exit 0
+  / 6199 collected. The full run showed 12 skip markers and the existing 10
+  third-party warnings.
+- Re-ran scoped Ruff, scoped mypy, `git diff --check`, and the forbidden-name
+  scan. All commands exited 0 and the forbidden scan had zero matches.
+- This wave changed only `handoff.md` and this tracked report; no production or
+  test file changed. Real PostgreSQL service integration remains an explicit
+  pre-production gate and was not run.

@@ -42,10 +42,10 @@
 记录本文件时：
 
 - 分支：`codex/autonomous-active-turn-fence`
-- 本阶段实现基线：`7597753`（`fix: order PostgreSQL transition locks`）；交付提交会在本文件与测试变更一并产生
-- 本阶段交付前未提交变更仅为 `handoff.md`、活动回合围栏 conformance 测试和 HostRuntime defensive-copy 测试
-- 新运行时聚焦测试：416 passed，0 skipped，0 warnings
-- 当前全量 pytest：fresh `pytest -q` exit 0；独立 fresh collect 发现 6196 项测试；观察到 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）
+- 最终实现 HEAD（本次验证起点）：`7327b7c`（`fix: validate memory fence context first`）；历史实施基线是 `7597753`
+- fresh 验证开始前 tracked worktree clean；最终文档提交后再次用 `git status --short --branch` 验证 clean
+- 新运行时 focused pytest：fresh exit 0；独立 fresh collect 发现 419 项测试，执行输出未出现 failure、skip 或 warning 标记
+- 全量 pytest：fresh exit 0；独立 fresh collect 发现 6199 项测试；执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）
 
 新会话不要直接相信以上动态值。先在仓库根目录执行：
 
@@ -98,7 +98,7 @@ git diff --check
 conda run -n wofkill python -m pytest -q
 ```
 
-上述 focused pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；full `pytest -q` fresh exit 0，独立 fresh collect 发现 6196 项测试，并观察到 10 条既有第三方 warning。没有运行真实 PostgreSQL service integration。
+上述 focused pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；focused 独立 fresh collect 为 419 项。full `pytest -q` fresh exit 0，独立 fresh collect 为 6199 项，执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 warning。pytest 在该 quiet/xdist 配置下没有打印 passed/skipped 数量汇总，因此这里不把 collect 数虚构成 passed 数。forbidden-name scan 为零命中。没有运行真实 PostgreSQL service integration。
 
 ## 4. 已经实现的功能
 
