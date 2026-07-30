@@ -547,19 +547,22 @@ class InMemoryGameRepository:
                 raise ManagedTurnNotFound("managed turn not found")
             if managed.state_version != expected_turn_version:
                 raise TurnStateConflict("managed turn state version conflict")
-            self._assert_dispatch_allowed_unlocked(attempt.game_id)
-            key = (attempt.executor_id, attempt.provider_idempotency_key)
-            if (
-                attempt.dispatch_id in self._dispatch_attempts
-                or key in self._dispatch_key_index
-            ):
-                raise DispatchIdempotencyConflict(attempt.dispatch_id)
             updated_managed, fenced_attempt = prepare_active_turn_dispatch(
                 schedule,
                 managed,
                 attempt,
                 observed_at,
             )
+            self._assert_dispatch_allowed_unlocked(fenced_attempt.game_id)
+            key = (
+                fenced_attempt.executor_id,
+                fenced_attempt.provider_idempotency_key,
+            )
+            if (
+                fenced_attempt.dispatch_id in self._dispatch_attempts
+                or key in self._dispatch_key_index
+            ):
+                raise DispatchIdempotencyConflict(fenced_attempt.dispatch_id)
             prepared_managed = updated_managed.model_copy(deep=True)
             prepared_attempt = fenced_attempt.model_copy(deep=True)
             attempts_snapshot = dict(self._dispatch_attempts)
@@ -569,13 +572,13 @@ class InMemoryGameRepository:
                 self._managed_agent_turns[turn_id] = prepared_managed
                 self._dispatch_attempts[fenced_attempt.dispatch_id] = prepared_attempt
                 self._dispatch_key_index[key] = fenced_attempt.dispatch_id
-            except Exception as exc:
+            except Exception:  # noqa: BLE001 - 发布错误必须恢复并净化后端细节。
                 self._dispatch_attempts = attempts_snapshot
                 self._managed_agent_turns = managed_snapshot
                 self._dispatch_key_index = key_index_snapshot
                 raise ActiveTurnFenceTransactionError(
                     "active turn fence transaction failed",
-                ) from exc
+                ) from None
             return fenced_attempt.model_copy(deep=True)
 
     def finish_active_turn_fenced(

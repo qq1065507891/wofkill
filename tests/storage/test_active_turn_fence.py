@@ -735,18 +735,73 @@ def test_memory_fenced_create_failure_leaves_every_index_unchanged(
     assert _reservation_state(repository, schedule, managed) == before
 
 
+@pytest.mark.parametrize(
+    "competing_check",
+    ("cross_game_recovery", "dispatch_id", "provider_key"),
+)
+def test_memory_fenced_create_rejects_context_before_dispatch_checks(
+    competing_check: str,
+) -> None:
+    repository, schedule, managed = _memory_active_turn()
+
+    if competing_check == "cross_game_recovery":
+        repository.save_game(GameState(game_id="game-2"))
+        blocker = _attempt_for(
+            managed,
+            dispatch_id="game-2-blocker",
+            game_id="game-2",
+            provider_idempotency_key="game-2-blocker-key",
+        )
+        repository.create_dispatch(blocker)
+        repository.mark_dispatching(blocker.dispatch_id, blocker.state_version)
+        attempt = _attempt_for(
+            managed,
+            dispatch_id="cross-game-attempt",
+            game_id="game-2",
+            provider_idempotency_key="cross-game-key",
+        )
+    elif competing_check == "dispatch_id":
+        repository.create_dispatch(_attempt_for(managed))
+        attempt = _attempt_for(managed, actor_id="p02")
+    else:
+        repository.create_dispatch(
+            _attempt_for(managed, dispatch_id="existing-dispatch"),
+        )
+        attempt = _attempt_for(
+            managed,
+            dispatch_id="new-dispatch",
+            actor_id="p02",
+        )
+
+    before = _reservation_state(repository, schedule, managed)
+    with pytest.raises(ActiveTurnFenceRejected):
+        repository.create_active_turn_dispatch(
+            schedule.schedule_id,
+            schedule.state_version,
+            managed.turn.turn_id,
+            managed.state_version,
+            attempt,
+            NOW,
+        )
+    assert _reservation_state(repository, schedule, managed) == before
+
+
 def test_memory_fenced_create_restores_all_records_after_publish_failure() -> None:
+    private_marker = "private reservation publish payload"
+
     class FailingDispatchDict(dict[str, DispatchAttempt]):
         def __setitem__(self, key: str, value: DispatchAttempt) -> None:
-            raise OSError("injected dispatch write failure")
+            raise OSError(private_marker)
 
     repository, schedule, managed = _memory_active_turn()
     before = _reservation_state(repository, schedule, managed)
     repository._dispatch_attempts = FailingDispatchDict(repository._dispatch_attempts)
 
-    with pytest.raises(ActiveTurnFenceTransactionError):
+    with pytest.raises(ActiveTurnFenceTransactionError) as exc_info:
         _reserve(repository, schedule, managed)
 
+    assert exc_info.value.__cause__ is None
+    assert private_marker not in _formatted_traceback(exc_info.value)
     assert _reservation_state(repository, schedule, managed) == before
 
 
