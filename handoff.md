@@ -1,6 +1,6 @@
 # Autonomous Player Runtime 跨会话接力手册
 
-更新日期：2026-07-31
+更新日期：2026-08-01
 
 ## 1. 这份文件怎么用
 
@@ -16,15 +16,16 @@
 
 1. `docs/superpowers/specs/2026-07-28-autonomous-player-agent-runtime-design.md` 是总体架构与最终约束的唯一权威；
 2. 当前源码和测试决定“实际上已经实现了什么”；
-3. `docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md` 是总体设计 §7.5 已确认的 Deep Agent 下位详细权威，只在父设计固定边界内约束实现；其他专题设计同样只能补充、不能覆盖总体设计；
-4. 本文件记录当前进度、阅读顺序和下一步；
-5. implementation plan 是实施历史，不是新的架构权威。
+3. `docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md` 是总体设计 §7.5 已确认的 Deep Agent 下位详细权威，只在父设计固定边界内约束实现；
+4. `docs/superpowers/specs/2026-07-31-tool-result-markdown-projection-design.md` 是总体设计 §12.1 已确认的 ToolResult 展示下位详细权威，只能细化 renderer、缓存、安全、评估与测试，不能改变结构化 authority；其他专题设计同样只能补充、不能覆盖总体设计；
+5. 本文件记录当前进度、阅读顺序和下一步；
+6. implementation plan 是实施历史，不是新的架构权威。
 
 如果本文件中的分支、HEAD、测试数量或远端领先数量与仓库不一致，先运行第 3 节的检查命令，再更新本文件。不要把快照当作永久事实。
 
 ## 2. 一句话进度结论
 
-新运行时已经完成严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期、durable active-turn fence，以及隔离的只读 observation projection 边界；总体权威设计已正式选择每玩家逻辑隔离的 Deep Agents cognition adapter，并由已确认的下位专题设计细化，但尚未安装或实现 Deep Agents，也尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
+新运行时已经完成严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期、durable active-turn fence，以及隔离的只读 observation projection 边界；总体权威设计已正式选择每玩家逻辑隔离的 Deep Agents cognition adapter，并固定结构化 ToolResult authority 与专用 Markdown 只读投影边界，两者均由已确认的下位专题设计细化，但尚未实现 Deep Agents、ToolGateway 或 ToolResult presentation，也尚未接入真实游戏、模型、RuleEngine 提交流程或旧玩家运行入口。
 
 按总体设计第 28 节的 13 步实施序列判断：
 
@@ -44,8 +45,8 @@
 
 - 分支：`codex/unify-deep-agent-authority-design`
 - worktree：`/Users/zengyilin/NLP/wofkill/.worktrees/unify-deep-agent-authority-design`
-- 分支 base：`08b0dfb`（`docs: define deep agent cognition duties`）；本阶段只统一总体权威设计、Deep Agent 专题设计和 handoff，不修改运行代码
-- `c1a295b..08b0dfb` 已形成 Deep Agent 专题设计历史；当前分支把其稳定决策吸收到总体设计 §1、§2、§5～8、§11、§28 和 §30
+- 分支 base：`08b0dfb`（`docs: define deep agent cognition duties`）；本阶段只统一总体权威设计、Deep Agent/ToolResult Markdown 专题设计和 handoff，不修改运行代码
+- `c1a295b..08b0dfb` 已形成 Deep Agent 与 ToolResult Markdown 专题设计历史；当前分支把稳定决策吸收到总体设计，其中 Deep Agent 由 §7.5 治理，ToolResult presentation 由 §12.1 治理
 - 新运行时 focused pytest：fresh exit 0，`585 passed in 1.61s`
 - 全量 pytest：fresh exit 0，进度到 100%，明确 12 个 skip 和 10 条既有第三方 `StarletteDeprecationWarning`；quiet/xdist 未打印 passed 汇总，因此不把 collected 数写成 passed 数
 
@@ -281,6 +282,12 @@ Deep Agent 在一个 admitted turn 内的具体单一职责是：把 Host 授权
 
 当前没有安装 `deepagents`，也没有实现 cognition contracts、adapter、virtual backend、`FencedChatModelAdapter`、terminal tool 或 feature gate。Stage 1 必须显式禁用 Deep Agents 自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；任何模型或外部工具调用仍须经过 durable active-turn fence。设计存在不等于 AgentLoop 已完成。
 
+### 5.6 ToolResult Markdown 权威设计已统一，但没有运行实现
+
+总体权威设计 §12.1 已明确：viewer-specific structured `ToolResult` 是唯一工具结果 authority；`ToolResultPresentation` 只是确定性、版本化、只读的模型上下文投影。`docs/superpowers/specs/2026-07-31-tool-result-markdown-projection-design.md` 是受父设计治理的已确认下位详细权威。每个支持的 `result_kind` 使用专用 renderer，typed truncation 必须发生在 Markdown 生成之前，不存在 live-path generic JSON-to-Markdown semantic converter，也绝不从 Markdown 恢复事实、证据、权限、proposal、audit、replay 或 checkpoint。
+
+当前没有实现新 autonomous `ToolResult` discriminated schemas、renderer registry、`ToolResultPresentation`、缓存或 ToolGateway 集成。实现只能在当前 context budget/compaction/rehydration 里程碑之后随 stage-1 ToolGateway 开始；每个 `result_kind` 默认启用 Markdown 前都必须通过预声明的 compact JSON/Markdown 对照门槛。不得修改或适配旧 `werewolf_agent/tools/schemas.py` 作为新运行时合同。
+
 ## 6. 尚未实现的主体功能
 
 - `ContextBudgetPolicy`、80% 自动压缩触发、严格 `CompactionCheckpoint`、可选且不可信的 `CompactionHandoff`、55% rehydration target、lineage validation 和 restart recovery；
@@ -375,6 +382,7 @@ Deep Agent 在一个 admitted turn 内的具体单一职责是：把 Host 授权
 - SQLite/PostgreSQL schema 变化必须先处理历史重复或不一致数据，不能泄露裸数据库异常。
 - 不保存 hidden chain-of-thought、未过滤 provider output、凭据、完整系统 prompt 或跨玩家私有信息。
 - observation Markdown 只是 source-bound、viewer-specific 的只读展示，不能解析回 Host state 或作为 dispatch/commit 权限。
+- ToolResult Markdown 只可由已注册的 `result_kind` 专用 renderer 从 visibility-validated structured result 生成；结构化结果始终是 authority，Markdown 不能进入 proposal、audit、replay 或 checkpoint 的事实恢复路径，也不能用 generic JSON dump 绕过显式 renderer 与 A/B 门槛。
 - `GAME.md` 含当前 viewer 授权的私有事实引用，必须在 document、manifest、INDEX 和 revision/cache 语义中保持 `MIXED_VIEWER_FILTERED`，不能降级标为 public。
 - projection cache 是可删的进程内优化，cache failure 必须等同 miss；projection 不写物理 workspace 文件或 durable projection table。
 - Deep Agents 只能作为可替换的 `PlayerCognitionExecutor` 实现；一名玩家对应一个逻辑 agent identity，一个 admitted turn 对应一个 bounded framework thread，不能用一个 supervisor agent 扮演或读取多个玩家。

@@ -1,8 +1,15 @@
 # Tool Result Markdown Projection Design
 
 Date: 2026-07-31
-Status: Approved design; implementation plan not yet written
+Status: Confirmed subordinate design; implementation plan not yet written
 Owner: Codex development session
+Parent: `docs/superpowers/specs/2026-07-28-autonomous-player-agent-runtime-design.md`
+
+Authority note: parent section 12.1 owns the representation hierarchy,
+structured-authority boundary, dedicated-renderer requirement, lifecycle
+placement, rollout gate, and legacy isolation. This document is
+implementation-authoritative only within that fixed boundary; if the documents
+conflict, the parent design wins.
 
 ## 1. Decision Summary
 
@@ -551,8 +558,10 @@ invent semantics, add cost and latency, and complicate deterministic recovery.
 
 ## 17. Implementation Sequence Boundary
 
-This design does not authorize implementation before the current durable
-active-turn fence milestone is complete.
+This design does not authorize implementation ahead of the parent design's
+sequence. The durable active-turn fence is complete, but context budget,
+compaction checkpoint, and rehydration remain the current milestone; ToolResult
+presentation starts only with the later stage-1 ToolGateway/context work.
 
 After that milestone, implementation should proceed as part of the stage-1
 ToolGateway/context plan:

@@ -1,7 +1,7 @@
 # Autonomous Player Agent Runtime Design
 
 Date: 2026-07-28
-Last revised: 2026-07-31
+Last revised: 2026-08-01
 Status: Approved authoritative design; staged implementation in progress
 Owner: Codex development session
 
@@ -24,6 +24,9 @@ The approved direction is a clean rewrite of the player decision subsystem:
 - retain each player's identity, documents, beliefs, commitments, and approved
   lessons across action turns;
 - give the agent phase- and role-scoped tools that it chooses to call;
+- keep viewer-specific structured `ToolResult` objects as the only tool-result
+  authority while optionally projecting supported result kinds into
+  deterministic, versioned Markdown for model context;
 - make reflection a player-callable, host-validated candidate-memory write;
 - make every game-changing output a strict structured proposal;
 - retain a strongly characterized judge presenter for public narration, but
@@ -868,6 +871,42 @@ submit proposals. Only the host and RuleEngine can produce committed events.
 
 A `ToolResult` identifies its revision, visibility, result kind, evidence
 references, warnings, and truncation. It never returns an unlabelled verdict.
+
+### 12.1 Tool Result Markdown Presentation
+
+The representation hierarchy is canonical Host records, a viewer-specific
+structured `ToolResult`, an optional deterministic `ToolResultPresentation`,
+and finally the model's interpretation. Only the structured result carries
+authority for identity, revision, visibility, trust class, evidence references,
+hashes, warnings, and truncation. Markdown carries no independent fact or
+reference, is never parsed back into Host state or a proposal, and cannot
+replace typed data in audit, replay, cache validation, or compaction
+checkpoints.
+
+Every supported `result_kind` has a dedicated renderer. Shared code may provide
+escaping, tables, lists, fixed envelope sections, and typed truncation, but the
+live path has no generic recursive JSON-to-Markdown semantic converter. If a
+renderer is absent or fails, the Host retains the structured result and uses an
+explicit structured presentation or typed presentation failure; it never
+silently exposes a generic dump.
+
+Rendering occurs only after ToolGateway visibility and schema validation and
+before context-budget admission. Identical canonical result bytes, renderer
+version, presentation policy, and token budget produce identical presentation
+bytes. Visibility, source-result hash, renderer version, or policy changes
+invalidate cached presentation; restart and compaction reconstruct from the
+structured result and pinned renderer version rather than treating cached
+Markdown as resumable authority.
+
+Markdown enablement is decided independently for each `result_kind` through a
+predeclared compact-JSON-versus-Markdown evaluation gate. This capability
+belongs only to the new autonomous ToolGateway and may not import, adapt, or
+route through the legacy `werewolf_agent/tools/schemas.py` protocol.
+
+`docs/superpowers/specs/2026-07-31-tool-result-markdown-projection-design.md`
+is the confirmed subordinate implementation design for this subsection. It may
+refine schemas, renderer rules, security controls, cache keys, evaluation, and
+tests inside these boundaries, but cannot override this parent design.
 
 `query_rag` accepts a bounded situation signature and optional public evidence
 references. The host derives player, role, phase, ruleset, and visibility
@@ -1786,12 +1825,15 @@ schema hashes, scorer versions, and exclusion rules before a run starts.
 5. Implement isolated player document projections, `ObservationFrame`, context
    budget accounting, structured compaction, and checkpoint rehydration.
 6. Implement the minimal stage-1 ToolGateway, structurally validated working
-   reflection candidates, framework-neutral `PlayerCognitionExecutor`, and the
-   first `DeepAgentPlayerExecutor` daytime-speech loop. Run an exact-version
-   compatibility spike before pinning Deep Agents; use a read-only virtual
-   observation backend, fenced model/tool adapters, and strict
-   `submit_speech`, with built-in summarization, durable framework checkpoints,
-   long-term memory, shell/execute, TODO, and subagents disabled.
+   reflection candidates, dedicated deterministic ToolResult presentations,
+   framework-neutral `PlayerCognitionExecutor`, and the first
+   `DeepAgentPlayerExecutor` daytime-speech loop. Render only registered
+   `result_kind` values after visibility validation, retain structured results
+   as authority, and gate each Markdown default against compact JSON. Run an
+   exact-version compatibility spike before pinning Deep Agents; use a
+   read-only virtual observation backend, fenced model/tool adapters, and
+   strict `submit_speech`, with built-in summarization, durable framework
+   checkpoints, long-term memory, shell/execute, TODO, and subagents disabled.
 7. Complete the first vertical slice through `SpeechProposal`,
    `PublicSpeechRecord`, atomic event/audit/outbox commit, commitment
    projections, deterministic player rendering, and deterministic judge
@@ -1857,7 +1899,9 @@ cutover record exists.
 1. RuleEngine alone adjudicates game mechanics and victory.
 2. HostRuntime alone grants tool permissions and commits side effects.
 3. Every player sees only a revision-pinned, viewer-specific workspace.
-4. Markdown is a generated projection, never authority or direct write path.
+4. Observation and ToolResult Markdown are generated, viewer-scoped
+   projections, never authority or direct write paths, and are never parsed
+   back into structured state.
 5. The agent chooses authorized tools; tools do not make final decisions.
 6. Facts, hypotheses, advice, commitments, and lessons are distinct types.
 7. Reflection proposes memory; the host assigns scope and quality.
@@ -1908,3 +1952,6 @@ cutover record exists.
 30. Stage-1 Deep Agents built-ins cannot introduce summarization, durable
     framework memory/checkpoints, shell/execute, subagents, TODO planning,
     framework retry/failover, or any external call that bypasses the Host fence.
+31. ToolResult Markdown exists only for registered `result_kind` renderers,
+    preserves typed authority and trust labels, truncates before rendering, and
+    is enabled by result kind only after its compact-JSON comparison gate.
