@@ -379,6 +379,7 @@ conda run -n wofkill python -m pytest -q
 - Deep Agents 只能作为可替换的 `PlayerCognitionExecutor` 实现；一名玩家对应一个逻辑 agent identity，一个 admitted turn 对应一个 bounded framework thread，不能用一个 supervisor agent 扮演或读取多个玩家。
 - Deep Agents/LangGraph checkpoint、自动 summary、TODO、scratch file 和 final text 都是可丢弃的模型侧数据；Host `CompactionCheckpoint` 仍是唯一 resumable authority。
 - Stage 1 必须显式禁用 Deep Agents 默认 general-purpose subagent、async subagent、自动 summarization、durable framework store、long-term memory 和 shell/execute；framework retry/failover 不能绕过 Host durable dispatch。
+- Stage 1 昼间发言以及未来普通投票、简单夜间动作默认禁用 `write_todos`；TODO 不是提交动作的前置步骤。只有复杂 cognition task 在预声明消融证明净收益后才能按 `task_type` 开启，且其状态只属于当前 turn、计入预算、终态后丢弃并排除在 Host checkpoint authority 之外。
 - Deep Agents adapter 不得直接构造 provider、MCP、repository、RuleEngine 或 `CommitTurn`；所有外部模型/工具调用必须穿过 durable active-turn fence，所有终态动作只能通过严格 terminal proposal gateway 返回 Host。
 - required observation sections 必须 fail closed；optional unavailable section 不能泄露隐藏记录是否存在，`COMMITMENTS.md` 的 available-empty 必须与 capability-absent 区分。
 - 不为当前单一调用者提前建立不必要抽象；变更必须小、可回滚，并保持 Memory/SQLite/PostgreSQL 契约一致。
@@ -463,7 +464,7 @@ conda run -n wofkill python -m pytest -q
 2. 最小 ToolGateway、working reflection，以及专用 ToolResult Markdown
    模型展示层；Markdown 只作为结构化结果的确定性只读投影，并按
    `result_kind` 通过 JSON/Markdown A/B 门槛后启用；
-3. framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` PoC：共享 harness、每玩家逻辑身份、每 turn 独立 thread、只读 observation virtual backend、ephemeral scratch、fenced model/tool adapter、严格 `submit_speech`；第一版明确关闭自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；
+3. framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` PoC：共享 harness、每玩家逻辑身份、每 turn 独立 thread、只读 observation virtual backend、ephemeral scratch、fenced model/tool adapter、严格 `submit_speech`；第一版明确关闭 `write_todos`、自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；
 4. 完整 Host validation、RuleEngine resolution、`CommitTurn` 编排；
 5. post-commitment/game projection updates、deterministic player renderer 和 JudgePresenter；
 6. stage-1 feature gate 与全部可执行验收门槛；

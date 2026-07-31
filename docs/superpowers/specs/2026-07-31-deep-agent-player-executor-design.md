@@ -382,6 +382,7 @@ store              = none in stage 1
 subagents          = none
 default subagent   = explicitly disabled
 summarization      = explicitly disabled
+planning/TODO      = explicitly disabled in stage 1
 execute/shell      = excluded
 long-term memory   = disabled
 ```
@@ -392,7 +393,20 @@ or asynchronous subagents supplied. The built-in summarization middleware must
 be excluded. Tests must inspect the compiled tool manifest and middleware
 behavior rather than trusting constructor intent.
 
-Planning/TODO and scratch operations may be retained only if they are bounded,
+The built-in `write_todos` tool is disabled for the stage-1 daytime-speech
+proof of concept. Future vote and simple night-action profiles also default to
+disabled. Creating a TODO list is never a mandatory precondition for speaking,
+voting, or submitting another proposal.
+
+A later complex-cognition experiment may expose `write_todos` by `task_type`
+only after a predeclared ablation shows enough decision-quality benefit to
+justify its token, latency, and tool-call cost. When enabled, TODO state is
+turn-scoped, player-local, non-authoritative, budgeted, discarded after
+terminalization, and excluded from Host checkpoint authority. It cannot be
+promoted into belief, evidence, commitment, reflection, memory, or proposal
+state merely because the harness completed it.
+
+Other scratch operations may be retained only if they are bounded,
 player-local, non-authoritative, and included in accounting. If the chosen
 Deep Agents version cannot hide or wrap a built-in tool without private API
 patching, the tool is disabled or the integration is rejected; production code
@@ -718,6 +732,8 @@ Each step remains mergeable while the runtime feature is disabled.
 
 - compiled tools contain no `execute`, shell, raw MCP, moderator, commit, model-
   switch, retry, or cross-player tool;
+- `write_todos` is absent from stage-1 daytime-speech and simple-action tool
+  manifests;
 - general-purpose, custom synchronous, and async subagents are absent;
 - Deep Agents automatic summarization and model fallback/retry are absent;
 - no durable framework store/checkpointer is configured in stage 1; and
@@ -788,7 +804,7 @@ The daytime-speech Deep Agents proof of concept is accepted only when:
 5. observation files are virtual, read-only, hash/revision pinned, and never
    persisted as authority;
 6. built-in summarization, durable framework checkpointing, long-term memory,
-   and all subagents are disabled;
+   planning/TODO, and all subagents are disabled;
 7. one strict terminal proposal is captured only through `submit_speech`;
 8. crash recovery uses Host checkpoint plus durable results and never blind
    framework replay;
