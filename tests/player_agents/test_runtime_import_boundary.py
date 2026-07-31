@@ -103,6 +103,7 @@ def test_player_agent_runtime_is_isolated_from_legacy_decision_modules() -> None
     assert RUNTIME_ROOT.is_dir(), "player_agents runtime package must exist"
     runtime_files = tuple(sorted(RUNTIME_ROOT.rglob("*.py")))
     assert runtime_files, "player_agents runtime package must contain Python modules"
+    assert RUNTIME_ROOT / "host.py" in runtime_files
 
     violations = [
         (path.relative_to(RUNTIME_ROOT), module)

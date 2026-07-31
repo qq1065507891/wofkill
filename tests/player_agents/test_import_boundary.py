@@ -52,6 +52,10 @@ def _imported_modules(
     return modules
 
 
+def _is_forbidden_module(module: str) -> bool:
+    return module.startswith(FORBIDDEN_PREFIXES)
+
+
 def test_imported_modules_expands_absolute_from_import_members(tmp_path: Path) -> None:
     package_root = tmp_path / "werewolf_agent" / "player_agents"
     probe = package_root / "absolute_probe.py"
@@ -79,12 +83,19 @@ def test_imported_modules_resolves_relative_from_imports(tmp_path: Path) -> None
     )
 
 
+def test_forbidden_matching_preserves_existing_prefix_scope() -> None:
+    assert _is_forbidden_module("werewolf_agent.agents.player") is True
+    assert _is_forbidden_module("werewolf_agent.agents.player.helpers") is True
+    assert _is_forbidden_module("werewolf_agent.agents.player_v2") is True
+
+
 def test_player_agents_package_exists_and_has_no_legacy_decision_imports() -> None:
     assert PACKAGE_ROOT.is_dir()
     assert (PACKAGE_ROOT / "contracts" / "__init__.py").is_file()
+    assert (PACKAGE_ROOT / "observation" / "__init__.py").is_file()
     violations: list[str] = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         for module in sorted(_imported_modules(path)):
-            if module.startswith(FORBIDDEN_PREFIXES):
+            if _is_forbidden_module(module):
                 violations.append(f"{path.relative_to(PACKAGE_ROOT)}: {module}")
     assert violations == []
