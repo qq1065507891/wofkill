@@ -1,8 +1,8 @@
 # Deep Agent Player Executor Integration Design
 
-Date: 2026-07-31  
-Status: Draft; architectural direction approved  
-Owner: Codex development session  
+Date: 2026-07-31
+Status: Draft; architectural direction approved
+Owner: Codex development session
 Parent: `docs/superpowers/specs/2026-07-28-autonomous-player-agent-runtime-design.md`
 
 ## 1. Purpose
