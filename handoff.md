@@ -24,7 +24,7 @@
 
 ## 2. 一句话进度结论
 
-新运行时已经完成“严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期和 durable active-turn fence”基础层，但尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
+新运行时已经完成严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期、durable active-turn fence，以及隔离的只读 observation projection 边界；但尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
 
 按总体设计第 28 节的 13 步实施序列判断：
 
@@ -32,8 +32,9 @@
 - 第 2 步已完成 stage-1 昼间发言所需的主要合约，但其他终端提案仍未实现；
 - 第 3 步已完成 Memory、SQLite、PostgreSQL 的基础事务能力；
 - 第 4 步完成 durable active-turn fence：调度、Host 生命周期、取消、过期和重启协调均通过同一持久化围栏竞争边界；生产 dispatcher 仍未实现；
+- 第 5 步的隔离 player documents 和 optimistic `ObservationFrame` 子阶段已完成；context budget、compaction checkpoint 和 restart rehydration 尚未实现，因此第 5 步整体仍未完成；
 - 第 7 步中的 `SpeechProposal`、`PublicSpeechRecord` 和原子 commit 合约被提前实现，但完整纵向链路没有闭环；
-- 第 5～13 步的主体尚未开始。
+- 第 6 步及第 8～13 步的主体尚未开始；第 7 步只有上述前置合约，不是纵向链路。
 
 因此，当前不能称为“第一阶段完成”，也不能通过新运行时玩完一次真实昼间发言回合。
 
@@ -41,11 +42,12 @@
 
 记录本文件时：
 
-- 分支：`codex/autonomous-active-turn-fence`
-- 最终实现 HEAD（本次验证起点）：`7327b7c`（`fix: validate memory fence context first`）；历史实施基线是 `7597753`
+- 分支：`codex/autonomous-player-observation-projections`
+- worktree：`/Users/zengyilin/NLP/wofkill/.worktrees/autonomous-player-observation-projections`
+- 最终实现 HEAD（本次文档提交前的验证起点）：`6afff34`（`test: cover imported lookup module aliases`）；whole-branch review base 是 `83eb1be`
 - fresh 验证开始前 tracked worktree clean；最终文档提交后再次用 `git status --short --branch` 验证 clean
-- 新运行时 focused pytest：fresh exit 0；独立 fresh collect 发现 419 项测试，执行输出未出现 failure、skip 或 warning 标记
-- 全量 pytest：fresh exit 0；独立 fresh collect 发现 6199 项测试；执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）
+- 新运行时 focused pytest：fresh exit 0，`574 passed in 1.17s`
+- 全量 pytest：fresh exit 0；独立 collection-only 汇总发现 6354 项测试；执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）；quiet/xdist 输出没有打印 passed 汇总，因此 6354 只记为 collected，不记为 passed
 
 新会话不要直接相信以上动态值。先在仓库根目录执行：
 
@@ -57,7 +59,7 @@ conda run -n wofkill python -m pytest tests/player_agents \
   tests/storage/test_autonomous_turns.py \
   tests/storage/test_active_turn_fence.py \
   tests/storage/test_durable_dispatch_protocol.py \
-  tests/storage/test_postgres_autonomous_commit.py -q
+  tests/storage/test_postgres_autonomous_commit.py -o addopts='' -q
 ```
 
 仅在准备合并、交付或声称仓库级回归通过时，再运行：
@@ -76,29 +78,21 @@ conda run -n wofkill python -m pytest tests/player_agents \
   tests/storage/test_autonomous_turns.py \
   tests/storage/test_active_turn_fence.py \
   tests/storage/test_durable_dispatch_protocol.py \
-  tests/storage/test_postgres_autonomous_commit.py -q
+  tests/storage/test_postgres_autonomous_commit.py -o addopts='' -q
 conda run -n wofkill python -m ruff check --ignore UP009 \
   werewolf_agent/player_agents \
   werewolf_agent/storage/active_turn_fence.py \
-  werewolf_agent/storage/memory_store.py \
-  werewolf_agent/storage/sqlite_store.py \
-  werewolf_agent/storage/postgres_store.py \
   tests/player_agents \
-  tests/storage/test_active_turn_fence.py \
-  tests/storage/test_autonomous_commit.py \
-  tests/storage/test_autonomous_turns.py \
-  tests/storage/test_durable_dispatch_protocol.py \
-  tests/storage/test_postgres_autonomous_commit.py
+  tests/storage/test_active_turn_fence.py
 conda run -n wofkill python -m mypy --follow-imports=skip \
   werewolf_agent/player_agents \
   werewolf_agent/storage/active_turn_fence.py \
-  werewolf_agent/storage/autonomous_turns.py \
-  werewolf_agent/storage/durable_dispatch.py
+  werewolf_agent/storage/autonomous_turns.py
 git diff --check
 conda run -n wofkill python -m pytest -q
 ```
 
-上述 focused pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；focused 独立 fresh collect 为 419 项。full `pytest -q` fresh exit 0，独立 fresh collect 为 6199 项，执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 warning。pytest 在该 quiet/xdist 配置下没有打印 passed/skipped 数量汇总，因此这里不把 collect 数虚构成 passed 数。forbidden-name scan 为零命中。没有运行真实 PostgreSQL service integration。
+上述 focused pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；focused 结果是 `574 passed in 1.17s`，Ruff 输出 `All checks passed!`，mypy 输出 `Success: no issues found in 27 source files`。full `pytest -q` fresh exit 0，独立 collection-only 汇总为 6354 项，执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 warning。pytest 在该 quiet/xdist 配置下没有打印 passed/skipped 数量汇总，因此这里不把 collected 数虚构成 passed 数。boundary scan 仅命中 deliberate boundary-test 和文档中的禁用边界字面量，生产 observation 代码零命中；没有运行真实 PostgreSQL service integration。
 
 ## 4. 已经实现的功能
 
@@ -208,20 +202,43 @@ conda run -n wofkill python -m pytest -q
 - `tests/storage/test_active_turn_fence.py`
 - `tests/player_agents/test_host_runtime.py`
 
+### 4.7 隔离 observation projections 与 optimistic `ObservationFrame`
+
+- `werewolf_agent/player_agents/observation/` 定义严格、冻结且禁止额外字段的 projection identity、source reference、document、manifest、workspace、`ObservationFrame` 和 `ObservationBundle` 合约，并提供稳定、安全的错误类型。
+- `ObservationAuthoritySnapshot` 是 revision/visibility-pinned、单 viewer 的只读 authority 输入；每个可用文档都绑定 game、player、schedule、turn、window、base revision、view fingerprint、renderer version、source IDs 和 source hashes。
+- 专用 renderer 已实现 `PLAYER.md`、`ROLE.md`、`GAME.md` 和 `COMMITMENTS.md`；`WorkspaceProjector` 生成确定性 manifest、content-addressed workspace revision/hash 与 `INDEX.md`，Markdown 永远不解析回 Host state。
+- required 且可用的是 `PLAYER.md`、`ROLE.md`、`GAME.md`、`INDEX.md`。只有 committed-record capability 存在时 `COMMITMENTS.md` 才可用；存在 capability 但记录为空时仍是 available-empty。`BELIEFS.md`、`MEMORY.md`、`WORKING.md` 明确 unavailable。
+- 可选 `InMemoryProjectionCache` 只在进程内保存可重建 projection；cache fault 等同 miss，较窄且安全的 projection error 优先。没有创建物理 `players/{player_id}/*.md` 文件，也没有 Memory、SQLite 或 PostgreSQL projection table。
+- `ObservationProjectionService` 捕获活动回合身份，读取单 viewer authority，装配 workspace/frame，再 optimistic recheck 活动回合；活动身份、source、visibility 或 deadline 改变时 fail closed，不返回部分 bundle。
+- Memory 与 SQLite observation conformance 覆盖相同可观察行为；边界 scanner 检查具体生产 observation boundary 和显式 dispatch 形态，不宣称实现完整 Python 名称解析器。
+
+主要文件：
+
+- `werewolf_agent/player_agents/observation/contracts.py`
+- `werewolf_agent/player_agents/observation/authority.py`
+- `werewolf_agent/player_agents/observation/rendering.py`
+- `werewolf_agent/player_agents/observation/workspace.py`
+- `werewolf_agent/player_agents/observation/cache.py`
+- `werewolf_agent/player_agents/observation/service.py`
+- `tests/player_agents/test_observation_contracts.py`
+- `tests/player_agents/test_observation_rendering.py`
+- `tests/player_agents/test_workspace_projector.py`
+- `tests/player_agents/test_observation_service.py`
+- `tests/player_agents/test_observation_conformance.py`
+- `tests/player_agents/test_observation_import_boundary.py`
+
 ## 5. 只有部分实现，不能误判为完成
 
 ### 5.1 HostRuntime 还不是完整 Host
 
-当前 HostRuntime 只协调持久化调度、恢复门禁、围栏预约和回合生命周期。它还不会：
+当前 HostRuntime 只协调持久化调度、恢复门禁、围栏预约和回合生命周期。独立的 Host-facing `ObservationProjectionService` 已能构建 observation，但尚未接入 HostRuntime 的真实执行链路。HostRuntime 还不会：
 
-- 构建 observation；
-- 建立 player workspace；
 - 调用模型或工具；
-- 管理真实 model lease 和 context budget；
+- 管理真实 model lease、`ContextBudgetPolicy`、compaction checkpoint 或 rehydration；
 - 验证 speech proposal 的可见性与语义；
 - 调用 RuleEngine；
 - 调用 `CommitTurn`；
-- 运行 projection worker；
+- 运行持久化 projection worker；
 - 渲染玩家发言或裁判播报。
 
 `complete_active_turn()` 只是“外部权威提交已经成功”之后的生命周期通知，绝不能替代 `CommitTurn`。
@@ -236,7 +253,6 @@ conda run -n wofkill python -m pytest -q
 - task-specific semantic validator；
 - RuleEngine legality adapter；
 - deterministic player renderer；
-- commitment projection；
 - personality-aware judge presenter。
 
 ### 5.3 Audit 只有事务载荷，不是完整审计子系统
@@ -258,9 +274,9 @@ conda run -n wofkill python -m pytest -q
 
 ## 6. 尚未实现的主体功能
 
-- `ObservationFrame` 和 ObservationProjector；
-- 每玩家隔离的 `PLAYER.md`、`ROLE.md`、`GAME.md`、`BELIEFS.md`、`COMMITMENTS.md`、`MEMORY.md`、`WORKING.md`、`INDEX.md` 投影；
-- context token estimator、80% 自动压缩触发、55% rehydration target、checkpoint lineage；
+- `ContextBudgetPolicy`、80% 自动压缩触发、严格 `CompactionCheckpoint`、可选且不可信的 `CompactionHandoff`、55% rehydration target、lineage validation 和 restart recovery；
+- `BELIEFS.md`、`MEMORY.md`、`WORKING.md` 的新运行时 authority stores 和 projectors；
+- durable compaction/checkpoint persistence；当前 projection 本身仍有意不持久化；
 - model lease、预算、failover 和真实 provider adapter；
 - stage-1 ToolGateway、context/evidence 工具和 working reflection candidate；
 - 已完成设计但尚未实现的专用 ToolResult Markdown 模型展示层，设计见
@@ -280,11 +296,11 @@ conda run -n wofkill python -m pytest -q
 
 ## 7. 当前唯一下一里程碑
 
-### 隔离 player documents 与 `ObservationFrame`
+### Context budget、compaction checkpoint 与 rehydration
 
-下一阶段只实现 player-facing read-only projections：每玩家隔离的 `PLAYER.md`、`ROLE.md`、`GAME.md`、`BELIEFS.md`、`COMMITMENTS.md`、`MEMORY.md`、`WORKING.md`、`INDEX.md`，以及 revision/visibility-pinned `ObservationFrame`。同时实现 context-budget accounting、80% compaction trigger、55% rehydration target、结构化 compaction checkpoint 和 checkpoint rehydration。
+下一阶段只实现 `ContextBudgetPolicy` 与 context accounting、80% 自动 compaction trigger、严格且可恢复的 `CompactionCheckpoint`、可选且标为 untrusted 的 `CompactionHandoff`、55% rehydration target、checkpoint lineage validation，以及进程重启后的 checkpoint recovery。Host checkpoint 是唯一 resumable authority；model handoff 只是可缺失的建议性数据，不能新增事实、证据、grant、合法目标或动作。
 
-该阶段仍不实现 production dispatcher、真实 provider/model/tool 调用、AgentLoop、proposal validation、RuleEngine/`CommitTurn` 编排、live game path、旧 `PlayerAgent` 接入或 ToolResult Markdown projection；因此当前绝不是 playable vertical slice。
+该阶段仍不实现 ToolGateway、ToolResult Markdown projection、真实 provider/model 调用、AgentLoop、proposal validation、RuleEngine/`CommitTurn` 编排、live game path 或旧 `PlayerAgent` 接入，也不把 projection 变成物理文件或 durable authority；因此它仍不是可玩的纵向链路。
 
 ## 8. 下一会话必读文件
 
@@ -299,33 +315,34 @@ conda run -n wofkill python -m pytest -q
 
 ### 第二层：刚完成阶段的专题设计和计划
 
-4. `docs/superpowers/specs/2026-07-31-autonomous-player-active-turn-fence-design.md`
-5. `docs/superpowers/plans/2026-07-31-autonomous-player-active-turn-fence.md`
+4. `docs/superpowers/specs/2026-07-31-autonomous-player-observation-projections-design.md`
+5. `docs/superpowers/plans/2026-07-31-autonomous-player-observation-projections.md`
 
 ### 第三层：下一任务直接相关代码
 
-6. `werewolf_agent/player_agents/contracts/turns.py`
-7. `werewolf_agent/player_agents/contracts/revisions.py`
-8. `werewolf_agent/player_agents/contracts/scheduling.py`
-9. `werewolf_agent/player_agents/runtime/host.py`
-10. `werewolf_agent/storage/active_turn_fence.py`
+6. `werewolf_agent/player_agents/observation/contracts.py`
+7. `werewolf_agent/player_agents/observation/service.py`
+8. `werewolf_agent/player_agents/observation/workspace.py`
+9. `werewolf_agent/player_agents/contracts/turns.py`
+10. `werewolf_agent/storage/autonomous_turns.py`
 
 ### 第四层：下一任务直接相关测试
 
-11. `tests/storage/test_active_turn_fence.py`
-12. `tests/player_agents/test_host_runtime.py`
-13. `tests/player_agents/test_runtime_import_boundary.py`
+11. `tests/player_agents/test_observation_contracts.py`
+12. `tests/player_agents/test_observation_service.py`
+13. `tests/player_agents/test_observation_conformance.py`
+14. `tests/player_agents/test_observation_import_boundary.py`
 
 仓库存在 `.codegraph/`。理解或定位代码时先运行 `codegraph explore "<问题或符号>"`，然后再做局部 `rg` 和文件读取。
 
 ## 9. 下一任务建议执行顺序
 
-1. 刷新 Git 状态和围栏聚焦测试基线。
-2. 用 CodeGraph 查清 projection、visibility、revision/read-set 和 workspace 现有边界。
-3. 为隔离 document projections、`ObservationFrame` 和 context checkpoint 写专题设计与实施计划。
-4. 先写不可越权、revision/visibility-pinned 的失败测试，再实现最小 projection capability。
-5. 在不接入 provider、ToolResult Markdown、旧玩家或 live game path 的前提下，加入 context accounting 与结构化 compaction/rehydration。
-6. 运行跨后端聚焦测试、ruff、mypy 和 `git diff --check`，之后再运行全量 pytest。
+1. 刷新 Git 状态和 observation focused suite 基线。
+2. 用 CodeGraph 查清 `AgentTurn` 状态机、active-turn repository、observation identity 和未来 checkpoint 持久化边界。
+3. 为 `ContextBudgetPolicy`、checkpoint transaction、lineage、rehydration 和 restart recovery 写专题设计与实施计划。
+4. 先写 80% trigger、55% target、stale lineage、optional handoff failure 和 restart recovery 的失败测试，再实现最小 context lifecycle capability。
+5. 保持 Host checkpoint 为唯一可恢复 authority，严格验证 player/turn/revision/view/source lineage；不得从 model handoff 恢复事实或权限。
+6. 在不接入 ToolGateway、provider、AgentLoop、旧玩家或 live game path 的前提下完成聚焦测试、ruff、mypy、diff check 和全量 pytest。
 
 ## 10. 必须保持的架构红线
 
@@ -344,6 +361,9 @@ conda run -n wofkill python -m pytest -q
 - PostgreSQL 唯一冲突只能根据精确 constraint 和 SQLSTATE/PGCODE `23505` 映射。
 - SQLite/PostgreSQL schema 变化必须先处理历史重复或不一致数据，不能泄露裸数据库异常。
 - 不保存 hidden chain-of-thought、未过滤 provider output、凭据、完整系统 prompt 或跨玩家私有信息。
+- observation Markdown 只是 source-bound、viewer-specific 的只读展示，不能解析回 Host state 或作为 dispatch/commit 权限。
+- projection cache 是可删的进程内优化，cache failure 必须等同 miss；projection 不写物理 workspace 文件或 durable projection table。
+- required observation sections 必须 fail closed；optional unavailable section 不能泄露隐藏记录是否存在，`COMMITMENTS.md` 的 available-empty 必须与 capability-absent 区分。
 - 不为当前单一调用者提前建立不必要抽象；变更必须小、可回滚，并保持 Memory/SQLite/PostgreSQL 契约一致。
 
 ## 11. 明确不要读取或复用的旧设计
@@ -368,17 +388,21 @@ conda run -n wofkill python -m pytest tests/player_agents \
   tests/storage/test_autonomous_turns.py \
   tests/storage/test_active_turn_fence.py \
   tests/storage/test_durable_dispatch_protocol.py \
-  tests/storage/test_postgres_autonomous_commit.py -q
+  tests/storage/test_postgres_autonomous_commit.py -o addopts='' -q
 ```
 
 静态检查至少覆盖本次修改文件；示例：
 
 ```bash
 conda run -n wofkill python -m ruff check --ignore UP009 \
-  werewolf_agent/player_agents werewolf_agent/storage tests/player_agents tests/storage
+  werewolf_agent/player_agents \
+  werewolf_agent/storage/active_turn_fence.py \
+  tests/player_agents \
+  tests/storage/test_active_turn_fence.py
 conda run -n wofkill python -m mypy --follow-imports=skip \
-  werewolf_agent/player_agents werewolf_agent/storage/autonomous_turns.py \
-  werewolf_agent/storage/durable_dispatch.py
+  werewolf_agent/player_agents \
+  werewolf_agent/storage/active_turn_fence.py \
+  werewolf_agent/storage/autonomous_turns.py
 git diff --check
 ```
 
@@ -394,7 +418,7 @@ conda run -n wofkill python -m pytest -q
 
 - 本地 `master` 尚未 push；是否 push 必须由用户明确授权。
 - 尚未运行真实 PostgreSQL 服务集成测试。
-- 当前没有真实 production dispatcher、AgentLoop、workspace、模型或工具调用。
+- 当前已有隔离的内存中 observation workspace/bundle 构建能力，但没有物理 workspace 文件、durable projection table、真实 production dispatcher、context checkpoint、AgentLoop、模型或工具调用。
 - 当前新代码没有接入 live game runtime，这是有意的安全边界。
 - stage-1 的 replay、隐私、并发、性能和真人质量门槛尚未执行。
 
@@ -415,20 +439,19 @@ conda run -n wofkill python -m pytest -q
 
 ## 15. 后续路线图
 
-当前 fence 完成后，继续严格按以下顺序推进：
+当前 observation projection 完成后，继续严格按以下顺序推进：
 
-1. ObservationProjector 和隔离 player workspace；
-2. context budget、compaction checkpoint 和 rehydration；
-3. 最小 ToolGateway、working reflection，以及专用 ToolResult Markdown
+1. `ContextBudgetPolicy`、80% trigger、`CompactionCheckpoint`、optional untrusted handoff、55% rehydration、lineage validation 和 restart recovery；
+2. 最小 ToolGateway、working reflection，以及专用 ToolResult Markdown
    模型展示层；Markdown 只作为结构化结果的确定性只读投影，并按
    `result_kind` 通过 JSON/Markdown A/B 门槛后启用；
-4. 第一版 daytime-speech AgentLoop；
-5. 完整 Host validation、RuleEngine resolution、`CommitTurn` 编排；
-6. commitment/game projections、deterministic player renderer 和 JudgePresenter；
-7. stage-1 feature gate 与全部可执行验收门槛；
-8. vote、private role windows 和 wolf coordinator；
-9. world model、RAG、skills、reflection 和 cross-game memory 的独立 feature/ablation gates；
-10. 默认启用评估、历史 replay 兼容和最终 legacy cutover。
+3. 第一版 daytime-speech AgentLoop；
+4. 完整 Host validation、RuleEngine resolution、`CommitTurn` 编排；
+5. post-commitment/game projection updates、deterministic player renderer 和 JudgePresenter；
+6. stage-1 feature gate 与全部可执行验收门槛；
+7. vote、private role windows 和 wolf coordinator；
+8. world model、RAG、skills、reflection 和 cross-game memory 的独立 feature/ablation gates；
+9. 默认启用评估、历史 replay 兼容和最终 legacy cutover。
 
 真实 PostgreSQL service integration 是所有生产接入前必须通过的 repository gate，不是当前隔离 projection 里程碑之前的独立第一步。
 
