@@ -184,7 +184,9 @@ def _dynamic_lookup_aliases(tree: ast.AST) -> dict[str, str]:
             module = node.module or ""
             for imported in node.names:
                 qualified = f"{module}.{imported.name}" if module else imported.name
-                if qualified in _DYNAMIC_LOOKUPS:
+                if qualified in _DYNAMIC_LOOKUP_MODULES:
+                    module_aliases[imported.asname or imported.name] = qualified
+                elif qualified in _DYNAMIC_LOOKUPS:
                     aliases[imported.asname or imported.name] = qualified
 
     for local_name, module in module_aliases.items():
@@ -303,6 +305,13 @@ def test_module_and_provider_matching_use_explicit_boundaries() -> None:
         ),
         (
             (
+                "from importlib import util as iu\n"
+                "iu.resolve_name(name='PlayerAgent', package='pkg')"
+            ),
+            {"PlayerAgent"},
+        ),
+        (
+            (
                 "from operator import getitem as lookup\n"
                 "lookup(registry, key='ToolResultMarkdownProjection')"
             ),
@@ -320,6 +329,7 @@ def test_module_and_provider_matching_use_explicit_boundaries() -> None:
         "builtin-lookup",
         "imported-function-alias",
         "imported-module-alias",
+        "from-imported-module-alias",
         "getitem-alias-keyword",
         "ordinary-call",
         "unused-subscript",
