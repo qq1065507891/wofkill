@@ -103,7 +103,21 @@ def _canonical_source_order(
 def _canonical_document(title: str, lines: list[str]) -> str:
     """生成只含 LF 且恰有一个末尾换行的固定 Markdown。"""
 
-    return "\n".join((f"# {title}", *lines)).rstrip("\n") + "\n"
+    return "\n".join(
+        _canonical_line(line) for line in (f"# {title}", *lines)
+    ).rstrip("\n") + "\n"
+
+
+def _canonical_line(line: str) -> str:
+    """规范所有已发射标量，阻止控制字符或嵌入换行改变结构。"""
+
+    normalized = line.replace("\r\n", "\n").replace("\r", "\n")
+    without_controls = "".join(
+        character
+        for character in normalized
+        if character == "\n" or ord(character) >= 32 and ord(character) != 127
+    )
+    return without_controls.replace("\n", "\\n")
 
 
 def _escape_untrusted_text(text: str) -> str:

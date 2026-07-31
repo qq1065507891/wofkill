@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
@@ -43,12 +44,15 @@ from werewolf_agent.player_agents.observation import (
     RoleProjectionSource,
     WorkspaceSection,
     render_game_document,
+    render_player_document,
+    render_role_document,
 )
 
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 HASH_C = "c" * 64
 HASH_D = "d" * 64
+HASH_E = "e" * 64
 NOW = datetime(2026, 7, 31, 12, tzinfo=timezone.utc)
 
 
@@ -129,17 +133,20 @@ def _authority_snapshot(
 ) -> ObservationAuthoritySnapshot:
     commitment = CommitmentProjectionSource(
         record=_record(commitment_actor_id),
+        source_identity=_identity(),
         source_reference=_source("public_speech", "speech-1", 7, HASH_D),
     )
     summary = (
         PublicSummaryEntry(
             entry_id="summary-b",
             text=public_text,
+            source_identity=_identity(),
             source_reference=_source("public_summary", "summary-b", 7, HASH_C),
         ),
         PublicSummaryEntry(
             entry_id="summary-a",
             text="p02 已退出本轮发言。",
+            source_identity=_identity(),
             source_reference=_source("public_summary", "summary-a", 7, HASH_B),
         ),
     )
@@ -153,6 +160,7 @@ def _authority_snapshot(
             expression_preferences=("简洁", "指出证据编号"),
             risk_appetite="中等",
             verified_tendencies=("愿意修正",),
+            source_identity=_identity(),
             source_reference=_source("persona", "persona-1", 3, HASH_B),
         ),
         role=RoleProjectionSource(
@@ -167,6 +175,7 @@ def _authority_snapshot(
                 ),
             ),
             mechanical_restrictions=("不能查看私密夜间结果",),
+            source_identity=_identity(),
             source_reference=_source("role", "p01-role", 7, HASH_C),
         ),
         game=GameProjectionSource(
@@ -175,6 +184,7 @@ def _authority_snapshot(
             living_player_ids=("p03", "p01", "p02"),
             public_summary=tuple(reversed(summary)) if reordered else summary,
             authorized_private_fact_references=(),
+            source_identity=_identity(),
             source_references=(
                 _source("game", "game-1", 7, HASH_D),
             ),
@@ -254,6 +264,83 @@ def test_recent_commitment_reference_must_match_committed_source_hash() -> None:
         )
 
 
+def _mismatched_identity(field_name: str) -> ProjectionIdentity:
+    replacements: dict[str, int | str] = {
+        "game_id": "game-2",
+        "player_id": "p02",
+        "base_game_revision": 8,
+        "view_fingerprint": HASH_E,
+    }
+    return _identity().model_copy(update={field_name: replacements[field_name]})
+
+
+def _snapshot_with_mismatched_source_identity(
+    source_name: str,
+    source_identity: ProjectionIdentity,
+) -> ObservationAuthoritySnapshot:
+    snapshot = _authority_snapshot()
+    if source_name == "persona":
+        return snapshot.model_copy(
+            update={
+                "persona": snapshot.persona.model_copy(
+                    update={"source_identity": source_identity}
+                )
+            }
+        )
+    if source_name == "role":
+        return snapshot.model_copy(
+            update={
+                "role": snapshot.role.model_copy(
+                    update={"source_identity": source_identity}
+                )
+            }
+        )
+    if source_name == "game":
+        return snapshot.model_copy(
+            update={
+                "game": snapshot.game.model_copy(
+                    update={"source_identity": source_identity}
+                )
+            }
+        )
+    if source_name == "public_summary":
+        summary = snapshot.game.public_summary
+        changed = summary[0].model_copy(update={"source_identity": source_identity})
+        return snapshot.model_copy(
+            update={
+                "game": snapshot.game.model_copy(
+                    update={"public_summary": (changed, *summary[1:])}
+                )
+            }
+        )
+    if source_name == "commitment":
+        assert snapshot.commitment_records is not None
+        changed = snapshot.commitment_records[0].model_copy(
+            update={"source_identity": source_identity}
+        )
+        return snapshot.model_copy(update={"commitment_records": (changed,)})
+    raise AssertionError(f"unknown source: {source_name}")
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    ("persona", "role", "game", "public_summary", "commitment"),
+)
+@pytest.mark.parametrize(
+    "field_name",
+    ("game_id", "player_id", "base_game_revision", "view_fingerprint"),
+)
+def test_every_authority_source_context_must_match_snapshot_identity(
+    source_name: str,
+    field_name: str,
+) -> None:
+    with pytest.raises(ValidationError, match="source identity must match"):
+        _snapshot_with_mismatched_source_identity(
+            source_name,
+            _mismatched_identity(field_name),
+        )
+
+
 def test_conservative_estimator_is_versioned_and_deterministic() -> None:
     estimator = ConservativeTokenEstimator()
     assert estimator.version == "unicode-conservative-v1"
@@ -308,6 +395,65 @@ def test_commitments_renderer_can_be_absent_without_fabricating_document() -> No
     assert snapshot.commitment_records is None
 
 
+def test_all_emitted_scalars_are_canonicalized_before_hashing() -> None:
+    malicious = "value\r\n## INJECT\x00```\x1f"
+    snapshot = _authority_snapshot()
+    assert snapshot.commitment_records is not None
+    record = snapshot.commitment_records[0].record
+    changed_move = record.normalized_moves[0].model_copy(update={"move_id": malicious})
+    changed_record = record.model_copy(
+        update={
+            "record_id": malicious,
+            "normalized_moves": (changed_move, *record.normalized_moves[1:]),
+        }
+    )
+    changed_commitment = snapshot.commitment_records[0].model_copy(
+        update={
+            "record": changed_record,
+            "source_reference": snapshot.commitment_records[0].source_reference.model_copy(
+                update={"record_id": malicious}
+            ),
+        }
+    )
+    changed_persona = snapshot.persona.model_copy(
+        update={
+            "profile_id": malicious,
+            "personality_summary": malicious,
+            "source_reference": snapshot.persona.source_reference.model_copy(
+                update={"record_id": malicious}
+            ),
+        }
+    )
+    changed_role = snapshot.role.model_copy(
+        update={"role_id": malicious, "role_summary": malicious}
+    )
+    changed_snapshot = snapshot.model_copy(
+        update={
+            "persona": changed_persona,
+            "role": changed_role,
+            "commitment_records": (changed_commitment,),
+            "recent_commitment_references": (changed_commitment.source_reference,),
+        }
+    )
+    documents = (
+        render_player_document(changed_snapshot, ConservativeTokenEstimator()),
+        render_role_document(changed_snapshot, ConservativeTokenEstimator()),
+        DOCUMENT_RENDERERS[WorkspaceSection.COMMITMENTS].render(
+            changed_snapshot,
+            ConservativeTokenEstimator(),
+        ),
+    )
+    for document in documents:
+        assert "\r" not in document.content_markdown
+        assert "\x00" not in document.content_markdown
+        assert "\x1f" not in document.content_markdown
+        assert "\n## INJECT\n" not in document.content_markdown
+        assert document.content_markdown.endswith("\n")
+        assert document.content_hash == hashlib.sha256(
+            document.content_markdown.encode("utf-8")
+        ).hexdigest()
+
+
 def test_projection_text_is_strictly_bounded() -> None:
     with pytest.raises(ValidationError):
         PersonaProjectionSource(
@@ -316,6 +462,7 @@ def test_projection_text_is_strictly_bounded() -> None:
             display_name="name",
             personality_summary=" ",
             risk_appetite="safe",
+            source_identity=_identity(),
             source_reference=_source("persona", "persona-1", 1, HASH_A),
         )
     assert BoundedProjectionText is not None

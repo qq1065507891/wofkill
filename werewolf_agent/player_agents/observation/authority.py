@@ -99,6 +99,7 @@ class PersonaProjectionSource(StrictFrozenModel):
     expression_preferences: tuple[BoundedProjectionText, ...] = ()
     risk_appetite: BoundedProjectionText
     verified_tendencies: tuple[BoundedProjectionText, ...] = ()
+    source_identity: ProjectionIdentity
     source_reference: ProjectionSourceReference
 
     @field_validator("expression_preferences", "verified_tendencies", mode="before")
@@ -128,6 +129,7 @@ class RoleProjectionSource(StrictFrozenModel):
     role_summary: BoundedProjectionText
     abilities: tuple[RoleAbilityProjectionSource, ...] = ()
     mechanical_restrictions: tuple[BoundedProjectionText, ...] = ()
+    source_identity: ProjectionIdentity
     source_reference: ProjectionSourceReference
 
     @field_validator("abilities", "mechanical_restrictions", mode="before")
@@ -149,6 +151,7 @@ class PublicSummaryEntry(StrictFrozenModel):
 
     entry_id: NonEmptyId
     text: BoundedProjectionText
+    source_identity: ProjectionIdentity
     source_reference: ProjectionSourceReference
 
 
@@ -160,6 +163,7 @@ class GameProjectionSource(StrictFrozenModel):
     living_player_ids: tuple[NonEmptyId, ...]
     public_summary: tuple[PublicSummaryEntry, ...] = ()
     authorized_private_fact_references: tuple[ReadReference, ...] = ()
+    source_identity: ProjectionIdentity
     source_references: tuple[ProjectionSourceReference, ...] = Field(min_length=1)
 
     @field_validator(
@@ -199,6 +203,7 @@ class CommitmentProjectionSource(StrictFrozenModel):
     """已提交公共发言记录及其来源绑定。"""
 
     record: PublicSpeechRecord
+    source_identity: ProjectionIdentity
     source_reference: ProjectionSourceReference
 
     @model_validator(mode="after")
@@ -254,6 +259,18 @@ class ObservationAuthoritySnapshot(StrictFrozenModel):
             self.recent_commitment_references,
             field_name="recent_commitment_references",
         )
+        source_identities = (
+            self.persona.source_identity,
+            self.role.source_identity,
+            self.game.source_identity,
+            *(entry.source_identity for entry in self.game.public_summary),
+            *(
+                commitment.source_identity
+                for commitment in self.commitment_records or ()
+            ),
+        )
+        if any(source_identity != self.identity for source_identity in source_identities):
+            raise ValueError("authority source identity must match snapshot identity")
 
         commitment_references: tuple[ProjectionSourceReference, ...] = ()
         if self.commitment_records is not None:
