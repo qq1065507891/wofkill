@@ -164,6 +164,21 @@ _DYNAMIC_LOOKUP_ARGUMENTS = {
     "import_module": 0,
     "resolve_name": 0,
 }
+_DYNAMIC_LOOKUP_KEYWORDS = {
+    "__import__": "name",
+    "getattr": "name",
+    "getitem": "key",
+    "import_module": "name",
+    "resolve_name": "name",
+}
+_STANDARD_DYNAMIC_MODULE_CALLS = {
+    "builtins.__import__": "__import__",
+    "builtins.getattr": "getattr",
+    "importlib.import_module": "import_module",
+    "importlib.util.resolve_name": "resolve_name",
+    "operator.getitem": "getitem",
+}
+_BUILTIN_DYNAMIC_LOOKUPS = frozenset({"__import__", "getattr"})
 def _dynamic_lookup_aliases(tree: ast.AST) -> dict[str, str]:
     """解析标准动态查找函数的本地导入别名。"""
 
@@ -179,20 +194,103 @@ def _dynamic_lookup_aliases(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
-def _callee_name(function: ast.expr) -> str | None:
-    if isinstance(function, ast.Name):
-        return function.id
-    if isinstance(function, ast.Attribute):
-        return function.attr
+def _standard_module_aliases(tree: ast.AST) -> dict[str, str]:
+    """记录标准动态查找模块的显式模块别名。"""
+
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in {"builtins", "importlib", "importlib.util", "operator"}:
+                    continue
+                local_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
+                aliases[local_name] = alias.name if alias.asname else local_name
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "util":
+                    aliases[alias.asname or alias.name] = "importlib.util"
+    return aliases
+
+
+def _dotted_name(expression: ast.expr) -> str | None:
+    if isinstance(expression, ast.Name):
+        return expression.id
+    if isinstance(expression, ast.Attribute):
+        parent = _dotted_name(expression.value)
+        return f"{parent}.{expression.attr}" if parent is not None else None
     return None
 
 
-def _string_argument(call: ast.Call, index: int) -> str | None:
-    if index >= len(call.args):
+def _locally_bound_names(tree: ast.AST) -> set[str]:
+    """识别会遮蔽 builtin lookup 的显式本地绑定。"""
+
+    names = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    for node in ast.walk(tree):
+        targets: tuple[ast.expr, ...] = ()
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            if isinstance(node, ast.Assign):
+                targets = tuple(node.targets)
+            else:
+                targets = (node.target,)
+        names.update(
+            target.id
+            for target in targets
+            if isinstance(target, ast.Name)
+        )
+    return names
+
+
+def _canonical_dynamic_lookup(
+    function: ast.expr,
+    *,
+    function_aliases: dict[str, str],
+    module_aliases: dict[str, str],
+    locally_bound_names: set[str],
+) -> str | None:
+    """只解析已证明来自 builtin 或标准库模块的 lookup。"""
+
+    if isinstance(function, ast.Name):
+        aliased = function_aliases.get(function.id)
+        if aliased is not None:
+            return aliased
+        if (
+            function.id in _BUILTIN_DYNAMIC_LOOKUPS
+            and function.id not in locally_bound_names
+        ):
+            return function.id
         return None
-    argument = call.args[index]
-    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-        return argument.value
+
+    dotted = _dotted_name(function)
+    if dotted is None:
+        return None
+    root, separator, remainder = dotted.partition(".")
+    resolved_root = module_aliases.get(root)
+    if resolved_root is not None:
+        dotted = f"{resolved_root}.{remainder}" if separator else resolved_root
+    return _STANDARD_DYNAMIC_MODULE_CALLS.get(dotted)
+
+
+def _string_argument(
+    call: ast.Call,
+    index: int,
+    keyword_name: str,
+) -> str | None:
+    if index < len(call.args):
+        argument = call.args[index]
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            return argument.value
+    for keyword in call.keywords:
+        if keyword.arg != keyword_name:
+            continue
+        if isinstance(keyword.value, ast.Constant) and isinstance(
+            keyword.value.value,
+            str,
+        ):
+            return keyword.value.value
     return None
 
 
@@ -204,7 +302,9 @@ def _dispatched_strings(tree: ast.AST) -> set[str]:
         for node in ast.walk(tree)
         for child in ast.iter_child_nodes(node)
     }
-    aliases = _dynamic_lookup_aliases(tree)
+    function_aliases = _dynamic_lookup_aliases(tree)
+    module_aliases = _standard_module_aliases(tree)
+    locally_bound_names = _locally_bound_names(tree)
     values: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -219,12 +319,17 @@ def _dispatched_strings(tree: ast.AST) -> set[str]:
             ):
                 values.add(candidate.slice.value)
 
-        callee_name = _callee_name(node.func)
-        canonical_name = aliases.get(callee_name or "", callee_name)
+        canonical_name = _canonical_dynamic_lookup(
+            node.func,
+            function_aliases=function_aliases,
+            module_aliases=module_aliases,
+            locally_bound_names=locally_bound_names,
+        )
         if canonical_name in _DYNAMIC_LOOKUP_ARGUMENTS:
             value = _string_argument(
                 node,
                 _DYNAMIC_LOOKUP_ARGUMENTS[canonical_name],
+                _DYNAMIC_LOOKUP_KEYWORDS[canonical_name],
             )
             if value is not None:
                 values.add(value)
@@ -275,11 +380,13 @@ def test_dispatch_scanner_tracks_only_dynamic_lookup_targets(tmp_path: Path) -> 
     probe.write_text(
         "from app.registry import resolve as choose\n"
         "from importlib import import_module as load_module\n"
+        "from importlib.util import resolve_name as resolve_alias\n"
         "from operator import getitem as lookup\n"
         "registry['PlayerAgent']()\n"
         "registry.get('GameRunner')()\n"
         "getattr(target, 'ModelRouter')()\n"
-        "load_module('werewolf_agent.agents.player')\n"
+        "load_module(name='werewolf_agent.agents.player')\n"
+        "resolve_alias(name='werewolf_agent.model_gateway', package='pkg')()\n"
         "lookup(registry, 'ToolResultMarkdownProjection')()\n"
         "choose('_dispatch_agent')()\n"
         "factory('werewolf_agent.runtime')()\n",
@@ -293,16 +400,30 @@ def test_dispatch_scanner_tracks_only_dynamic_lookup_targets(tmp_path: Path) -> 
         "ToolResultMarkdownProjection",
         "_dispatch_agent",
         "werewolf_agent.agents.player",
+        "werewolf_agent.model_gateway",
         "werewolf_agent.runtime",
     }
 
     ordinary_probe = tmp_path / "ordinary_call_probe.py"
     ordinary_probe.write_text(
-        "render('PlayerAgent')\n"
-        "render('ProjectionProvider')\n",
+        "render(name='PlayerAgent')\n"
+        "render(label='ProjectionProvider')\n",
         encoding="utf-8",
     )
     assert _dispatched_strings(_tree(ordinary_probe)) == set()
+
+    local_lookup_probe = tmp_path / "local_lookup_probe.py"
+    local_lookup_probe.write_text(
+        "def import_module(*, name):\n"
+        "    return name\n"
+        "class Resolver:\n"
+        "    def resolve_name(self, *, name, package):\n"
+        "        return name\n"
+        "import_module(name='PlayerAgent')\n"
+        "Resolver().resolve_name(name='ModelRouter', package='pkg')\n",
+        encoding="utf-8",
+    )
+    assert _dispatched_strings(_tree(local_lookup_probe)) == set()
 
 
 def test_provider_scanner_uses_import_context_not_local_suffixes(
