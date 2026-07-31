@@ -1,9 +1,14 @@
 # Deep Agent Player Executor Integration Design
 
 Date: 2026-07-31
-Status: Draft; architectural direction approved
+Status: Confirmed subordinate design; governed by the parent authority
 Owner: Codex development session
 Parent: `docs/superpowers/specs/2026-07-28-autonomous-player-agent-runtime-design.md`
+
+Authority note: parent section 7.5 selects this adapter and owns all final
+authority, visibility, transaction, recovery, privacy, and rollout invariants.
+This document is implementation-authoritative only within that fixed boundary;
+if the documents conflict, the parent design wins.
 
 ## 1. Purpose
 

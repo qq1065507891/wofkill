@@ -16,7 +16,7 @@
 
 1. `docs/superpowers/specs/2026-07-28-autonomous-player-agent-runtime-design.md` 是总体架构与最终约束的唯一权威；
 2. 当前源码和测试决定“实际上已经实现了什么”；
-3. 后续专题设计补充某一阶段的详细契约，但不能覆盖总体设计；
+3. `docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md` 是总体设计 §7.5 已确认的 Deep Agent 下位详细权威，只在父设计固定边界内约束实现；其他专题设计同样只能补充、不能覆盖总体设计；
 4. 本文件记录当前进度、阅读顺序和下一步；
 5. implementation plan 是实施历史，不是新的架构权威。
 
@@ -24,7 +24,7 @@
 
 ## 2. 一句话进度结论
 
-新运行时已经完成严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期、durable active-turn fence，以及隔离的只读 observation projection 边界；同时已形成每玩家逻辑隔离的 Deep Agents cognition adapter 专题设计，但尚未安装或实现 Deep Agents，也尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
+新运行时已经完成严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期、durable active-turn fence，以及隔离的只读 observation projection 边界；总体权威设计已正式选择每玩家逻辑隔离的 Deep Agents cognition adapter，并由已确认的下位专题设计细化，但尚未安装或实现 Deep Agents，也尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
 
 按总体设计第 28 节的 13 步实施序列判断：
 
@@ -42,13 +42,12 @@
 
 记录本文件时：
 
-- 分支：`codex/deep-agent-player-executor-design`
-- worktree：`/Users/zengyilin/NLP/wofkill/.worktrees/deep-agent-player-executor-design`
-- Deep Agent 专题设计提交：`c1a295b`（`docs: design deep agent player executor`）；分支 base 是已合并 observation milestone `b4cb575`
-- 设计提交后运行 focused 与 full pytest；更新本 handoff 前 tracked worktree 只有 handoff 修改
-- 新运行时 focused pytest：fresh exit 0，`585 passed in 1.56s`
-- 全量 pytest：fresh exit 0，明确 12 个 skip 和 10 条既有第三方 `StarletteDeprecationWarning`；quiet/xdist 未打印 passed 汇总，因此不把 collected 数写成 passed 数
-- 全量 pytest：`pytest -q` 与独立的 `pytest -q -rs` 均 fresh exit 0；collection-only 的 308 个逐文件计数独立求和为 6365 collected；`-rs` 明确列出 12 个 skip（1 个 shared-negation、9 个 PowerShell soak、1 个 PowerShell AST、1 个 real-provider smoke），warning summary 是 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）；quiet/xdist 输出没有打印 passed 汇总，因此 6365 只记为 collected，不记为 passed
+- 分支：`codex/unify-deep-agent-authority-design`
+- worktree：`/Users/zengyilin/NLP/wofkill/.worktrees/unify-deep-agent-authority-design`
+- 分支 base：`08b0dfb`（`docs: define deep agent cognition duties`）；本阶段只统一总体权威设计、Deep Agent 专题设计和 handoff，不修改运行代码
+- `c1a295b..08b0dfb` 已形成 Deep Agent 专题设计历史；当前分支把其稳定决策吸收到总体设计 §1、§2、§5～8、§11、§28 和 §30
+- 新运行时 focused pytest：fresh exit 0，`585 passed in 1.61s`
+- 全量 pytest：fresh exit 0，进度到 100%，明确 12 个 skip 和 10 条既有第三方 `StarletteDeprecationWarning`；quiet/xdist 未打印 passed 汇总，因此不把 collected 数写成 passed 数
 
 新会话不要直接相信以上动态值。先在仓库根目录执行：
 
@@ -274,9 +273,9 @@ conda run -n wofkill python -m pytest -q
 
 当前 PostgreSQL 测试覆盖 schema、fake connection、锁、CAS、事务和异常映射，但没有在真实 PostgreSQL 服务上运行集成测试。接入生产前必须补齐。
 
-### 5.5 Deep Agents 只有专题设计，没有运行实现
+### 5.5 Deep Agents 权威设计已统一，但没有运行实现
 
-`docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md` 已确定：每个玩家具有独立的逻辑 deep-agent 身份、profile、viewer workspace 和 turn-scoped thread，但所有玩家共享同一个 framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` harness 实现。Deep Agents 只是 bounded `AgentLoop` 的可替换实现，不是新的 Host、scheduler、repository 或 game authority。
+总体权威设计 §7.5 已正式选择 framework-neutral `PlayerCognitionExecutor` 和首个 `DeepAgentPlayerExecutor` adapter；`docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md` 是受父设计治理的已确认下位详细权威。每个玩家具有独立的逻辑 deep-agent 身份、profile、viewer workspace 和 turn-scoped thread，但所有玩家共享同一个 harness 实现。Deep Agents 只是 bounded `AgentLoop` 的可替换实现，不是新的 Host、scheduler、repository 或 game authority。
 
 Deep Agent 在一个 admitted turn 内的具体单一职责是：把 Host 授权的单 viewer observation 转为恰一个严格候选 proposal，或者一个 typed non-submission outcome。认知协议是 orient、区分事实/承诺/假设/建议、按需选择上下文或工具、综合临时立场、提交 proposal、仅修复被拒字段并在 terminal condition 立即停止。Host 通过不含策略答案的 `CognitionTaskProfile` 限定 terminal schema、初始文档、可用操作、预算、并行、TODO、reflection、repair、compaction 和 failure policy；Deep Agent 自主决定是否调用授权工具、调用哪个以及何时已有足够信息提交。
 
@@ -311,7 +310,7 @@ Deep Agent 在一个 admitted turn 内的具体单一职责是：把 Host 授权
 
 下一阶段只实现 `ContextBudgetPolicy` 与 context accounting、80% 自动 compaction trigger、严格且可恢复的 `CompactionCheckpoint`、可选且标为 untrusted 的 `CompactionHandoff`、55% rehydration target、checkpoint lineage validation，以及进程重启后的 checkpoint recovery。Host checkpoint 是唯一 resumable authority；model handoff 只是可缺失的建议性数据，不能新增事实、证据、grant、合法目标或动作。
 
-该阶段必须遵循新 Deep Agent 专题设计预留 framework-neutral `PlayerCognitionExecutor` 消费边界，但仍不安装或调用 Deep Agents。Deep Agents 内置 summarization 和 LangGraph checkpoint 不能替代本阶段的 Host checkpoint；未来 adapter 只能消费 Host 已验证的 rehydrated context。
+该阶段必须遵循总体权威设计 §7.5 及其 Deep Agent 下位专题设计预留的 framework-neutral `PlayerCognitionExecutor` 消费边界，但仍不安装或调用 Deep Agents。Deep Agents 内置 summarization 和 LangGraph checkpoint 不能替代本阶段的 Host checkpoint；未来 adapter 只能消费 Host 已验证的 rehydrated context。
 
 该阶段仍不实现 ToolGateway、ToolResult Markdown projection、真实 provider/model 调用、AgentLoop、proposal validation、RuleEngine/`CommitTurn` 编排、live game path 或旧 `PlayerAgent` 接入，也不把 projection 变成物理文件或 durable authority；因此它仍不是可玩的纵向链路。
 
@@ -324,7 +323,7 @@ Deep Agent 在一个 admitted turn 内的具体单一职责是：把 Host 授权
 1. `AGENTS.md`
 2. `handoff.md`
 3. `docs/superpowers/specs/2026-07-28-autonomous-player-agent-runtime-design.md`
-   - 优先阅读 §7.1～7.4、§11、§20、§25、§26、§27.7、§28～30。
+   - 优先阅读 §7.1～7.5、§11、§20、§25、§26、§27.7、§28～30。
 
 ### 第二层：刚完成阶段的专题设计和计划
 
@@ -353,7 +352,7 @@ Deep Agent 在一个 admitted turn 内的具体单一职责是：把 Host 授权
 
 1. 刷新 Git 状态和 observation focused suite 基线。
 2. 用 CodeGraph 查清 `AgentTurn` 状态机、active-turn repository、observation identity 和未来 checkpoint 持久化边界。
-3. 按 Deep Agent 专题设计的 framework-neutral seam，为 `ContextBudgetPolicy`、checkpoint transaction、lineage、rehydration 和 restart recovery 写专题设计与实施计划；本阶段不得安装或调用 Deep Agents。
+3. 按总体权威设计 §7.5 与 Deep Agent 下位专题设计的 framework-neutral seam，为 `ContextBudgetPolicy`、checkpoint transaction、lineage、rehydration 和 restart recovery 写专题设计与实施计划；本阶段不得安装或调用 Deep Agents。
 4. 先写 80% trigger、55% target、stale lineage、optional handoff failure 和 restart recovery 的失败测试，再实现最小 context lifecycle capability。
 5. 保持 Host checkpoint 为唯一可恢复 authority，严格验证 player/turn/revision/view/source lineage；不得从 model handoff 恢复事实或权限。
 6. 在不接入 ToolGateway、provider、AgentLoop、旧玩家或 live game path 的前提下完成聚焦测试、ruff、mypy、diff check 和全量 pytest。

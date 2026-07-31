@@ -1,8 +1,8 @@
 # Autonomous Player Agent Runtime Design
 
 Date: 2026-07-28
-Last revised: 2026-07-29
-Status: Approved design; execution contracts completed; implementation plan not yet written
+Last revised: 2026-07-31
+Status: Approved authoritative design; staged implementation in progress
 Owner: Codex development session
 
 ## 1. Decision Summary
@@ -17,6 +17,10 @@ The approved direction is a clean rewrite of the player decision subsystem:
 - replace `PlayerAgent`, its prompt pipeline, directives, retry/fallback logic,
   text-to-action recovery, role strategy handlers, and player-facing tool flow;
 - run one bounded autonomous agent loop for each legal action opportunity;
+- expose that loop through a framework-neutral `PlayerCognitionExecutor`, with
+  `DeepAgentPlayerExecutor` as the selected first adapter: one logical agent
+  identity per player, one bounded framework thread per admitted turn, and one
+  shared harness implementation across players;
 - retain each player's identity, documents, beliefs, commitments, and approved
   lessons across action turns;
 - give the agent phase- and role-scoped tools that it chooses to call;
@@ -66,6 +70,17 @@ Relevant public Codex patterns are:
 - repeated compaction is treated as lossy and monitored rather than assumed to
   preserve unlimited conversation quality.
 
+Relevant public Deep Agents patterns are:
+
+- an opinionated harness composes LangChain model/tool middleware with the
+  LangGraph runtime rather than forming a third nested authority layer;
+- virtual filesystem backends can isolate model-readable context without
+  exposing the host filesystem;
+- built-in summarization, persistent memory, shell execution, and subagents are
+  optional harness capabilities, not mandatory parts of every agent; and
+- framework checkpoints support execution recovery but do not replace
+  application-level idempotency or transactional side-effect fences.
+
 References:
 
 - <https://code.claude.com/docs/en/memory>
@@ -77,6 +92,10 @@ References:
 - <https://developers.openai.com/codex/config-reference/>
 - <https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs>
 - <https://github.com/openai/codex/blob/main/codex-rs/prompts/templates/compact/prompt.md>
+- <https://docs.langchain.com/oss/python/deepagents/overview>
+- <https://docs.langchain.com/oss/python/deepagents/backends>
+- <https://docs.langchain.com/oss/python/deepagents/subagents>
+- <https://docs.langchain.com/oss/python/langgraph/persistence>
 
 The project applies those patterns to a hidden-information game. Markdown is a
 bounded player-facing projection; the host owns permissions and side effects;
@@ -167,9 +186,12 @@ dependency sets can prove that such turns are safe.
 9. Do not create multiple planner, critic, and actor model personas in the
    first implementation.
 10. Do not keep an unbounded model conversation alive for an entire game.
-11. Do not infer live game semantics from regular expressions over rendered
+11. Do not let a Deep Agents supervisor represent multiple players, treat a
+   framework checkpoint as Host authority, or bypass Host dispatch/tool
+   gateways through built-in framework capabilities.
+12. Do not infer live game semantics from regular expressions over rendered
     speech.
-12. Do not optimize only for win rate at the cost of diversity, calibration,
+13. Do not optimize only for win rate at the cost of diversity, calibration,
     or human-like mistakes and adaptation.
 
 ## 6. Authority and Terminology
@@ -178,7 +200,8 @@ The following terms have distinct authority:
 
 | Term | Responsibility | May change game truth |
 | --- | --- | --- |
-| `PlayerAgent` | Observe, call tools, reflect, form hypotheses, submit proposals | No |
+| `PlayerCognitionExecutor` | Run one bounded viewer-specific cognition loop and return a strict proposal or typed non-submission outcome | No |
+| `DeepAgentPlayerExecutor` | Selected replaceable Deep Agents implementation of `PlayerCognitionExecutor` | No |
 | `HostRuntime` | Create turns, enforce ACLs and budgets, execute tools, validate and commit | Only through RuleEngine results |
 | `RuleEngine` | Legal windows, action legality, role mechanics, phase flow, victory | Yes |
 | `EventStore` | Persist committed objective game facts | Stores truth; does not decide it |
@@ -207,12 +230,14 @@ permissions, legal actions, evidence ownership, or event semantics.
 Game Runtime
   -> PlayerTurnRunner
       -> ObservationProjector
-      -> AgentLoop
-          -> ToolGateway
-          -> MemoryGateway
-          -> ReflectionGateway
-          -> WorldModelGateway
-          -> Proposal
+      -> PlayerCognitionExecutor
+          -> DeepAgentPlayerExecutor
+              -> bounded cognition loop
+                  -> ToolGateway
+                  -> MemoryGateway
+                  -> ReflectionGateway
+                  -> WorldModelGateway
+                  -> Proposal
       -> HostBoundary
           -> VisibilityPolicy
           -> ProposalValidator
@@ -360,6 +385,43 @@ This protocol gives submit calls, model calls, and external tools different but
 explicit exactly-once/at-most-once semantics. It also makes provider billing and
 tool budgets auditable after a crash.
 
+### 7.5 Player Cognition Executor and Deep Agents Binding
+
+`PlayerCognitionExecutor` is the only Host-facing cognition port. For one
+admitted `AgentTurn`, it converts the Host-authorized, single-viewer observation
+into exactly one strict candidate proposal or one typed non-submission outcome.
+It cannot validate legality, mutate game state, finish a schedule, select a
+provider, restore a budget, or commit an event.
+
+`DeepAgentPlayerExecutor` is the approved first implementation of that port.
+Its immutable integration rules are:
+
+1. every player has a distinct logical agent identity and isolated profile,
+   observation, scratch, checkpoint, and future-memory namespace;
+2. compatible players share one executor/harness implementation rather than
+   one process or compiled graph per player;
+3. every admitted turn uses a new bounded framework thread derived from the
+   Host turn identity; no provider conversation remains alive for the game;
+4. a Host-built `CognitionTaskProfile` bounds the terminal schema, initial
+   documents, operation manifest, budgets, parallelism, TODO, reflection,
+   repair, compaction, and failure policy without encoding a strategic answer;
+5. the agent chooses whether, which, and in what order to use authorized
+   cognition operations, and it may submit directly when initial context is
+   sufficient;
+6. every model and external-tool call still uses the durable active-turn fence
+   and Host gateway; Deep Agents never owns a raw provider, MCP, repository,
+   RuleEngine, or `CommitTurn` path;
+7. Host `CompactionCheckpoint` is the only resumable authority. Deep Agents or
+   LangGraph checkpoints, summaries, TODOs, scratch files, and final text are
+   disposable untrusted model-side data; and
+8. stage 1 disables built-in summarization, durable framework checkpointing,
+   long-term memory, shell/execute, all subagents, and `write_todos`.
+
+The detailed and implementation-authoritative contract for this adapter is
+`docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md`.
+That specification refines this section but may not override any authority,
+visibility, transaction, recovery, privacy, or rollout rule in this document.
+
 ## 8. Proposed Package Boundaries
 
 ```text
@@ -373,8 +435,6 @@ werewolf_agent/player_agents/
     proposals.py
     errors.py
   runtime/
-    agent.py
-    loop.py
     turn_runner.py
     budgets.py
     model_lease.py
@@ -399,6 +459,15 @@ werewolf_agent/player_agents/
     semantic.py
     gateway.py
   cognition/
+    contracts.py
+    executor.py
+    deep_agent/
+      factory.py
+      executor.py
+      context.py
+      model.py
+      workspace_backend.py
+      terminal.py
     hypotheses.py
     world_model.py
     evidence_graph.py
@@ -727,6 +796,20 @@ profile is eight model steps, twelve total tool calls, six context reads, four
 evidence queries, two world-model queries, two RAG queries, three reflections,
 two context compactions, one semantic repair, and one provider failover. These
 are experimental defaults, not game strategy rules.
+
+The selected stage-1 loop implementation is `DeepAgentPlayerExecutor` behind
+the framework-neutral `PlayerCognitionExecutor` port. Its conceptual cognition
+protocol is orient, assess, selectively acquire context, synthesize a temporary
+working position, propose, narrowly repair rejected fields, and stop. These are
+responsibilities and audit phases, not a persisted chain-of-thought or fixed
+strategy graph. The Host supplies `CognitionTaskProfile`; the agent chooses
+among its effective authorized operations.
+
+The Deep Agents thread is scoped to this `AgentTurn`. Stage-1 daytime speech
+does not expose `write_todos`, automatic framework summarization, durable
+framework checkpoints, long-term memory, shell/execute, or subagents. A later
+task-specific experiment may enable a non-authoritative harness capability only
+after its own security, budget, and ablation gates pass.
 
 ## 12. Tool System
 
@@ -1703,7 +1786,12 @@ schema hashes, scorer versions, and exclusion rules before a run starts.
 5. Implement isolated player document projections, `ObservationFrame`, context
    budget accounting, structured compaction, and checkpoint rehydration.
 6. Implement the minimal stage-1 ToolGateway, structurally validated working
-   reflection candidates, and one real AgentLoop for ordinary daytime speech.
+   reflection candidates, framework-neutral `PlayerCognitionExecutor`, and the
+   first `DeepAgentPlayerExecutor` daytime-speech loop. Run an exact-version
+   compatibility spike before pinning Deep Agents; use a read-only virtual
+   observation backend, fenced model/tool adapters, and strict
+   `submit_speech`, with built-in summarization, durable framework checkpoints,
+   long-term memory, shell/execute, TODO, and subagents disabled.
 7. Complete the first vertical slice through `SpeechProposal`,
    `PublicSpeechRecord`, atomic event/audit/outbox commit, commitment
    projections, deterministic player rendering, and deterministic judge
@@ -1726,9 +1814,10 @@ schema hashes, scorer versions, and exclusion rules before a run starts.
     fallback live paths in a separate reversible commit.
 
 The first playable vertical slice is one daytime speech turn: build isolated
-documents, open a turn, let the agent inspect context and evidence, reflect,
-submit a strict speech proposal, validate and commit it, update commitments and
-game projections, and produce a personality-aware judge broadcast.
+documents, open a turn, let the selected cognition executor inspect context and
+evidence, optionally reflect, submit a strict speech proposal, validate and
+commit it, update commitments and game projections, and produce a personality-
+aware judge broadcast.
 
 ## 29. Rejected Artifacts and Compatibility Policy
 
@@ -1807,3 +1896,15 @@ cutover record exists.
     has an explicit, verifiable crypto-shredding or signed-redaction meaning.
 26. Legacy decision code remains isolated until a working replacement passes
     cutover gates, then is removed in a separate reversible change.
+27. `PlayerCognitionExecutor` is the Host-facing cognition boundary;
+    `DeepAgentPlayerExecutor` is replaceable and never becomes game, dispatch,
+    checkpoint, tool-permission, or commit authority.
+28. Every player has one isolated logical cognition identity, every admitted
+    turn has one bounded framework thread, and compatible players share the
+    harness implementation without sharing private state.
+29. Deep Agents/LangGraph checkpoints, summaries, TODOs, scratch files, and
+    final text are untrusted and disposable; only Host checkpoint lineage may
+    resume an active turn.
+30. Stage-1 Deep Agents built-ins cannot introduce summarization, durable
+    framework memory/checkpoints, shell/execute, subagents, TODO planning,
+    framework retry/failover, or any external call that bypasses the Host fence.
