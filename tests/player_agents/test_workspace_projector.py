@@ -330,10 +330,38 @@ class RaisingRenderer:
         raise RuntimeError("private-marker")
 
 
+class ChainedProjectionFailureRenderer:
+    """模拟 renderer 把私有内部异常作为稳定错误的原因链暴露。"""
+
+    section_id = WorkspaceSection.PLAYER
+    renderer_version = "chained-failure-v1"
+
+    def render(
+        self,
+        snapshot: ObservationAuthoritySnapshot,
+        estimator: object,
+    ) -> ProjectedDocument:
+        try:
+            raise RuntimeError("private-marker")
+        except RuntimeError as error:
+            raise ProjectionRenderFailed() from error
+
+
 def test_required_renderer_failure_returns_no_workspace() -> None:
     renderer: DocumentRenderer = RaisingRenderer()
     projector = WorkspaceProjector(renderers={WorkspaceSection.PLAYER: renderer})
     with pytest.raises(ProjectionRenderFailed) as exc_info:
         projector.project(_authority_snapshot())
     assert exc_info.value.__cause__ is None
+    assert "private-marker" not in "".join(traceback.format_exception(exc_info.value))
+
+
+def test_renderer_projection_error_is_replaced_without_private_cause() -> None:
+    renderer: DocumentRenderer = ChainedProjectionFailureRenderer()
+    projector = WorkspaceProjector(renderers={WorkspaceSection.PLAYER: renderer})
+    with pytest.raises(ProjectionRenderFailed) as exc_info:
+        projector.project(_authority_snapshot())
+    assert exc_info.value.code == "projection_render_failed"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
     assert "private-marker" not in "".join(traceback.format_exception(exc_info.value))

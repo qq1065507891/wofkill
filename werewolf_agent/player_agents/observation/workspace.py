@@ -38,7 +38,6 @@ from werewolf_agent.player_agents.observation.contracts import (
     WorkspaceSection,
 )
 from werewolf_agent.player_agents.observation.errors import (
-    ObservationProjectionError,
     ProjectionIdentityMismatch,
     ProjectionIntegrityFailed,
     ProjectionRenderFailed,
@@ -427,11 +426,13 @@ class WorkspaceProjector:
         renderer = self._renderers.get(plan.section_id)
         if renderer is None:
             raise RequiredProjectionUnavailable()
+        renderer_failed = False
         try:
             document = renderer.render(snapshot, self._estimator)
-        except ObservationProjectionError:
-            raise
         except Exception:  # noqa: BLE001 - renderer 实现细节不得泄漏给调用方。
+            renderer_failed = True
+        if renderer_failed:
+            # 在 except 块外重新抛出，确保没有私有 cause 或 context 残留。
             raise ProjectionRenderFailed() from None
         if not self._is_complete_document(document, snapshot.identity, plan):
             raise ProjectionIntegrityFailed()
