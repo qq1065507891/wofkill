@@ -6,6 +6,17 @@
 创建日期: 2026-07-31
 """
 
+from werewolf_agent.player_agents.observation.authority import (
+    BoundedProjectionText,
+    CommitmentProjectionSource,
+    GameProjectionSource,
+    ObservationAuthorityReader,
+    ObservationAuthoritySnapshot,
+    PersonaProjectionSource,
+    PublicSummaryEntry,
+    RoleAbilityProjectionSource,
+    RoleProjectionSource,
+)
 from werewolf_agent.player_agents.observation.contracts import (
     BoundedObservationText,
     ManifestEntry,
@@ -31,14 +42,41 @@ from werewolf_agent.player_agents.observation.errors import (
     ProjectionVisibilityRejected,
     RequiredProjectionUnavailable,
 )
+from werewolf_agent.player_agents.observation.rendering import (
+    COMMITMENTS_RENDERER_VERSION,
+    DOCUMENT_RENDERERS,
+    GAME_RENDERER_VERSION,
+    PLAYER_RENDERER_VERSION,
+    ROLE_RENDERER_VERSION,
+    ConservativeTokenEstimator,
+    DocumentRenderer,
+    TokenEstimator,
+    render_commitments_document,
+    render_game_document,
+    render_player_document,
+    render_role_document,
+)
 
 __all__ = [
+    "COMMITMENTS_RENDERER_VERSION",
+    "DOCUMENT_RENDERERS",
+    "GAME_RENDERER_VERSION",
+    "PLAYER_RENDERER_VERSION",
+    "ROLE_RENDERER_VERSION",
     "ActiveObservationConflict",
     "BoundedObservationText",
+    "BoundedProjectionText",
+    "CommitmentProjectionSource",
+    "ConservativeTokenEstimator",
+    "DocumentRenderer",
+    "GameProjectionSource",
     "ManifestEntry",
+    "ObservationAuthorityReader",
+    "ObservationAuthoritySnapshot",
     "ObservationBundle",
     "ObservationFrame",
     "ObservationProjectionError",
+    "PersonaProjectionSource",
     "PlayerWorkspaceSnapshot",
     "ProjectedDocument",
     "ProjectionAvailability",
@@ -52,6 +90,14 @@ __all__ = [
     "ProjectionUnavailableReason",
     "ProjectionVisibilityClass",
     "ProjectionVisibilityRejected",
+    "PublicSummaryEntry",
     "RequiredProjectionUnavailable",
+    "RoleAbilityProjectionSource",
+    "RoleProjectionSource",
+    "TokenEstimator",
     "WorkspaceSection",
+    "render_commitments_document",
+    "render_game_document",
+    "render_player_document",
+    "render_role_document",
 ]
