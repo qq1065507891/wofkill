@@ -62,8 +62,8 @@ from werewolf_agent.storage.memory_store import InMemoryGameRepository
 from werewolf_agent.storage.sqlite_store import SqliteGameRepository
 
 HASH = "a" * 64
-NOW = datetime(2026, 7, 31, 10, tzinfo=timezone.utc)
-DEADLINE = datetime(2026, 7, 31, 11, tzinfo=timezone.utc)
+NOW = datetime(2040, 7, 31, 10, tzinfo=timezone.utc)
+DEADLINE = datetime(2040, 7, 31, 11, tzinfo=timezone.utc)
 
 
 class _PrivateDatetime(datetime):
