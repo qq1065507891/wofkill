@@ -44,10 +44,10 @@
 
 - 分支：`codex/autonomous-player-observation-projections`
 - worktree：`/Users/zengyilin/NLP/wofkill/.worktrees/autonomous-player-observation-projections`
-- 最终实现 HEAD（本次文档提交前的验证起点）：`6afff34`（`test: cover imported lookup module aliases`）；whole-branch review base 是 `83eb1be`
+- final-fix 最终实现 HEAD（证据文档提交前）：`7f3fc87`（`fix: harden observation projection integrity`）；fix-wave base 是 `3c8781c`，whole-branch review base 是 `83eb1be`
 - fresh 验证开始前 tracked worktree clean；最终文档提交后再次用 `git status --short --branch` 验证 clean
-- 新运行时 focused pytest：fresh exit 0，`574 passed in 1.17s`
-- 全量 pytest：fresh exit 0；独立 collection-only 汇总发现 6354 项测试；执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）；quiet/xdist 输出没有打印 passed 汇总，因此 6354 只记为 collected，不记为 passed
+- 新运行时 focused pytest：fresh exit 0，`585 passed in 1.21s`
+- 全量 pytest：`pytest -q` 与独立的 `pytest -q -rs` 均 fresh exit 0；collection-only 的 308 个逐文件计数独立求和为 6365 collected；`-rs` 明确列出 12 个 skip（1 个 shared-negation、9 个 PowerShell soak、1 个 PowerShell AST、1 个 real-provider smoke），warning summary 是 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）；quiet/xdist 输出没有打印 passed 汇总，因此 6365 只记为 collected，不记为 passed
 
 新会话不要直接相信以上动态值。先在仓库根目录执行：
 
@@ -92,7 +92,7 @@ git diff --check
 conda run -n wofkill python -m pytest -q
 ```
 
-上述 focused pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；focused 结果是 `574 passed in 1.17s`，Ruff 输出 `All checks passed!`，mypy 输出 `Success: no issues found in 27 source files`。full `pytest -q` fresh exit 0，独立 collection-only 汇总为 6354 项，执行进度观察到 12 个 skip 标记，warning summary 是 10 条既有第三方 warning。pytest 在该 quiet/xdist 配置下没有打印 passed/skipped 数量汇总，因此这里不把 collected 数虚构成 passed 数。boundary scan 仅命中 deliberate boundary-test 和文档中的禁用边界字面量，生产 observation 代码零命中；没有运行真实 PostgreSQL service integration。
+上述 focused pytest、Ruff、mypy 与 diff check 都以 exit 0 结束；focused 结果是 `585 passed in 1.21s`，Ruff 输出 `All checks passed!`，mypy 输出 `Success: no issues found in 27 source files`。full `pytest -q` 与 `pytest -q -rs` 均 fresh exit 0，独立 collection-only 的 308 个逐文件计数求和为 6365 collected；`-rs` 明确列出 12 个 skip，warning summary 是 10 条既有第三方 warning。pytest 在该 quiet/xdist 配置下没有打印 passed 数量汇总，因此这里不把 collected 数虚构成 passed 数。boundary scan 仅命中 deliberate boundary-test 和文档中的禁用边界字面量，生产 observation 代码零命中；没有运行真实 PostgreSQL service integration。
 
 ## 4. 已经实现的功能
 
@@ -205,8 +205,9 @@ conda run -n wofkill python -m pytest -q
 ### 4.7 隔离 observation projections 与 optimistic `ObservationFrame`
 
 - `werewolf_agent/player_agents/observation/` 定义严格、冻结且禁止额外字段的 projection identity、source reference、document、manifest、workspace、`ObservationFrame` 和 `ObservationBundle` 合约，并提供稳定、安全的错误类型。
-- `ObservationAuthoritySnapshot` 是 revision/visibility-pinned、单 viewer 的只读 authority 输入；每个可用文档都绑定 game、player、schedule、turn、window、base revision、view fingerprint、renderer version、source IDs 和 source hashes。
-- 专用 renderer 已实现 `PLAYER.md`、`ROLE.md`、`GAME.md` 和 `COMMITMENTS.md`；`WorkspaceProjector` 生成确定性 manifest、content-addressed workspace revision/hash 与 `INDEX.md`，Markdown 永远不解析回 Host state。
+- `ObservationAuthoritySnapshot` 是 revision/visibility-pinned、单 viewer 的只读 authority 输入；每个可用文档都绑定 game、player、schedule、turn、window、base revision、view fingerprint、renderer version、source IDs 和 source hashes；进入 `GAME.md` 的 bounded summary 另外以规范 authority digest 参与 pre-render workspace revision 与 cache key。
+- 专用 renderer 已实现 `PLAYER.md`、`ROLE.md`、`GAME.md` 和 `COMMITMENTS.md`；其中 `GAME.md` 因包含 viewer-authorized private fact references，document、manifest 与 `INDEX.md` 均标为 `MIXED_VIEWER_FILTERED`。`WorkspaceProjector` 在任何 cache lookup 前把 section requiredness、visibility、availability、renderer/estimator、source references 和 summary digest 纳入 revision，再生成确定性 manifest、workspace hash 与 `INDEX.md`，Markdown 永远不解析回 Host state。
+- `ProjectedDocument` 强制 LF-only、恰一个末尾 LF，并复算 Markdown UTF-8 SHA-256；`PlayerWorkspaceSnapshot` 强制文档按 manifest available 顺序排列并复算完整 ordered workspace hash。contracts、renderer 与 projector 共用同一组 canonical hash helpers。
 - required 且可用的是 `PLAYER.md`、`ROLE.md`、`GAME.md`、`INDEX.md`。只有 committed-record capability 存在时 `COMMITMENTS.md` 才可用；存在 capability 但记录为空时仍是 available-empty。`BELIEFS.md`、`MEMORY.md`、`WORKING.md` 明确 unavailable。
 - 可选 `InMemoryProjectionCache` 只在进程内保存可重建 projection；cache fault 等同 miss，较窄且安全的 projection error 优先。没有创建物理 `players/{player_id}/*.md` 文件，也没有 Memory、SQLite 或 PostgreSQL projection table。
 - `ObservationProjectionService` 捕获活动回合身份，读取单 viewer authority，装配 workspace/frame，再 optimistic recheck 活动回合；活动身份、source、visibility 或 deadline 改变时 fail closed，不返回部分 bundle。
@@ -362,6 +363,7 @@ conda run -n wofkill python -m pytest -q
 - SQLite/PostgreSQL schema 变化必须先处理历史重复或不一致数据，不能泄露裸数据库异常。
 - 不保存 hidden chain-of-thought、未过滤 provider output、凭据、完整系统 prompt 或跨玩家私有信息。
 - observation Markdown 只是 source-bound、viewer-specific 的只读展示，不能解析回 Host state 或作为 dispatch/commit 权限。
+- `GAME.md` 含当前 viewer 授权的私有事实引用，必须在 document、manifest、INDEX 和 revision/cache 语义中保持 `MIXED_VIEWER_FILTERED`，不能降级标为 public。
 - projection cache 是可删的进程内优化，cache failure 必须等同 miss；projection 不写物理 workspace 文件或 durable projection table。
 - required observation sections 必须 fail closed；optional unavailable section 不能泄露隐藏记录是否存在，`COMMITMENTS.md` 的 available-empty 必须与 capability-absent 区分。
 - 不为当前单一调用者提前建立不必要抽象；变更必须小、可回滚，并保持 Memory/SQLite/PostgreSQL 契约一致。
