@@ -16,8 +16,10 @@ from pydantic import ValidationError
 
 from werewolf_agent.player_agents.observation import (
     ActiveObservationConflict,
+    ManifestEntry,
     ObservationBundle,
     PlayerWorkspaceSnapshot,
+    ProjectedDocument,
     ProjectionAvailability,
     ProjectionBuildFailed,
     ProjectionIdentity,
@@ -35,6 +37,17 @@ from werewolf_agent.player_agents.observation import (
 HASH = "a" * 64
 OTHER_HASH = "b" * 64
 NOW = datetime(2026, 7, 31, 12, tzinfo=timezone.utc)
+REQUIRED_SECTIONS = frozenset({
+    WorkspaceSection.PLAYER,
+    WorkspaceSection.ROLE,
+    WorkspaceSection.GAME,
+    WorkspaceSection.INDEX,
+})
+UNAVAILABLE_SECTIONS = frozenset({
+    WorkspaceSection.BELIEFS,
+    WorkspaceSection.MEMORY,
+    WorkspaceSection.WORKING,
+})
 
 
 def _identity() -> ProjectionIdentity:
@@ -53,18 +66,25 @@ def _identity() -> ProjectionIdentity:
 
 
 def _entry_payload(section: WorkspaceSection) -> dict[str, object]:
+    unavailable = section in UNAVAILABLE_SECTIONS
     return {
         "section_id": section,
-        "availability": ProjectionAvailability.AVAILABLE,
-        "required": section is WorkspaceSection.INDEX,
+        "availability": (
+            ProjectionAvailability.UNAVAILABLE
+            if unavailable else ProjectionAvailability.AVAILABLE
+        ),
+        "required": section in REQUIRED_SECTIONS,
         "identity": _identity().model_dump(),
-        "renderer_version": "renderer-v1",
-        "content_hash": HASH,
-        "token_estimate": 1,
-        "estimator_version": "estimator-v1",
+        "renderer_version": None if unavailable else "renderer-v1",
+        "content_hash": None if unavailable else HASH,
+        "token_estimate": None if unavailable else 1,
+        "estimator_version": None if unavailable else "estimator-v1",
         "visibility_class": ProjectionVisibilityClass.PLAYER_PRIVATE,
         "source_references": [],
-        "unavailable_reason": None,
+        "unavailable_reason": (
+            ProjectionUnavailableReason.SOURCE_CAPABILITY_UNAVAILABLE
+            if unavailable else None
+        ),
     }
 
 
@@ -84,7 +104,11 @@ def _document_payload(section: WorkspaceSection) -> dict[str, object]:
 
 def _bundle_payload() -> dict[str, object]:
     entries = [_entry_payload(section) for section in WorkspaceSection]
-    documents = [_document_payload(section) for section in WorkspaceSection]
+    documents = [
+        _document_payload(section)
+        for section in WorkspaceSection
+        if section not in UNAVAILABLE_SECTIONS
+    ]
     identity = _identity().model_dump()
     return {
         "frame": {
@@ -187,6 +211,147 @@ def test_projection_error_codes_are_stable() -> None:
     assert ProjectionIntegrityFailed.code == "projection_integrity_failed"
     assert ProjectionRenderFailed.code == "projection_render_failed"
     assert ProjectionBuildFailed.code == "projection_build_failed"
+
+
+def test_manifest_enforces_binding_section_policy() -> None:
+    bundle = ObservationBundle.model_validate(_bundle_payload())
+    entries = {entry.section_id: entry for entry in bundle.workspace.manifest_entries}
+    assert {
+        section
+        for section, entry in entries.items()
+        if entry.required and entry.availability is ProjectionAvailability.AVAILABLE
+    } == REQUIRED_SECTIONS
+    assert {
+        section
+        for section, entry in entries.items()
+        if entry.availability is ProjectionAvailability.UNAVAILABLE
+    } == UNAVAILABLE_SECTIONS
+
+    for section in REQUIRED_SECTIONS:
+        payload = _entry_payload(section)
+        payload["required"] = False
+        with pytest.raises(ValidationError):
+            ManifestEntry.model_validate(payload)
+
+        payload = _entry_payload(section)
+        payload.update({
+            "availability": ProjectionAvailability.UNAVAILABLE,
+            "required": False,
+            "renderer_version": None,
+            "content_hash": None,
+            "token_estimate": None,
+            "estimator_version": None,
+            "unavailable_reason": (
+                ProjectionUnavailableReason.SOURCE_CAPABILITY_UNAVAILABLE
+            ),
+        })
+        with pytest.raises(ValidationError):
+            ManifestEntry.model_validate(payload)
+
+    for section in UNAVAILABLE_SECTIONS:
+        payload = _entry_payload(section)
+        payload.update({
+            "availability": ProjectionAvailability.AVAILABLE,
+            "renderer_version": "renderer-v1",
+            "content_hash": HASH,
+            "token_estimate": 1,
+            "estimator_version": "estimator-v1",
+            "unavailable_reason": None,
+        })
+        with pytest.raises(ValidationError):
+            ManifestEntry.model_validate(payload)
+
+    commitments = _entry_payload(WorkspaceSection.COMMITMENTS)
+    commitments["required"] = True
+    with pytest.raises(ValidationError):
+        ManifestEntry.model_validate(commitments)
+
+
+@pytest.mark.parametrize("container", ["entry", "document"])
+def test_workspace_rejects_non_workspace_projection_identity(
+    container: str,
+) -> None:
+    payload = _bundle_payload()
+    workspace = payload["workspace"]
+    assert isinstance(workspace, dict)
+    entries = workspace["manifest_entries"]
+    documents = workspace["documents"]
+    assert isinstance(entries, list)
+    assert isinstance(documents, list)
+    changed_identity = {**_identity().model_dump(), "turn_id": "turn-2"}
+    if container == "entry":
+        entries[0]["identity"] = changed_identity
+        documents[0]["identity"] = changed_identity
+    else:
+        documents[0]["identity"] = changed_identity
+    with pytest.raises(ValidationError):
+        PlayerWorkspaceSnapshot.model_validate(workspace)
+
+
+def test_observation_frame_rejects_actor_outside_projection_identity() -> None:
+    payload = _bundle_payload()
+    frame = payload["frame"]
+    assert isinstance(frame, dict)
+    frame["actor_id"] = "p02"
+    with pytest.raises(ValidationError):
+        ObservationBundle.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "field, replacement",
+    [
+        ("renderer_version", "renderer-v2"),
+        ("estimator_version", "estimator-v2"),
+        ("visibility_class", ProjectionVisibilityClass.PUBLIC),
+    ],
+)
+def test_workspace_rejects_document_manifest_metadata_mismatch(
+    field: str,
+    replacement: object,
+) -> None:
+    payload = _bundle_payload()
+    workspace = payload["workspace"]
+    assert isinstance(workspace, dict)
+    documents = workspace["documents"]
+    assert isinstance(documents, list)
+    documents[0][field] = replacement
+    with pytest.raises(ValidationError):
+        PlayerWorkspaceSnapshot.model_validate(workspace)
+
+
+def test_projected_document_rejects_carriage_returns() -> None:
+    payload = _document_payload(WorkspaceSection.PLAYER)
+    payload["content_markdown"] = "# PLAYER\r\n"
+    with pytest.raises(ValidationError):
+        ProjectedDocument.model_validate(payload)
+
+
+def test_workspace_rejects_cross_document_source_hash_conflicts() -> None:
+    payload = _bundle_payload()
+    workspace = payload["workspace"]
+    assert isinstance(workspace, dict)
+    entries = workspace["manifest_entries"]
+    documents = workspace["documents"]
+    assert isinstance(entries, list)
+    assert isinstance(documents, list)
+    first_source = [{
+        "record_kind": "commitment",
+        "record_id": "record-1",
+        "record_revision": 1,
+        "content_hash": HASH,
+    }]
+    second_source = [{
+        "record_kind": "commitment",
+        "record_id": "record-1",
+        "record_revision": 1,
+        "content_hash": OTHER_HASH,
+    }]
+    documents[0]["source_references"] = first_source
+    documents[1]["source_references"] = second_source
+    entries[0]["source_references"] = first_source
+    entries[1]["source_references"] = second_source
+    with pytest.raises(ValidationError):
+        PlayerWorkspaceSnapshot.model_validate(workspace)
 
 
 @pytest.mark.parametrize(

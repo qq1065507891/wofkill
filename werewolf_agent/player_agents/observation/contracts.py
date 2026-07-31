@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -42,6 +43,19 @@ class WorkspaceSection(StrEnum):
     MEMORY = "MEMORY.md"
     WORKING = "WORKING.md"
     INDEX = "INDEX.md"
+
+
+_REQUIRED_SECTIONS = frozenset({
+    WorkspaceSection.PLAYER,
+    WorkspaceSection.ROLE,
+    WorkspaceSection.GAME,
+    WorkspaceSection.INDEX,
+})
+_UNAVAILABLE_SECTIONS = frozenset({
+    WorkspaceSection.BELIEFS,
+    WorkspaceSection.MEMORY,
+    WorkspaceSection.WORKING,
+})
 
 
 class ProjectionAvailability(StrEnum):
@@ -118,6 +132,24 @@ def _unique_source_references(
     return references
 
 
+def _require_consistent_source_hashes(
+    references: Iterable[ProjectionSourceReference],
+) -> None:
+    """拒绝同一来源身份在同一工作区引用不同内容。"""
+
+    hashes_by_identity: dict[tuple[str, str, int], str] = {}
+    for reference in references:
+        identity = (
+            reference.record_kind,
+            reference.record_id,
+            reference.record_revision,
+        )
+        previous_hash = hashes_by_identity.get(identity)
+        if previous_hash is not None and previous_hash != reference.content_hash:
+            raise ValueError("workspace source identity has conflicting hashes")
+        hashes_by_identity[identity] = reference.content_hash
+
+
 def _freeze_list_input(value: object) -> object:
     """把边界列表复制为元组，后续仍由严格元素契约校验。"""
 
@@ -146,6 +178,13 @@ class ProjectedDocument(StrictFrozenModel):
     @classmethod
     def _freeze_source_reference_input(cls, value: object) -> object:
         return _freeze_list_input(value)
+
+    @field_validator("content_markdown")
+    @classmethod
+    def _validate_lf_only_content(cls, content_markdown: str) -> str:
+        if "\r" in content_markdown:
+            raise ValueError("content_markdown must use LF-only line endings")
+        return content_markdown
 
     @field_validator("source_references")
     @classmethod
@@ -208,11 +247,18 @@ class ManifestEntry(StrictFrozenModel):
             or self.unavailable_reason is None
         ):
             raise ValueError("unavailable manifest entry must omit projection data")
-        if self.section_id is WorkspaceSection.INDEX and (
+        if self.section_id in _REQUIRED_SECTIONS and (
             self.availability is not ProjectionAvailability.AVAILABLE
             or not self.required
         ):
-            raise ValueError("INDEX manifest entry must be available and required")
+            raise ValueError("required workspace section must be available")
+        if self.section_id in _UNAVAILABLE_SECTIONS and (
+            self.availability is not ProjectionAvailability.UNAVAILABLE
+            or self.required
+        ):
+            raise ValueError("workspace section is unavailable in this stage")
+        if self.section_id is WorkspaceSection.COMMITMENTS and self.required:
+            raise ValueError("COMMITMENTS manifest entry must not be required")
         return self
 
 
@@ -240,6 +286,8 @@ class PlayerWorkspaceSnapshot(StrictFrozenModel):
         entries_by_section = {
             entry.section_id: entry for entry in self.manifest_entries
         }
+        if any(entry.identity != self.identity for entry in self.manifest_entries):
+            raise ValueError("manifest identities must match workspace identity")
         documents_by_section = {document.section_id: document for document in self.documents}
         if len(documents_by_section) != len(self.documents):
             raise ValueError("documents must not contain duplicate sections")
@@ -255,12 +303,22 @@ class PlayerWorkspaceSnapshot(StrictFrozenModel):
         for section_id, document in documents_by_section.items():
             entry = entries_by_section[section_id]
             if (
-                document.identity != entry.identity
+                document.identity != self.identity
+                or document.identity != entry.identity
+                or document.renderer_version != entry.renderer_version
                 or document.content_hash != entry.content_hash
                 or document.token_estimate != entry.token_estimate
+                or document.estimator_version != entry.estimator_version
+                or document.visibility_class != entry.visibility_class
                 or document.source_references != entry.source_references
             ):
                 raise ValueError("document metadata must match its manifest entry")
+        source_references: list[ProjectionSourceReference] = []
+        for document in self.documents:
+            source_references.extend(document.source_references)
+        for entry in self.manifest_entries:
+            source_references.extend(entry.source_references)
+        _require_consistent_source_hashes(source_references)
         return self
 
 
@@ -317,7 +375,9 @@ class ObservationFrame(StrictFrozenModel):
         return _unique_source_references(references)
 
     @model_validator(mode="after")
-    def _validate_timestamps(self) -> Self:
+    def _validate_bound_context(self) -> Self:
+        if self.actor_id != self.identity.player_id:
+            raise ValueError("actor_id must match projection identity player_id")
         if not _is_aware(self.deadline) or not _is_aware(self.observed_at):
             raise ValueError("deadline and observed_at must be timezone-aware")
         if self.observed_at >= self.deadline:
