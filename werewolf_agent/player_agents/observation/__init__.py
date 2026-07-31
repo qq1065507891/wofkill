@@ -61,6 +61,12 @@ from werewolf_agent.player_agents.observation.rendering import (
     render_player_document,
     render_role_document,
 )
+from werewolf_agent.player_agents.observation.service import (
+    ObservationProjectionService,
+    assemble_observation_bundle,
+    prepare_observation_identity,
+    require_unchanged_observation,
+)
 from werewolf_agent.player_agents.observation.workspace import (
     INDEX_RENDERER_VERSION,
     WorkspaceProjector,
@@ -87,6 +93,7 @@ __all__ = [
     "ObservationBundle",
     "ObservationFrame",
     "ObservationProjectionError",
+    "ObservationProjectionService",
     "PersonaProjectionSource",
     "PlayerWorkspaceSnapshot",
     "ProjectedDocument",
@@ -110,8 +117,11 @@ __all__ = [
     "TokenEstimator",
     "WorkspaceProjector",
     "WorkspaceSection",
+    "assemble_observation_bundle",
+    "prepare_observation_identity",
     "render_commitments_document",
     "render_game_document",
     "render_player_document",
     "render_role_document",
+    "require_unchanged_observation",
 ]
