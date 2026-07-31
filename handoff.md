@@ -278,6 +278,8 @@ conda run -n wofkill python -m pytest -q
 
 `docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md` 已确定：每个玩家具有独立的逻辑 deep-agent 身份、profile、viewer workspace 和 turn-scoped thread，但所有玩家共享同一个 framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` harness 实现。Deep Agents 只是 bounded `AgentLoop` 的可替换实现，不是新的 Host、scheduler、repository 或 game authority。
 
+Deep Agent 在一个 admitted turn 内的具体单一职责是：把 Host 授权的单 viewer observation 转为恰一个严格候选 proposal，或者一个 typed non-submission outcome。认知协议是 orient、区分事实/承诺/假设/建议、按需选择上下文或工具、综合临时立场、提交 proposal、仅修复被拒字段并在 terminal condition 立即停止。Host 通过不含策略答案的 `CognitionTaskProfile` 限定 terminal schema、初始文档、可用操作、预算、并行、TODO、reflection、repair、compaction 和 failure policy；Deep Agent 自主决定是否调用授权工具、调用哪个以及何时已有足够信息提交。
+
 当前没有安装 `deepagents`，也没有实现 cognition contracts、adapter、virtual backend、`FencedChatModelAdapter`、terminal tool 或 feature gate。Stage 1 必须显式禁用 Deep Agents 自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；任何模型或外部工具调用仍须经过 durable active-turn fence。设计存在不等于 AgentLoop 已完成。
 
 ## 6. 尚未实现的主体功能
@@ -290,7 +292,7 @@ conda run -n wofkill python -m pytest -q
 - 已完成设计但尚未实现的专用 ToolResult Markdown 模型展示层，设计见
   `docs/superpowers/specs/2026-07-31-tool-result-markdown-projection-design.md`；
 - 真正的 AgentLoop；
-- framework-neutral `PlayerCognitionExecutor`、`DeepAgentPlayerExecutor`、每玩家 profile/namespace、turn-scoped Deep Agents thread 和受控 virtual filesystem；
+- framework-neutral `PlayerCognitionExecutor`、`DeepAgentPlayerExecutor`、`CognitionTaskProfile`、每玩家 profile/namespace、turn-scoped Deep Agents thread、具体 cognition protocol 和受控 virtual filesystem；
 - 完整 proposal validator、visibility policy 和 disclosure grant 消费；
 - deterministic player renderer、commitment/game projection worker；
 - 新 `JudgePresenter`；
@@ -464,7 +466,7 @@ conda run -n wofkill python -m pytest -q
 2. 最小 ToolGateway、working reflection，以及专用 ToolResult Markdown
    模型展示层；Markdown 只作为结构化结果的确定性只读投影，并按
    `result_kind` 通过 JSON/Markdown A/B 门槛后启用；
-3. framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` PoC：共享 harness、每玩家逻辑身份、每 turn 独立 thread、只读 observation virtual backend、ephemeral scratch、fenced model/tool adapter、严格 `submit_speech`；第一版明确关闭 `write_todos`、自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；
+3. framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` PoC：共享 harness、每玩家逻辑身份、每 turn 独立 thread、Host-built `CognitionTaskProfile`、orient/assess/selective-acquire/synthesize/propose/narrow-repair/stop cognition protocol、只读 observation virtual backend、ephemeral scratch、fenced model/tool adapter、严格 `submit_speech`；第一版明确关闭 `write_todos`、自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；
 4. 完整 Host validation、RuleEngine resolution、`CommitTurn` 编排；
 5. post-commitment/game projection updates、deterministic player renderer 和 JudgePresenter；
 6. stage-1 feature gate 与全部可执行验收门槛；

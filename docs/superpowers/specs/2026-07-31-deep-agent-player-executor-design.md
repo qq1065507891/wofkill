@@ -280,7 +280,207 @@ private documents, exception messages, or hidden reasoning.
 `DeepAgentPlayerExecutor` implements this port. No other new-runtime module
 outside its adapter package should import `deepagents`.
 
-## 9. Prompt and Instruction Assembly
+## 9. Deep Agent Cognitive Responsibilities
+
+### 9.1 Single responsibility
+
+For one admitted player turn, the Deep Agent has one responsibility:
+
+> Convert one Host-authorized, viewer-specific observation into exactly one
+> strict candidate proposal, or return one typed non-submission outcome, while
+> choosing only among the bounded context and tool operations granted for that
+> turn.
+
+It is a cognition executor, not a player-session daemon. It does not own the
+game loop, wait for another player's turn, advance a phase, decide whether a
+window is open, persist authority, or continue working after its turn becomes
+terminal.
+
+### 9.2 Turn cognition protocol
+
+The Deep Agent performs the following conceptual work during a turn:
+
+1. **Orient** — identify the current task, terminal schema, legal operation
+   kinds, deadline, remaining budget, and minimal observation already supplied
+   by the Host.
+2. **Assess** — separate confirmed facts, public commitments, private facts,
+   hypotheses, advice, and unknowns; determine whether the current context is
+   already sufficient to make a reasonable proposal.
+3. **Acquire selectively** — when information is materially missing, choose a
+   relevant authorized context read or ToolGateway operation. It must not read
+   every document or call every available tool mechanically.
+4. **Synthesize** — compare the returned references, contradictions,
+   uncertainty, current commitments, and legal alternatives into a temporary
+   working position. This step may revise an earlier hypothesis but cannot
+   promote it into a fact.
+5. **Propose** — select one allowed player action and fill only the model-
+   controlled fields of the task's strict terminal proposal.
+6. **Repair narrowly** — when the Host returns a declared repairable schema or
+   semantic error, revise only the rejected fields on the same turn and model
+   lease. Repair cannot reopen context or tools.
+7. **Stop** — end immediately after the terminal gateway accepts a proposal or
+   after the Host reports cancellation, expiry, stale identity, exhausted
+   budget, unrecoverable provider failure, or another terminal condition.
+
+These are responsibilities and audit phases, not a fixed chain-of-thought
+graph. The model may interleave assessment, selective acquisition, and
+synthesis within the bounded loop. The runtime records operation kinds,
+dispatch/tool IDs, result references, budgets, and terminal outcomes; it does
+not request or persist hidden chain-of-thought.
+
+### 9.3 Host-defined cognition task profile
+
+The Host supplies a strict `CognitionTaskProfile` for each task type. This
+profile describes process limits, not game strategy:
+
+```text
+task_type
+terminal_schema_id
+terminal_tool_name
+initial_document_sections
+allowed_context_operations
+allowed_tool_families
+max_model_steps
+max_local_context_reads
+max_gateway_tool_calls
+parallel_tool_policy
+todo_policy
+reflection_policy
+repair_policy
+compaction_policy_id
+failure_policy_id
+task_profile_hash
+```
+
+The model cannot edit or select the profile. Role capability manifests may
+reduce the available tools and actions further, but neither the profile nor
+the manifest may encode advice such as the best target, a preferred claim, or
+a standard faction tactic.
+
+`CognitionTaskProfile` is separate from `PlayerAgentProfile`: the former says
+how one class of turn may execute, while the latter pins who the player is.
+The per-turn intersection is:
+
+```text
+task profile
+∩ player-visible role capabilities
+∩ active legal window
+∩ remaining turn budget
+= effective Deep Agent operation manifest
+```
+
+### 9.4 Stage-1 daytime-speech duties
+
+For an ordinary daytime-speech turn, the Deep Agent may:
+
+- read the minimal `ObservationFrame`, player/role context, bounded game
+  summary, public commitments, and manifest;
+- decide whether additional public timeline, visible history, commitment, or
+  evidence reads would materially improve the proposal;
+- identify relevant public claims, contradictions, uncertainty, and the
+  player's own still-valid commitments;
+- choose the semantic communication intent, public moves, referenced entities,
+  evidence references, modality, and delivery-plan fields allowed by
+  `SpeechProposalBody`;
+- preserve persona and expression preferences without changing facts or
+  permissions; and
+- invoke `submit_speech` once with the strict proposal body.
+
+It may choose to make a simple statement without any extra tool call. It is
+not required to create a TODO list, consult RAG, simulate worlds, or exhaust the
+tool budget before speaking.
+
+It may not:
+
+- render the final public utterance or judge narration;
+- invent evidence, committed records, disclosure grants, or public facts;
+- reveal a private fact unless the strict proposal and Host disclosure policy
+  authorize that disclosure;
+- decide speech order, duration, phase progression, or whether another player
+  may answer;
+- validate its own proposal as legal; or
+- append `PublicSpeechRecord`, `GameEvent`, audit, or projection rows.
+
+### 9.5 Later task families
+
+All roles reuse the same executor. Later task profiles narrow its work as
+follows; they do not become active through this design.
+
+| Task family | Deep Agent cognition | Terminal output | Default TODO |
+| --- | --- | --- | --- |
+| `day_speech` | Select public semantic claims, evidence, uncertainty, commitments, and delivery intent | `SpeechProposal` | disabled |
+| `vote` | Compare only legal candidates and visible evidence, then choose target/abstention fields | `VoteProposal` | disabled |
+| `night_action` | Use current private role state and Host-supplied legal targets to choose one bounded ability action | `NightActionProposal` or `RoleAbilityProposal` | disabled |
+| `wolf_discussion` | Produce a private team-visible discussion/proposal record from the member's own view | typed team record, never the final kill unless coordinator | disabled |
+| `wolf_coordinator` | Reconcile visible team proposals only when mechanically selected as coordinator | `WolfTeamProposal` | disabled |
+| complex cognition extension | Perform explicitly gated world-model, RAG, memory, or reflection work | typed advisory/candidate record | experiment only |
+
+For voting and role actions, the Deep Agent chooses among Host-provided legal
+options but does not calculate legality. A wrong strategic choice is allowed;
+an illegal or invisible choice is rejected by the Host.
+
+### 9.6 Tool-selection responsibility
+
+The Deep Agent owns these choices inside the effective manifest:
+
+- whether another read/tool call is useful;
+- which authorized tool to call;
+- the order of sequential calls;
+- which returned references affect its temporary working position; and
+- when enough information exists to submit.
+
+The Deep Agent does not own:
+
+- tool availability, identity, schema, ACL, visibility filtering, or result
+  classification;
+- tool retry, provider failover, timeout, idempotency, dispatch, or billing;
+- automatic adoption of a tool result as fact or evidence;
+- parallel-call permission; or
+- budget restoration after a failed or unnecessary call.
+
+This preserves genuine agency without moving mechanics into prompt strategy.
+Evaluation should measure useful information gain, unnecessary calls, proposal
+quality, latency, and cost rather than requiring a predetermined sequence.
+
+### 9.7 Ephemeral working state
+
+The harness may maintain a bounded, turn-local working set containing:
+
+- the current task and intended terminal operation;
+- IDs of consulted observation sections and tool results;
+- candidate evidence and commitment references;
+- typed hypothesis candidates and uncertainty labels;
+- unresolved questions; and
+- bounded scratch notes needed to complete the current proposal.
+
+This working set is not canonical state. Model-written prose is never parsed
+back into fact, evidence, grant, commitment, budget, or legal-action state.
+Only an explicit future `reflect` gateway may submit a structured candidate for
+Host review and possible promotion. Terminalization discards the remaining
+working state.
+
+The Host may persist a safe `CognitionTraceSummary` containing operation kinds,
+IDs, hashes, counts, timing, budget deltas, errors, and terminal outcome. It
+must not contain hidden reasoning, raw private documents, complete prompts, or
+unfiltered provider output.
+
+### 9.8 Stop and completion semantics
+
+The Deep Agent is complete only when one of these occurs:
+
+1. the terminal gateway captures one strict proposal;
+2. the Host cancels or expires the active turn;
+3. the active identity becomes stale or the legal window closes;
+4. the Host declares model/tool/context budget exhaustion;
+5. durable recovery remains blocked or yields an unusable result; or
+6. the adapter returns a sanitized unrecoverable framework/provider failure.
+
+Completing a TODO list, emitting final prose, finishing a subtask, exhausting
+available tools, or reaching a model-generated conclusion does not complete a
+player turn. The Host alone decides whether a non-submission outcome triggers
+cancellation, replacement, bounded repair, or deterministic neutral fallback.
+
+## 10. Prompt and Instruction Assembly
 
 Prompt priority is assembled explicitly by the Host:
 
@@ -304,9 +504,9 @@ and hashed, and contain no dynamic observation, memory, retrieved content, or
 model-written instruction. That experiment requires prompt-order and injection
 tests before enablement.
 
-## 10. Virtual Filesystem
+## 11. Virtual Filesystem
 
-### 10.1 Selected layout
+### 11.1 Selected layout
 
 The adapter exposes a virtual namespace, not host filesystem paths:
 
@@ -322,7 +522,7 @@ The adapter exposes a virtual namespace, not host filesystem paths:
 Future milestones may add read-only projected `BELIEFS.md`, `MEMORY.md`, and a
 host-governed `WORKING.md`. Their absence in stage 1 remains explicit.
 
-### 10.2 Backend composition
+### 11.2 Backend composition
 
 Use a custom `PlayerWorkspaceBackend` routed under `/observation/` and an
 ephemeral state backend routed under `/scratch/`.
@@ -354,7 +554,7 @@ tool in the live player runtime. Deep Agents filesystem permissions are useful
 defense in depth, but the custom backend and Host gateways remain the actual
 security boundaries.
 
-### 10.3 Filesystem tools
+### 11.3 Filesystem tools
 
 The harness may expose bounded `ls`, `read_file`, `glob`, and `grep` over the
 virtual routes. `write_file` and `edit_file` are permitted only under
@@ -366,7 +566,7 @@ network dispatches. They still consume the context-read/tool budget. An
 external or durable read tool is not implemented through this backend; it goes
 through the future `ToolGateway` and durable dispatch protocol.
 
-## 11. Deep Agents Harness Configuration
+## 12. Deep Agents Harness Configuration
 
 The first implementation must construct the harness through one audited
 factory. The conceptual configuration is:
@@ -412,7 +612,7 @@ Deep Agents version cannot hide or wrap a built-in tool without private API
 patching, the tool is disabled or the integration is rejected; production code
 must not monkey-patch Deep Agents internals.
 
-## 12. Fenced Model Dispatch
+## 13. Fenced Model Dispatch
 
 Every model request originating from the harness must pass through a host-owned
 `FencedModelDispatcher`. The Deep Agents adapter receives a LangChain-compatible
@@ -445,7 +645,7 @@ The future production dispatcher needs a narrow Host-facing API for claim,
 handoff, result recording, and recovery reuse. It must not expose the raw
 durable-dispatch repository to Deep Agents.
 
-## 13. Tool Dispatch
+## 14. Tool Dispatch
 
 Tools fall into three classes:
 
@@ -473,7 +673,7 @@ Parallel model-selected tool calls are disabled in stage 1 unless the
 per-call fence policy. A terminal submit tool cannot run in parallel with any
 other tool.
 
-## 14. Terminal Proposal
+## 15. Terminal Proposal
 
 Stage 1 exposes exactly one terminal tool: `submit_speech`.
 
@@ -505,7 +705,7 @@ LangChain `response_format` may be used only as an implementation aid after it
 is proven not to bypass the terminal gateway. The default design keeps
 `submit_speech` as the sole terminal boundary.
 
-## 15. Context Budget and Compaction
+## 16. Context Budget and Compaction
 
 Deep Agents automatic summarization is disabled because its generated summary
 and offloaded history do not implement the parent design's authority-preserving
@@ -534,9 +734,9 @@ with a distinct operation kind, no tools, no framework retry, and the same
 lease/cost budget. Deep Agents summarization middleware is not used to produce
 it.
 
-## 16. Checkpoint and Recovery Ownership
+## 17. Checkpoint and Recovery Ownership
 
-### 16.1 Stage-1 policy
+### 17.1 Stage-1 policy
 
 Stage 1 uses no durable Deep Agents or LangGraph checkpointer. Framework state
 is process-local and disposable. Restart recovery is:
@@ -555,7 +755,7 @@ Recorded dispatch results are reused only through the Host execution cursor and
 their original binding. The framework cannot independently replay a provider
 or tool request.
 
-### 16.2 Future framework checkpoints
+### 17.2 Future framework checkpoints
 
 A later optimization may store LangGraph checkpoints only behind a
 `ValidatedAgentCheckpointStore`. Such checkpoints are caches, not authority,
@@ -574,7 +774,7 @@ and must be:
 This future optimization requires a separate design and fault-injection gate.
 It is not implied by installing Deep Agents.
 
-## 17. Subagents
+## 18. Subagents
 
 All Deep Agents subagents are disabled in stage 1. This is required both by the
 parent design's rejection of planner/critic/actor model personas in one turn
@@ -598,7 +798,7 @@ Async subagents remain out of scope because their independent lifecycle,
 mid-flight updates, and cancellation introduce another durable scheduling
 problem that the current active-turn fence does not model.
 
-## 18. Cancellation and Deadline Behavior
+## 19. Cancellation and Deadline Behavior
 
 The executor checks an injected host cancellation/deadline guard:
 
@@ -617,7 +817,7 @@ Process-local cancellation flags may reduce wasted work, but they are only an
 optimization. They cannot authorize or reject work independently of the
 repository state.
 
-## 19. Failure Mapping
+## 20. Failure Mapping
 
 Framework and provider details are sanitized at the adapter boundary.
 
@@ -639,7 +839,7 @@ Raw framework exceptions, prompt fragments, private tool payloads, provider
 responses, filesystem contents, and credentials are not placed in stable error
 messages or public audit projections.
 
-## 20. Package Boundaries
+## 21. Package Boundaries
 
 The eventual implementation should use cohesive modules resembling:
 
@@ -668,7 +868,7 @@ Deep Agents remains an optional runtime capability behind the future per-game
 `player_runtime_version` gate. Importing the general contracts or running
 legacy games must not require the package to be installed.
 
-## 21. Data Flow
+## 22. Data Flow
 
 One ordinary daytime-speech turn is:
 
@@ -694,7 +894,7 @@ There is no edge from Deep Agents directly to repository truth, schedule
 terminalization, RuleEngine, `CommitTurn`, another player's workspace, or the
 legacy runtime.
 
-## 22. Proof-of-concept Sequence
+## 23. Proof-of-concept Sequence
 
 The integration should not begin until the current context-budget/checkpoint
 milestone defines the Host lifecycle consumed by the adapter.
@@ -717,9 +917,9 @@ Then implement in this order:
 
 Each step remains mergeable while the runtime feature is disabled.
 
-## 23. Test Strategy
+## 24. Test Strategy
 
-### 23.1 Contract and identity tests
+### 24.1 Contract and identity tests
 
 - strict/frozen player profile, request, result, execution context, and status;
 - logical player identity differs for similar player IDs and games;
@@ -728,7 +928,22 @@ Each step remains mergeable while the runtime feature is disabled.
 - model-visible schemas omit repositories, Host ports, credentials, identity
   selectors, budgets, and retry controls.
 
-### 23.2 Harness configuration tests
+### 24.2 Cognition protocol tests
+
+- a daytime-speech run can submit directly when the initial observation is
+  sufficient, with zero TODO and zero additional context/tool calls;
+- a run with a declared information gap selects only an authorized relevant
+  read and can revise its temporary hypothesis after the result;
+- no fixture requires a fixed tool order, target preference, faction tactic,
+  or other hard-coded strategy;
+- task-profile, capability, window, and budget intersection produces the exact
+  effective operation manifest;
+- a vote or simple role-action profile exposes no speech-only operation and no
+  `write_todos`;
+- repair changes only declared rejected fields and cannot reopen context; and
+- every stop condition ends further model/tool work with one typed outcome.
+
+### 24.3 Harness configuration tests
 
 - compiled tools contain no `execute`, shell, raw MCP, moderator, commit, model-
   switch, retry, or cross-player tool;
@@ -739,7 +954,7 @@ Each step remains mergeable while the runtime feature is disabled.
 - no durable framework store/checkpointer is configured in stage 1; and
 - unsupported package/API versions fail capability admission safely.
 
-### 23.3 Workspace and privacy tests
+### 24.4 Workspace and privacy tests
 
 - two players with similar IDs receive byte-distinct correct views;
 - private role facts never cross namespaces, cache entries, scratch space, or
@@ -751,7 +966,7 @@ Each step remains mergeable while the runtime feature is disabled.
   read; and
 - no physical player file or durable projection row is created.
 
-### 23.4 Dispatch and recovery tests
+### 24.5 Dispatch and recovery tests
 
 - every harness model call produces one fenced durable dispatch before network
   I/O;
@@ -764,7 +979,7 @@ Each step remains mergeable while the runtime feature is disabled.
   a LangGraph checkpoint; and
 - a forged or stale framework thread cannot resume work.
 
-### 23.5 Terminal tests
+### 24.6 Terminal tests
 
 - exactly one valid `submit_speech` becomes `SUBMITTED`;
 - parallel or duplicate terminal calls cannot produce two proposals;
@@ -773,7 +988,7 @@ Each step remains mergeable while the runtime feature is disabled.
 - schema/semantic repair obeys the existing bounded repair policy; and
 - the adapter never calls RuleEngine, `CommitTurn`, or lifecycle completion.
 
-### 23.6 Context tests
+### 24.7 Context tests
 
 - occupancy is checked before every model call;
 - Deep Agents summarization never runs;
@@ -783,7 +998,7 @@ Each step remains mergeable while the runtime feature is disabled.
 - rehydration cannot restore stale visibility, grants, legal targets, or
   budgets.
 
-### 23.7 Architecture and regression tests
+### 24.8 Architecture and regression tests
 
 - AST/import tests constrain `deepagents` imports to the adapter package;
 - the adapter cannot import legacy player decision or live runtime modules;
@@ -792,7 +1007,7 @@ Each step remains mergeable while the runtime feature is disabled.
 - focused autonomous-player tests, Ruff, mypy, `git diff --check`, and full
   pytest remain green.
 
-## 24. Proof-of-concept Acceptance Criteria
+## 25. Proof-of-concept Acceptance Criteria
 
 The daytime-speech Deep Agents proof of concept is accepted only when:
 
@@ -805,21 +1020,25 @@ The daytime-speech Deep Agents proof of concept is accepted only when:
    persisted as authority;
 6. built-in summarization, durable framework checkpointing, long-term memory,
    planning/TODO, and all subagents are disabled;
-7. one strict terminal proposal is captured only through `submit_speech`;
-8. crash recovery uses Host checkpoint plus durable results and never blind
+7. the Host-built cognition task profile precisely bounds operations without
+   encoding a fixed tool sequence or game strategy;
+8. the agent may submit directly with no optional read when initial context is
+   sufficient, while additional reads remain agent-selected and budgeted;
+9. one strict terminal proposal is captured only through `submit_speech`;
+10. crash recovery uses Host checkpoint plus durable results and never blind
    framework replay;
-9. similar-player-ID, prompt-injection, stale-turn, deadline, duplicate-submit,
+11. similar-player-ID, prompt-injection, stale-turn, deadline, duplicate-submit,
    and cancellation-race fixtures produce zero leaks and zero stale proposals;
-10. the optional dependency is exact-version pinned and the feature remains
+12. the optional dependency is exact-version pinned and the feature remains
     disabled for games that did not select the new runtime at creation; and
-11. all existing autonomous and repository gates remain green.
+13. all existing autonomous and repository gates remain green.
 
 Passing these criteria proves an isolated cognition adapter. It does not prove
 the playable vertical slice, which still requires ToolGateway, full proposal
 validation, RuleEngine resolution, `CommitTurn`, projections, deterministic
 renderers, presenters, feature gates, and stage-1 evaluation.
 
-## 25. Final Invariants
+## 26. Final Invariants
 
 1. One player means one logical agent identity, not one process or permanent
    provider conversation.
@@ -830,7 +1049,9 @@ renderers, presenters, feature gates, and stage-1 evaluation.
 5. LangGraph execution/checkpoint state never outranks repository state.
 6. Every external model/tool call crosses the durable active-turn fence.
 7. Deep Agents built-ins cannot bypass Host budgets, ACLs, deadlines, or audit.
-8. Framework summaries, files, TODOs, and final text are untrusted model data.
-9. Only a strict terminal gateway yields a proposal; only Host/RuleEngine/
+8. The agent chooses whether and how to use authorized cognition operations;
+   the Host defines the manifest but never hard-codes the strategic answer.
+9. Framework summaries, files, TODOs, and final text are untrusted model data.
+10. Only a strict terminal gateway yields a proposal; only Host/RuleEngine/
    `CommitTurn` can make it game truth.
-10. No Deep Agents integration reaches the old `PlayerAgent` or live game path.
+11. No Deep Agents integration reaches the old `PlayerAgent` or live game path.
