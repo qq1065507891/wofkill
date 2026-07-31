@@ -17,6 +17,11 @@ from werewolf_agent.player_agents.observation.authority import (
     RoleAbilityProjectionSource,
     RoleProjectionSource,
 )
+from werewolf_agent.player_agents.observation.cache import (
+    InMemoryProjectionCache,
+    ProjectionCache,
+    ProjectionCacheKey,
+)
 from werewolf_agent.player_agents.observation.contracts import (
     BoundedObservationText,
     ManifestEntry,
@@ -56,11 +61,16 @@ from werewolf_agent.player_agents.observation.rendering import (
     render_player_document,
     render_role_document,
 )
+from werewolf_agent.player_agents.observation.workspace import (
+    INDEX_RENDERER_VERSION,
+    WorkspaceProjector,
+)
 
 __all__ = [
     "COMMITMENTS_RENDERER_VERSION",
     "DOCUMENT_RENDERERS",
     "GAME_RENDERER_VERSION",
+    "INDEX_RENDERER_VERSION",
     "PLAYER_RENDERER_VERSION",
     "ROLE_RENDERER_VERSION",
     "ActiveObservationConflict",
@@ -70,6 +80,7 @@ __all__ = [
     "ConservativeTokenEstimator",
     "DocumentRenderer",
     "GameProjectionSource",
+    "InMemoryProjectionCache",
     "ManifestEntry",
     "ObservationAuthorityReader",
     "ObservationAuthoritySnapshot",
@@ -81,6 +92,8 @@ __all__ = [
     "ProjectedDocument",
     "ProjectionAvailability",
     "ProjectionBuildFailed",
+    "ProjectionCache",
+    "ProjectionCacheKey",
     "ProjectionIdentity",
     "ProjectionIdentityMismatch",
     "ProjectionIntegrityFailed",
@@ -95,6 +108,7 @@ __all__ = [
     "RoleAbilityProjectionSource",
     "RoleProjectionSource",
     "TokenEstimator",
+    "WorkspaceProjector",
     "WorkspaceSection",
     "render_commitments_document",
     "render_game_document",
