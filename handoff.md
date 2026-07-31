@@ -24,7 +24,7 @@
 
 ## 2. 一句话进度结论
 
-新运行时已经完成严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期、durable active-turn fence，以及隔离的只读 observation projection 边界；但尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
+新运行时已经完成严格合约、三后端原子提交、durable dispatch、`serial_public` 调度、HostRuntime 生命周期、durable active-turn fence，以及隔离的只读 observation projection 边界；同时已形成每玩家逻辑隔离的 Deep Agents cognition adapter 专题设计，但尚未安装或实现 Deep Agents，也尚未接入真实游戏、模型、工具、RuleEngine 提交流程或旧玩家运行入口。
 
 按总体设计第 28 节的 13 步实施序列判断：
 
@@ -42,11 +42,12 @@
 
 记录本文件时：
 
-- 分支：`codex/autonomous-player-observation-projections`
-- worktree：`/Users/zengyilin/NLP/wofkill/.worktrees/autonomous-player-observation-projections`
-- final-fix 最终实现 HEAD（证据文档提交前）：`7f3fc87`（`fix: harden observation projection integrity`）；fix-wave base 是 `3c8781c`，whole-branch review base 是 `83eb1be`
-- fresh 验证开始前 tracked worktree clean；最终文档提交后再次用 `git status --short --branch` 验证 clean
-- 新运行时 focused pytest：fresh exit 0，`585 passed in 1.21s`
+- 分支：`codex/deep-agent-player-executor-design`
+- worktree：`/Users/zengyilin/NLP/wofkill/.worktrees/deep-agent-player-executor-design`
+- Deep Agent 专题设计提交：`c1a295b`（`docs: design deep agent player executor`）；分支 base 是已合并 observation milestone `b4cb575`
+- 设计提交后运行 focused 与 full pytest；更新本 handoff 前 tracked worktree 只有 handoff 修改
+- 新运行时 focused pytest：fresh exit 0，`585 passed in 1.56s`
+- 全量 pytest：fresh exit 0，明确 12 个 skip 和 10 条既有第三方 `StarletteDeprecationWarning`；quiet/xdist 未打印 passed 汇总，因此不把 collected 数写成 passed 数
 - 全量 pytest：`pytest -q` 与独立的 `pytest -q -rs` 均 fresh exit 0；collection-only 的 308 个逐文件计数独立求和为 6365 collected；`-rs` 明确列出 12 个 skip（1 个 shared-negation、9 个 PowerShell soak、1 个 PowerShell AST、1 个 real-provider smoke），warning summary 是 10 条既有第三方 `StarletteDeprecationWarning`（`fastapi.testclient`）；quiet/xdist 输出没有打印 passed 汇总，因此 6365 只记为 collected，不记为 passed
 
 新会话不要直接相信以上动态值。先在仓库根目录执行：
@@ -273,6 +274,12 @@ conda run -n wofkill python -m pytest -q
 
 当前 PostgreSQL 测试覆盖 schema、fake connection、锁、CAS、事务和异常映射，但没有在真实 PostgreSQL 服务上运行集成测试。接入生产前必须补齐。
 
+### 5.5 Deep Agents 只有专题设计，没有运行实现
+
+`docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md` 已确定：每个玩家具有独立的逻辑 deep-agent 身份、profile、viewer workspace 和 turn-scoped thread，但所有玩家共享同一个 framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` harness 实现。Deep Agents 只是 bounded `AgentLoop` 的可替换实现，不是新的 Host、scheduler、repository 或 game authority。
+
+当前没有安装 `deepagents`，也没有实现 cognition contracts、adapter、virtual backend、`FencedChatModelAdapter`、terminal tool 或 feature gate。Stage 1 必须显式禁用 Deep Agents 自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；任何模型或外部工具调用仍须经过 durable active-turn fence。设计存在不等于 AgentLoop 已完成。
+
 ## 6. 尚未实现的主体功能
 
 - `ContextBudgetPolicy`、80% 自动压缩触发、严格 `CompactionCheckpoint`、可选且不可信的 `CompactionHandoff`、55% rehydration target、lineage validation 和 restart recovery；
@@ -283,6 +290,7 @@ conda run -n wofkill python -m pytest -q
 - 已完成设计但尚未实现的专用 ToolResult Markdown 模型展示层，设计见
   `docs/superpowers/specs/2026-07-31-tool-result-markdown-projection-design.md`；
 - 真正的 AgentLoop；
+- framework-neutral `PlayerCognitionExecutor`、`DeepAgentPlayerExecutor`、每玩家 profile/namespace、turn-scoped Deep Agents thread 和受控 virtual filesystem；
 - 完整 proposal validator、visibility policy 和 disclosure grant 消费；
 - deterministic player renderer、commitment/game projection worker；
 - 新 `JudgePresenter`；
@@ -301,6 +309,8 @@ conda run -n wofkill python -m pytest -q
 
 下一阶段只实现 `ContextBudgetPolicy` 与 context accounting、80% 自动 compaction trigger、严格且可恢复的 `CompactionCheckpoint`、可选且标为 untrusted 的 `CompactionHandoff`、55% rehydration target、checkpoint lineage validation，以及进程重启后的 checkpoint recovery。Host checkpoint 是唯一 resumable authority；model handoff 只是可缺失的建议性数据，不能新增事实、证据、grant、合法目标或动作。
 
+该阶段必须遵循新 Deep Agent 专题设计预留 framework-neutral `PlayerCognitionExecutor` 消费边界，但仍不安装或调用 Deep Agents。Deep Agents 内置 summarization 和 LangGraph checkpoint 不能替代本阶段的 Host checkpoint；未来 adapter 只能消费 Host 已验证的 rehydrated context。
+
 该阶段仍不实现 ToolGateway、ToolResult Markdown projection、真实 provider/model 调用、AgentLoop、proposal validation、RuleEngine/`CommitTurn` 编排、live game path 或旧 `PlayerAgent` 接入，也不把 projection 变成物理文件或 durable authority；因此它仍不是可玩的纵向链路。
 
 ## 8. 下一会话必读文件
@@ -316,23 +326,24 @@ conda run -n wofkill python -m pytest -q
 
 ### 第二层：刚完成阶段的专题设计和计划
 
-4. `docs/superpowers/specs/2026-07-31-autonomous-player-observation-projections-design.md`
-5. `docs/superpowers/plans/2026-07-31-autonomous-player-observation-projections.md`
+4. `docs/superpowers/specs/2026-07-31-deep-agent-player-executor-design.md`
+5. `docs/superpowers/specs/2026-07-31-autonomous-player-observation-projections-design.md`
+6. `docs/superpowers/plans/2026-07-31-autonomous-player-observation-projections.md`
 
 ### 第三层：下一任务直接相关代码
 
-6. `werewolf_agent/player_agents/observation/contracts.py`
-7. `werewolf_agent/player_agents/observation/service.py`
-8. `werewolf_agent/player_agents/observation/workspace.py`
-9. `werewolf_agent/player_agents/contracts/turns.py`
-10. `werewolf_agent/storage/autonomous_turns.py`
+7. `werewolf_agent/player_agents/observation/contracts.py`
+8. `werewolf_agent/player_agents/observation/service.py`
+9. `werewolf_agent/player_agents/observation/workspace.py`
+10. `werewolf_agent/player_agents/contracts/turns.py`
+11. `werewolf_agent/storage/autonomous_turns.py`
 
 ### 第四层：下一任务直接相关测试
 
-11. `tests/player_agents/test_observation_contracts.py`
-12. `tests/player_agents/test_observation_service.py`
-13. `tests/player_agents/test_observation_conformance.py`
-14. `tests/player_agents/test_observation_import_boundary.py`
+12. `tests/player_agents/test_observation_contracts.py`
+13. `tests/player_agents/test_observation_service.py`
+14. `tests/player_agents/test_observation_conformance.py`
+15. `tests/player_agents/test_observation_import_boundary.py`
 
 仓库存在 `.codegraph/`。理解或定位代码时先运行 `codegraph explore "<问题或符号>"`，然后再做局部 `rg` 和文件读取。
 
@@ -340,7 +351,7 @@ conda run -n wofkill python -m pytest -q
 
 1. 刷新 Git 状态和 observation focused suite 基线。
 2. 用 CodeGraph 查清 `AgentTurn` 状态机、active-turn repository、observation identity 和未来 checkpoint 持久化边界。
-3. 为 `ContextBudgetPolicy`、checkpoint transaction、lineage、rehydration 和 restart recovery 写专题设计与实施计划。
+3. 按 Deep Agent 专题设计的 framework-neutral seam，为 `ContextBudgetPolicy`、checkpoint transaction、lineage、rehydration 和 restart recovery 写专题设计与实施计划；本阶段不得安装或调用 Deep Agents。
 4. 先写 80% trigger、55% target、stale lineage、optional handoff failure 和 restart recovery 的失败测试，再实现最小 context lifecycle capability。
 5. 保持 Host checkpoint 为唯一可恢复 authority，严格验证 player/turn/revision/view/source lineage；不得从 model handoff 恢复事实或权限。
 6. 在不接入 ToolGateway、provider、AgentLoop、旧玩家或 live game path 的前提下完成聚焦测试、ruff、mypy、diff check 和全量 pytest。
@@ -365,6 +376,10 @@ conda run -n wofkill python -m pytest -q
 - observation Markdown 只是 source-bound、viewer-specific 的只读展示，不能解析回 Host state 或作为 dispatch/commit 权限。
 - `GAME.md` 含当前 viewer 授权的私有事实引用，必须在 document、manifest、INDEX 和 revision/cache 语义中保持 `MIXED_VIEWER_FILTERED`，不能降级标为 public。
 - projection cache 是可删的进程内优化，cache failure 必须等同 miss；projection 不写物理 workspace 文件或 durable projection table。
+- Deep Agents 只能作为可替换的 `PlayerCognitionExecutor` 实现；一名玩家对应一个逻辑 agent identity，一个 admitted turn 对应一个 bounded framework thread，不能用一个 supervisor agent 扮演或读取多个玩家。
+- Deep Agents/LangGraph checkpoint、自动 summary、TODO、scratch file 和 final text 都是可丢弃的模型侧数据；Host `CompactionCheckpoint` 仍是唯一 resumable authority。
+- Stage 1 必须显式禁用 Deep Agents 默认 general-purpose subagent、async subagent、自动 summarization、durable framework store、long-term memory 和 shell/execute；framework retry/failover 不能绕过 Host durable dispatch。
+- Deep Agents adapter 不得直接构造 provider、MCP、repository、RuleEngine 或 `CommitTurn`；所有外部模型/工具调用必须穿过 durable active-turn fence，所有终态动作只能通过严格 terminal proposal gateway 返回 Host。
 - required observation sections 必须 fail closed；optional unavailable section 不能泄露隐藏记录是否存在，`COMMITMENTS.md` 的 available-empty 必须与 capability-absent 区分。
 - 不为当前单一调用者提前建立不必要抽象；变更必须小、可回滚，并保持 Memory/SQLite/PostgreSQL 契约一致。
 
@@ -421,6 +436,7 @@ conda run -n wofkill python -m pytest -q
 - 本地 `master` 尚未 push；是否 push 必须由用户明确授权。
 - 尚未运行真实 PostgreSQL 服务集成测试。
 - 当前已有隔离的内存中 observation workspace/bundle 构建能力，但没有物理 workspace 文件、durable projection table、真实 production dispatcher、context checkpoint、AgentLoop、模型或工具调用。
+- 当前环境有 `langchain 1.3.14` 和 `langgraph 1.2.9`，但未安装 `deepagents`；专题设计记录时 PyPI 最新稳定版为 `0.6.12`，实现前必须做兼容性 spike 并精确 pin 稳定版本，不能直接采用 alpha。
 - 当前新代码没有接入 live game runtime，这是有意的安全边界。
 - stage-1 的 replay、隐私、并发、性能和真人质量门槛尚未执行。
 
@@ -447,7 +463,7 @@ conda run -n wofkill python -m pytest -q
 2. 最小 ToolGateway、working reflection，以及专用 ToolResult Markdown
    模型展示层；Markdown 只作为结构化结果的确定性只读投影，并按
    `result_kind` 通过 JSON/Markdown A/B 门槛后启用；
-3. 第一版 daytime-speech AgentLoop；
+3. framework-neutral `PlayerCognitionExecutor` 与 `DeepAgentPlayerExecutor` PoC：共享 harness、每玩家逻辑身份、每 turn 独立 thread、只读 observation virtual backend、ephemeral scratch、fenced model/tool adapter、严格 `submit_speech`；第一版明确关闭自动 summarization、durable framework checkpoint、long-term memory、shell/execute 和全部 subagent；
 4. 完整 Host validation、RuleEngine resolution、`CommitTurn` 编排；
 5. post-commitment/game projection updates、deterministic player renderer 和 JudgePresenter；
 6. stage-1 feature gate 与全部可执行验收门槛；
