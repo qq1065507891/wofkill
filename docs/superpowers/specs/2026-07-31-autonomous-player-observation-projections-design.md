@@ -247,6 +247,11 @@ projection identity, ordered manifest, renderer versions, estimator version,
 and source hashes. It is not a new database sequence. `workspace_hash` covers
 the complete ordered document bytes plus the manifest.
 
+To avoid a self-referential hash, `INDEX.md` renders the ordered entries for
+`PLAYER` through `WORKING` plus the already-computed workspace revision. The
+final manifest then appends the `INDEX` entry containing the resulting INDEX
+content hash. INDEX never renders its own content hash or token estimate.
+
 ### 6.5 Observation frame and bundle
 
 ```text
@@ -404,8 +409,11 @@ The exact implementation flow is:
    workspace hash;
 9. assemble the immutable `ObservationFrame` and bundle;
 10. reload schedule and managed turn and require every captured identity and
-    state version to remain unchanged; and
-11. return the bundle only after the final recheck succeeds.
+    state version to remain unchanged;
+11. read a fresh aware completion time from the service clock, reject clock
+    regression, and require completion strictly before the captured deadline;
+    and
+12. return the bundle only after the final recheck succeeds.
 
 The first and final checks provide an optimistic read fence without adding a
 new persistence transaction. Schedule and turn state versions are monotonic,
@@ -443,11 +451,13 @@ projection_visibility_rejected
 projection_source_changed
 projection_integrity_failed
 projection_render_failed
+projection_build_failed
 ```
 
 Expected errors contain only stable identifiers and codes. Unexpected reader,
 cache, renderer, estimator, or repository failures are mapped to the relevant
-safe projection error with `from None`. Error strings and formatted tracebacks
+safe projection error, using `projection_build_failed` when no narrower public
+classification applies, with `from None`. Error strings and formatted tracebacks
 must not expose role payloads, private facts, SQL, filesystem paths, cache
 content, or untrusted public text.
 
