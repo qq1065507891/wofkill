@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
@@ -76,7 +78,7 @@ def _entry_payload(section: WorkspaceSection) -> dict[str, object]:
         "required": section in REQUIRED_SECTIONS,
         "identity": _identity().model_dump(),
         "renderer_version": None if unavailable else "renderer-v1",
-        "content_hash": None if unavailable else HASH,
+        "content_hash": None if unavailable else _document_hash(section),
         "token_estimate": None if unavailable else 1,
         "estimator_version": None if unavailable else "estimator-v1",
         "visibility_class": ProjectionVisibilityClass.PLAYER_PRIVATE,
@@ -89,17 +91,47 @@ def _entry_payload(section: WorkspaceSection) -> dict[str, object]:
 
 
 def _document_payload(section: WorkspaceSection) -> dict[str, object]:
+    content_markdown = f"# {section.value}\n"
     return {
         "section_id": section,
         "identity": _identity().model_dump(),
         "renderer_version": "renderer-v1",
-        "content_markdown": f"# {section.value}",
-        "content_hash": HASH,
+        "content_markdown": content_markdown,
+        "content_hash": hashlib.sha256(content_markdown.encode("utf-8")).hexdigest(),
         "token_estimate": 1,
         "estimator_version": "estimator-v1",
         "visibility_class": ProjectionVisibilityClass.PLAYER_PRIVATE,
         "source_references": [],
     }
+
+
+def _document_hash(section: WorkspaceSection) -> str:
+    """在测试侧独立计算固定文档字节的 SHA-256。"""
+
+    return hashlib.sha256(f"# {section.value}\n".encode()).hexdigest()
+
+
+def _literal_workspace_hash(
+    entries: list[dict[str, object]],
+    documents: list[dict[str, object]],
+) -> str:
+    """按设计文字独立计算有序 manifest 与文档字节哈希。"""
+
+    manifest_bytes = json.dumps(
+        entries,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(len(manifest_bytes).to_bytes(8, "big"))
+    digest.update(manifest_bytes)
+    for document in documents:
+        content_bytes = str(document["content_markdown"]).encode("utf-8")
+        digest.update(len(content_bytes).to_bytes(8, "big"))
+        digest.update(content_bytes)
+    return digest.hexdigest()
 
 
 def _bundle_payload() -> dict[str, object]:
@@ -110,6 +142,7 @@ def _bundle_payload() -> dict[str, object]:
         if section not in UNAVAILABLE_SECTIONS
     ]
     identity = _identity().model_dump()
+    workspace_hash = _literal_workspace_hash(entries, documents)
     return {
         "frame": {
             "identity": identity,
@@ -127,7 +160,7 @@ def _bundle_payload() -> dict[str, object]:
             "document_manifest": entries,
             "tool_manifest": ["speak"],
             "workspace_revision": HASH,
-            "workspace_hash": OTHER_HASH,
+            "workspace_hash": workspace_hash,
             "deadline": NOW + timedelta(minutes=1),
             "observed_at": NOW,
         },
@@ -136,7 +169,7 @@ def _bundle_payload() -> dict[str, object]:
             "workspace_revision": HASH,
             "documents": documents,
             "manifest_entries": entries,
-            "workspace_hash": OTHER_HASH,
+            "workspace_hash": workspace_hash,
         },
     }
 
@@ -319,11 +352,34 @@ def test_workspace_rejects_document_manifest_metadata_mismatch(
         PlayerWorkspaceSnapshot.model_validate(workspace)
 
 
-def test_projected_document_rejects_carriage_returns() -> None:
+@pytest.mark.parametrize(
+    "content_markdown",
+    ("# PLAYER.md", "# PLAYER.md\n\n", "# PLAYER.md\r\n"),
+)
+def test_projected_document_rejects_noncanonical_markdown(
+    content_markdown: str,
+) -> None:
     payload = _document_payload(WorkspaceSection.PLAYER)
-    payload["content_markdown"] = "# PLAYER\r\n"
+    payload["content_markdown"] = content_markdown
+    payload["content_hash"] = hashlib.sha256(content_markdown.encode()).hexdigest()
     with pytest.raises(ValidationError):
         ProjectedDocument.model_validate(payload)
+
+
+def test_projected_document_rejects_hash_not_matching_utf8_bytes() -> None:
+    payload = _document_payload(WorkspaceSection.PLAYER)
+    payload["content_hash"] = OTHER_HASH
+    with pytest.raises(ValidationError):
+        ProjectedDocument.model_validate(payload)
+
+
+def test_workspace_rejects_forged_ordered_workspace_hash() -> None:
+    payload = _bundle_payload()
+    workspace = payload["workspace"]
+    assert isinstance(workspace, dict)
+    workspace["workspace_hash"] = OTHER_HASH
+    with pytest.raises(ValidationError):
+        PlayerWorkspaceSnapshot.model_validate(workspace)
 
 
 def test_workspace_rejects_cross_document_source_hash_conflicts() -> None:
@@ -421,4 +477,6 @@ def test_manifest_and_documents_are_defensively_copied() -> None:
     entries = workspace["manifest_entries"]
     assert isinstance(entries, list)
     entries[0]["content_hash"] = OTHER_HASH
-    assert bundle.workspace.manifest_entries[0].content_hash == HASH
+    assert bundle.workspace.manifest_entries[0].content_hash == _document_hash(
+        WorkspaceSection.PLAYER
+    )

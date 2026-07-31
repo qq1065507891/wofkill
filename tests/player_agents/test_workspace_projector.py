@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import traceback
 
 import pytest
@@ -36,6 +38,7 @@ from werewolf_agent.player_agents.observation import (
     ProjectionIdentityMismatch,
     ProjectionRenderFailed,
     ProjectionSourceReference,
+    ProjectionVisibilityClass,
     PublicSummaryEntry,
     RoleAbilityProjectionSource,
     RoleProjectionSource,
@@ -111,8 +114,9 @@ def _authority_snapshot(
     *,
     commitments_supported: bool = True,
     reordered: bool = False,
+    identity: ProjectionIdentity | None = None,
 ) -> ObservationAuthoritySnapshot:
-    identity = _identity()
+    identity = identity or _identity()
     summaries = (
         PublicSummaryEntry(
             entry_id="summary-b",
@@ -221,6 +225,66 @@ def test_workspace_omits_unsupported_commitments_and_index_has_no_self_entry() -
     assert "workspace_revision:" in index.content_markdown
 
 
+def test_workspace_projects_available_empty_commitments_document() -> None:
+    snapshot = _authority_snapshot().model_copy(
+        update={"commitment_records": (), "recent_commitment_references": ()}
+    )
+    workspace = WorkspaceProjector().project(snapshot)
+    entry = _entry(workspace, WorkspaceSection.COMMITMENTS)
+    document = _document(workspace, WorkspaceSection.COMMITMENTS)
+    assert entry.availability is ProjectionAvailability.AVAILABLE
+    assert entry.required is False
+    assert entry.source_references == ()
+    assert document.source_references == ()
+    assert document.content_markdown == (
+        "# COMMITMENTS.md\n## COMMITTED_RECORDS\n## SOURCES\n"
+    )
+
+
+def test_index_exact_public_fields_exclude_private_source_metadata() -> None:
+    snapshot = _authority_snapshot()
+    workspace = WorkspaceProjector().project(snapshot)
+    index = _document(workspace, WorkspaceSection.INDEX)
+    lines = [
+        "# INDEX.md",
+        f"- workspace_revision: {workspace.workspace_revision}",
+        "## SECTIONS",
+    ]
+    for entry in workspace.manifest_entries[:-1]:
+        lines.extend((
+            f"- section_id: {json.dumps(entry.section_id.value, ensure_ascii=False)}",
+            f"  - availability: {json.dumps(entry.availability.value, ensure_ascii=False)}",
+            f"  - required: {str(entry.required).lower()}",
+            f"  - renderer_version: {json.dumps(entry.renderer_version or '-', ensure_ascii=False)}",
+            f"  - content_hash: {json.dumps(entry.content_hash or '-', ensure_ascii=False)}",
+            f"  - token_estimate: {entry.token_estimate if entry.token_estimate is not None else '-'}",
+            f"  - estimator_version: {json.dumps(entry.estimator_version or '-', ensure_ascii=False)}",
+            f"  - visibility_class: {json.dumps(entry.visibility_class.value, ensure_ascii=False)}",
+            "  - source_ids:",
+            *(
+                "    - "
+                + json.dumps(
+                    f"{source.record_kind}/{source.record_id}@{source.record_revision}",
+                    ensure_ascii=False,
+                )
+                for source in entry.source_references
+            ),
+            f"  - unavailable_reason: {json.dumps(entry.unavailable_reason.value if entry.unavailable_reason else '-', ensure_ascii=False)}",
+        ))
+    assert index.content_markdown == "\n".join(lines) + "\n"
+    assert "source_identity" not in index.content_markdown
+    assert "record_kind:" not in index.content_markdown
+    assert snapshot.view_fingerprint not in index.content_markdown
+    source_hashes = {
+        source.content_hash
+        for entry in workspace.manifest_entries
+        for source in entry.source_references
+    }
+    assert all(
+        source_hash not in index.content_markdown for source_hash in source_hashes
+    )
+
+
 def test_workspace_rebuild_is_byte_identical_after_new_projector_instance() -> None:
     first = WorkspaceProjector().project(_authority_snapshot())
     second = WorkspaceProjector().project(_authority_snapshot(reordered=True))
@@ -231,17 +295,105 @@ def test_workspace_rebuild_is_byte_identical_after_new_projector_instance() -> N
     )
 
 
+def _canonical_json_hash(value: object) -> str:
+    """测试侧独立计算 revision payload 的规范 JSON 哈希。"""
+
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def test_workspace_revision_covers_required_visibility_and_summary_authority() -> None:
+    snapshot = _authority_snapshot()
+    workspace = WorkspaceProjector().project(snapshot)
+    summary_digest = _canonical_json_hash({
+        "bounded_public_summary": sorted(snapshot.bounded_public_summary),
+    })
+    sections = []
+    for entry in workspace.manifest_entries:
+        sections.append({
+            "section_id": entry.section_id.value,
+            "availability": entry.availability.value,
+            "required": entry.required,
+            "visibility_class": entry.visibility_class.value,
+            "source_references": [
+                source.model_dump(mode="json")
+                for source in entry.source_references
+            ],
+            "renderer_version": entry.renderer_version,
+            "authority_dependency_digest": (
+                summary_digest
+                if entry.section_id is WorkspaceSection.GAME
+                else None
+            ),
+        })
+    expected_revision = _canonical_json_hash({
+        "projection_identity": snapshot.identity.model_dump(mode="json"),
+        "sections": sections,
+        "estimator_version": "unicode-conservative-v1",
+    })
+    assert workspace.workspace_revision == expected_revision
+
+
+def test_shared_cache_cannot_reuse_game_after_summary_authority_changes() -> None:
+    cache = InMemoryProjectionCache()
+    original = _authority_snapshot()
+    changed = original.model_copy(
+        update={"bounded_public_summary": ("新的已绑定公开摘要。",)}
+    )
+    first = WorkspaceProjector(cache=cache).project(original)
+    second = WorkspaceProjector(cache=cache).project(changed)
+    first_game = _document(first, WorkspaceSection.GAME)
+    second_game = _document(second, WorkspaceSection.GAME)
+    assert first.workspace_revision != second.workspace_revision
+    assert first_game.content_hash != second_game.content_hash
+    assert "新的已绑定公开摘要。" in second_game.content_markdown
+    assert "白天讨论继续。" not in second_game.content_markdown
+
+
+def test_game_visibility_is_mixed_and_shared_cache_isolates_viewers() -> None:
+    cache = InMemoryProjectionCache()
+    first = WorkspaceProjector(cache=cache).project(_authority_snapshot())
+    changed_identity = _identity(view_fingerprint=HASH_E)
+    second = WorkspaceProjector(cache=cache).project(
+        _authority_snapshot(identity=changed_identity)
+    )
+    first_game = _document(first, WorkspaceSection.GAME)
+    second_game = _document(second, WorkspaceSection.GAME)
+    assert first_game.visibility_class is ProjectionVisibilityClass.MIXED_VIEWER_FILTERED
+    assert _entry(first, WorkspaceSection.GAME).visibility_class is (
+        ProjectionVisibilityClass.MIXED_VIEWER_FILTERED
+    )
+    assert 'visibility_class: "mixed_viewer_filtered"' in _document(
+        first, WorkspaceSection.INDEX
+    ).content_markdown
+    assert second_game.identity.view_fingerprint == HASH_E
+    assert second_game.content_hash != first_game.content_hash
+
+
 class _FaultingCache:
+    def __init__(self) -> None:
+        self.get_calls = 0
+        self.put_calls = 0
+
     def get(self, key: ProjectionCacheKey) -> ProjectedDocument | None:
+        self.get_calls += 1
         raise RuntimeError("private cache read failure")
 
     def put(self, key: ProjectionCacheKey, document: ProjectedDocument) -> None:
+        self.put_calls += 1
         raise RuntimeError("private cache write failure")
 
 
 class _CorruptingCache:
     def __init__(self, document: ProjectedDocument) -> None:
-        self._document = document.model_copy(update={"content_hash": HASH_E})
+        self._document = document.model_copy(deep=True)
+        object.__setattr__(self._document, "content_hash", HASH_E)
         self.replacement: ProjectedDocument | None = None
 
     def get(self, key: ProjectionCacheKey) -> ProjectedDocument | None:
@@ -330,6 +482,18 @@ class RaisingRenderer:
         raise RuntimeError("private-marker")
 
 
+class RaisingRoleRenderer:
+    section_id = WorkspaceSection.ROLE
+    renderer_version = "raising-role-v1"
+
+    def render(
+        self,
+        snapshot: ObservationAuthoritySnapshot,
+        estimator: object,
+    ) -> ProjectedDocument:
+        raise RuntimeError("private-role-marker")
+
+
 class ChainedProjectionFailureRenderer:
     """模拟 renderer 把私有内部异常作为稳定错误的原因链暴露。"""
 
@@ -354,6 +518,24 @@ def test_required_renderer_failure_returns_no_workspace() -> None:
         projector.project(_authority_snapshot())
     assert exc_info.value.__cause__ is None
     assert "private-marker" not in "".join(traceback.format_exception(exc_info.value))
+
+
+def test_cache_read_write_faults_do_not_mask_required_renderer_failure() -> None:
+    cache = _FaultingCache()
+    renderer: DocumentRenderer = RaisingRoleRenderer()
+    projector = WorkspaceProjector(
+        renderers={WorkspaceSection.ROLE: renderer},
+        cache=cache,
+    )
+    with pytest.raises(ProjectionRenderFailed) as exc_info:
+        projector.project(_authority_snapshot())
+    assert cache.get_calls >= 2
+    assert cache.put_calls >= 1
+    assert exc_info.value.code == "projection_render_failed"
+    assert exc_info.value.__cause__ is None
+    assert "private-role-marker" not in "".join(
+        traceback.format_exception(exc_info.value)
+    )
 
 
 def test_renderer_projection_error_is_replaced_without_private_cause() -> None:

@@ -21,9 +21,13 @@ from werewolf_agent.player_agents.contracts.records import (
 from werewolf_agent.player_agents.contracts.speech import (
     Alignment,
     AlignmentRead,
+    ConfidenceBucket,
     Modality,
     RetractionMove,
     Strength,
+    UncertaintyAlternative,
+    UncertaintyDimension,
+    UncertaintyStatement,
     VoteCommitment,
     VotePosition,
 )
@@ -37,6 +41,7 @@ from werewolf_agent.player_agents.observation import (
     ObservationAuthorityReader,
     ObservationAuthoritySnapshot,
     PersonaProjectionSource,
+    ProjectedDocument,
     ProjectionIdentity,
     ProjectionSourceReference,
     PublicSummaryEntry,
@@ -386,6 +391,53 @@ def test_commitments_renderer_uses_structured_semantics_not_utterance_text() -> 
     assert "retraction" in document.content_markdown
     assert HASH_D in document.content_markdown
     assert "rendered utterance" not in document.content_markdown.lower()
+
+
+def test_uncertainty_alternatives_with_equal_value_ids_are_permutation_stable() -> None:
+    alternatives = (
+        UncertaintyAlternative(
+            value_id="wolf",
+            confidence=ConfidenceBucket.HIGH,
+            support_refs=("evidence-2",),
+        ),
+        UncertaintyAlternative(
+            value_id="wolf",
+            confidence=ConfidenceBucket.LOW,
+            support_refs=("evidence-1",),
+        ),
+    )
+
+    def render_with(
+        ordered: tuple[UncertaintyAlternative, ...],
+    ) -> ProjectedDocument:
+        snapshot = _authority_snapshot()
+        assert snapshot.commitment_records is not None
+        commitment = snapshot.commitment_records[0]
+        uncertainty = UncertaintyStatement(
+            move_id="move-uncertain",
+            move_type="uncertainty",
+            modality=Modality.SUSPECTED,
+            evidence_refs=("public-1",),
+            subject_id="p03",
+            dimension=UncertaintyDimension.ALIGNMENT,
+            alternatives=ordered,
+        )
+        changed_record = commitment.record.model_copy(
+            update={"normalized_moves": (uncertainty,)}
+        )
+        changed_commitment = commitment.model_copy(update={"record": changed_record})
+        changed_snapshot = snapshot.model_copy(
+            update={"commitment_records": (changed_commitment,)}
+        )
+        return DOCUMENT_RENDERERS[WorkspaceSection.COMMITMENTS].render(
+            changed_snapshot,
+            ConservativeTokenEstimator(),
+        )
+
+    first = render_with(alternatives)
+    second = render_with(tuple(reversed(alternatives)))
+    assert first.content_markdown == second.content_markdown
+    assert first.content_hash == second.content_hash
 
 
 def test_commitments_renderer_can_be_absent_without_fabricating_document() -> None:

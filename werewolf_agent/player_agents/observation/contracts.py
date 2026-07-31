@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-31
+修改日期: 2026-07-31
 
 使用示例:
     >>> ProjectionIdentity(
@@ -16,6 +17,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
@@ -158,6 +161,30 @@ def _freeze_list_input(value: object) -> object:
     return value
 
 
+def canonical_json_bytes(value: object) -> bytes:
+    """生成内容寻址使用的稳定 UTF-8 JSON 字节。"""
+
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def canonical_json_hash(value: object) -> str:
+    """计算规范 JSON 字节的 SHA-256。"""
+
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def canonical_content_hash(content_markdown: str) -> str:
+    """计算规范 Markdown UTF-8 字节的 SHA-256。"""
+
+    return hashlib.sha256(content_markdown.encode("utf-8")).hexdigest()
+
+
 class ProjectedDocument(StrictFrozenModel):
     """单个确定性渲染的工作区文档。"""
 
@@ -184,6 +211,8 @@ class ProjectedDocument(StrictFrozenModel):
     def _validate_lf_only_content(cls, content_markdown: str) -> str:
         if "\r" in content_markdown:
             raise ValueError("content_markdown must use LF-only line endings")
+        if not content_markdown.endswith("\n") or content_markdown.endswith("\n\n"):
+            raise ValueError("content_markdown must have exactly one trailing LF")
         return content_markdown
 
     @field_validator("source_references")
@@ -193,6 +222,12 @@ class ProjectedDocument(StrictFrozenModel):
         references: tuple[ProjectionSourceReference, ...],
     ) -> tuple[ProjectionSourceReference, ...]:
         return _unique_source_references(references)
+
+    @model_validator(mode="after")
+    def _validate_content_hash(self) -> Self:
+        if self.content_hash != canonical_content_hash(self.content_markdown):
+            raise ValueError("content_hash must match canonical Markdown bytes")
+        return self
 
 
 class ManifestEntry(StrictFrozenModel):
@@ -262,6 +297,25 @@ class ManifestEntry(StrictFrozenModel):
         return self
 
 
+def canonical_workspace_hash(
+    entries: tuple[ManifestEntry, ...],
+    documents: tuple[ProjectedDocument, ...],
+) -> str:
+    """按有序清单和有序文档字节计算工作区 SHA-256。"""
+
+    digest = hashlib.sha256()
+    manifest_bytes = canonical_json_bytes([
+        entry.model_dump(mode="json") for entry in entries
+    ])
+    digest.update(len(manifest_bytes).to_bytes(8, "big"))
+    digest.update(manifest_bytes)
+    for document in documents:
+        content_bytes = document.content_markdown.encode("utf-8")
+        digest.update(len(content_bytes).to_bytes(8, "big"))
+        digest.update(content_bytes)
+    return digest.hexdigest()
+
+
 class PlayerWorkspaceSnapshot(StrictFrozenModel):
     """在一个投影身份下的完整玩家工作区快照。"""
 
@@ -299,6 +353,16 @@ class PlayerWorkspaceSnapshot(StrictFrozenModel):
         }
         if set(documents_by_section) != available_sections:
             raise ValueError("documents must match available manifest entries")
+        expected_document_sections = tuple(
+            entry.section_id
+            for entry in self.manifest_entries
+            if entry.availability is ProjectionAvailability.AVAILABLE
+        )
+        actual_document_sections = tuple(
+            document.section_id for document in self.documents
+        )
+        if actual_document_sections != expected_document_sections:
+            raise ValueError("documents must follow available manifest order")
 
         for section_id, document in documents_by_section.items():
             entry = entries_by_section[section_id]
@@ -319,6 +383,11 @@ class PlayerWorkspaceSnapshot(StrictFrozenModel):
         for entry in self.manifest_entries:
             source_references.extend(entry.source_references)
         _require_consistent_source_hashes(source_references)
+        if self.workspace_hash != canonical_workspace_hash(
+            self.manifest_entries,
+            self.documents,
+        ):
+            raise ValueError("workspace_hash must match ordered workspace bytes")
         return self
 
 
@@ -422,4 +491,8 @@ __all__ = [
     "ProjectionUnavailableReason",
     "ProjectionVisibilityClass",
     "WorkspaceSection",
+    "canonical_content_hash",
+    "canonical_json_bytes",
+    "canonical_json_hash",
+    "canonical_workspace_hash",
 ]

@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-31
+修改日期: 2026-07-31
 
 使用示例:
     >>> WorkspaceProjector().project(snapshot)
@@ -11,7 +12,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -36,6 +36,9 @@ from werewolf_agent.player_agents.observation.contracts import (
     ProjectionUnavailableReason,
     ProjectionVisibilityClass,
     WorkspaceSection,
+    canonical_content_hash,
+    canonical_json_hash,
+    canonical_workspace_hash,
 )
 from werewolf_agent.player_agents.observation.errors import (
     ProjectionIdentityMismatch,
@@ -75,18 +78,7 @@ class _SectionPlan:
     renderer_version: str | None
     visibility_class: ProjectionVisibilityClass
     source_references: tuple[ProjectionSourceReference, ...]
-
-
-def _canonical_json_bytes(value: object) -> bytes:
-    """生成用于内容寻址的稳定 UTF-8 JSON 字节。"""
-
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    authority_dependency_digest: str | None
 
 
 def _canonical_sources(
@@ -114,12 +106,6 @@ def _source_payload(
         reference.model_dump(mode="json")
         for reference in _canonical_sources(references)
     ]
-
-
-def _content_hash(content: str) -> str:
-    """计算规范 Markdown 的 UTF-8 内容哈希。"""
-
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _safe_scalar(value: str) -> str:
@@ -179,7 +165,7 @@ class WorkspaceProjector:
         documents.append(index_document)
         entries.append(self._available_entry(index_document, required=True))
         manifest_entries = tuple(entries)
-        workspace_hash = self._workspace_hash(manifest_entries, tuple(documents))
+        workspace_hash = canonical_workspace_hash(manifest_entries, tuple(documents))
         try:
             return PlayerWorkspaceSnapshot(
                 identity=snapshot.identity,
@@ -220,6 +206,7 @@ class WorkspaceProjector:
                     renderer_version=None,
                     visibility_class=ProjectionVisibilityClass.MANIFEST,
                     source_references=(),
+                    authority_dependency_digest=None,
                 ))
                 continue
             if section_id is WorkspaceSection.INDEX:
@@ -230,6 +217,7 @@ class WorkspaceProjector:
                     renderer_version=INDEX_RENDERER_VERSION,
                     visibility_class=ProjectionVisibilityClass.MANIFEST,
                     source_references=(),
+                    authority_dependency_digest=None,
                 ))
                 continue
             if (
@@ -243,6 +231,7 @@ class WorkspaceProjector:
                     renderer_version=None,
                     visibility_class=ProjectionVisibilityClass.MANIFEST,
                     source_references=(),
+                    authority_dependency_digest=None,
                 ))
                 continue
             renderer = self._renderers.get(section_id)
@@ -256,6 +245,7 @@ class WorkspaceProjector:
                     renderer_version=None,
                     visibility_class=ProjectionVisibilityClass.MANIFEST,
                     source_references=(),
+                    authority_dependency_digest=None,
                 ))
                 continue
             plans.append(_SectionPlan(
@@ -265,6 +255,10 @@ class WorkspaceProjector:
                 renderer_version=renderer.renderer_version,
                 visibility_class=self._visibility_for(section_id),
                 source_references=self._sources_for(snapshot, section_id),
+                authority_dependency_digest=self._authority_dependency_digest(
+                    snapshot,
+                    section_id,
+                ),
             ))
         return tuple(plans)
 
@@ -298,10 +292,23 @@ class WorkspaceProjector:
         visibility = {
             WorkspaceSection.PLAYER: ProjectionVisibilityClass.PLAYER_PRIVATE,
             WorkspaceSection.ROLE: ProjectionVisibilityClass.ROLE_PRIVATE,
-            WorkspaceSection.GAME: ProjectionVisibilityClass.PUBLIC,
+            WorkspaceSection.GAME: ProjectionVisibilityClass.MIXED_VIEWER_FILTERED,
             WorkspaceSection.COMMITMENTS: ProjectionVisibilityClass.MIXED_VIEWER_FILTERED,
         }
         return visibility[section_id]
+
+    @staticmethod
+    def _authority_dependency_digest(
+        snapshot: ObservationAuthoritySnapshot,
+        section_id: WorkspaceSection,
+    ) -> str | None:
+        """绑定没有独立来源引用、但会进入文档的规范权威值。"""
+
+        if section_id is not WorkspaceSection.GAME:
+            return None
+        return canonical_json_hash({
+            "bounded_public_summary": sorted(snapshot.bounded_public_summary),
+        })
 
     def _workspace_revision(
         self,
@@ -316,14 +323,17 @@ class WorkspaceProjector:
                 {
                     "section_id": plan.section_id,
                     "availability": plan.availability,
+                    "required": plan.required,
+                    "visibility_class": plan.visibility_class,
                     "source_references": _source_payload(plan.source_references),
                     "renderer_version": plan.renderer_version,
+                    "authority_dependency_digest": plan.authority_dependency_digest,
                 }
                 for plan in plans
             ],
             "estimator_version": self._estimator.version,
         }
-        return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+        return canonical_json_hash(payload)
 
     def _cached_or_rendered(
         self,
@@ -412,7 +422,8 @@ class WorkspaceProjector:
             and document.estimator_version == self._estimator.version
             and document.visibility_class is plan.visibility_class
             and document.source_references == _canonical_sources(plan.source_references)
-            and document.content_hash == _content_hash(document.content_markdown)
+            and document.content_hash
+            == canonical_content_hash(document.content_markdown)
             and document.token_estimate == self._estimator.estimate(document.content_markdown)
         )
 
@@ -517,31 +528,11 @@ class WorkspaceProjector:
             identity=identity,
             renderer_version=INDEX_RENDERER_VERSION,
             content_markdown=content,
-            content_hash=_content_hash(content),
+            content_hash=canonical_content_hash(content),
             token_estimate=self._estimator.estimate(content),
             estimator_version=self._estimator.version,
             visibility_class=ProjectionVisibilityClass.MANIFEST,
             source_references=(),
         )
-
-    @staticmethod
-    def _workspace_hash(
-        entries: tuple[ManifestEntry, ...],
-        documents: tuple[ProjectedDocument, ...],
-    ) -> str:
-        """按清单顺序和文档 UTF-8 字节计算不可歧义的 workspace 哈希。"""
-
-        digest = hashlib.sha256()
-        manifest_bytes = _canonical_json_bytes([
-            entry.model_dump(mode="json") for entry in entries
-        ])
-        digest.update(len(manifest_bytes).to_bytes(8, "big"))
-        digest.update(manifest_bytes)
-        for document in documents:
-            content_bytes = document.content_markdown.encode("utf-8")
-            digest.update(len(content_bytes).to_bytes(8, "big"))
-            digest.update(content_bytes)
-        return digest.hexdigest()
-
 
 __all__ = ["INDEX_RENDERER_VERSION", "WorkspaceProjector"]

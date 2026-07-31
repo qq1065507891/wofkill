@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-31
+修改日期: 2026-07-31
 
 使用示例:
     >>> ConservativeTokenEstimator().estimate("# PLAYER.md\n") >= 1
@@ -12,7 +13,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections.abc import Callable, Mapping
 from typing import Protocol, runtime_checkable
@@ -41,6 +41,7 @@ from werewolf_agent.player_agents.observation.contracts import (
     ProjectionSourceReference,
     ProjectionVisibilityClass,
     WorkspaceSection,
+    canonical_content_hash,
 )
 
 PLAYER_RENDERER_VERSION = "player-v1"
@@ -174,7 +175,7 @@ def _build_document(
         identity=identity,
         renderer_version=renderer_version,
         content_markdown=content_markdown,
-        content_hash=hashlib.sha256(content_markdown.encode("utf-8")).hexdigest(),
+        content_hash=canonical_content_hash(content_markdown),
         token_estimate=estimator.estimate(content_markdown),
         estimator_version=estimator.version,
         visibility_class=visibility_class,
@@ -184,7 +185,7 @@ def _build_document(
         document.identity != identity
         or document.source_references != canonical_references
         or document.content_hash
-        != hashlib.sha256(document.content_markdown.encode("utf-8")).hexdigest()
+        != canonical_content_hash(document.content_markdown)
     ):
         raise ValueError("renderer produced an invalid projected document")
     return document
@@ -306,7 +307,7 @@ def render_game_document(
         identity=snapshot.identity,
         content_markdown=content,
         estimator=estimator,
-        visibility_class=ProjectionVisibilityClass.PUBLIC,
+        visibility_class=ProjectionVisibilityClass.MIXED_VIEWER_FILTERED,
         source_references=source_references,
     )
 
@@ -342,7 +343,17 @@ def _move_detail_lines(move: SpeechMove) -> list[str]:
         lines.extend((f"  - prior_public_move_ref: {move.prior_public_move_ref}", f"  - replacement_move_id: {move.replacement_move_id or '-'}"))
     elif isinstance(move, UncertaintyStatement):
         lines.extend((f"  - subject_id: {move.subject_id}", f"  - dimension: {move.dimension}"))
-        lines.extend(f"  - alternative: {item.value_id}/{item.confidence}/{','.join(sorted(item.support_refs)) or '-'}" for item in sorted(move.alternatives, key=lambda item: item.value_id))
+        lines.extend(
+            f"  - alternative: {item.value_id}/{item.confidence}/{','.join(sorted(item.support_refs)) or '-'}"
+            for item in sorted(
+                move.alternatives,
+                key=lambda item: (
+                    item.value_id,
+                    item.confidence.value,
+                    tuple(sorted(item.support_refs)),
+                ),
+            )
+        )
     return lines
 
 
