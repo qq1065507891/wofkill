@@ -12,6 +12,8 @@ import ast
 from importlib.util import resolve_name
 from pathlib import Path
 
+import pytest
+
 OBSERVATION_ROOT = (
     Path(__file__).resolve().parents[2]
     / "werewolf_agent"
@@ -179,99 +181,294 @@ _STANDARD_DYNAMIC_MODULE_CALLS = {
     "operator.getitem": "getitem",
 }
 _BUILTIN_DYNAMIC_LOOKUPS = frozenset({"__import__", "getattr"})
-def _dynamic_lookup_aliases(tree: ast.AST) -> dict[str, str]:
-    """解析标准动态查找函数的本地导入别名。"""
-
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        if node.module not in {"builtins", "importlib", "importlib.util", "operator"}:
-            continue
-        for alias in node.names:
-            if alias.name in _DYNAMIC_LOOKUP_ARGUMENTS:
-                aliases[alias.asname or alias.name] = alias.name
-    return aliases
+_STANDARD_DYNAMIC_MODULES = frozenset({
+    "builtins",
+    "importlib",
+    "importlib.util",
+    "operator",
+})
+_LOCAL_BINDING = ("local", "")
 
 
-def _standard_module_aliases(tree: ast.AST) -> dict[str, str]:
-    """记录标准动态查找模块的显式模块别名。"""
+class _LookupScope:
+    """保存单个词法作用域内、可按来源解析的名字绑定。"""
 
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name not in {"builtins", "importlib", "importlib.util", "operator"}:
-                    continue
-                local_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
-                aliases[local_name] = alias.name if alias.asname else local_name
-        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
-            for alias in node.names:
-                if alias.name == "util":
-                    aliases[alias.asname or alias.name] = "importlib.util"
-    return aliases
+    def __init__(
+        self,
+        parent: _LookupScope | None = None,
+        *,
+        kind: str = "module",
+    ) -> None:
+        self.parent = parent
+        self.kind = kind
+        self.bindings: dict[str, tuple[str, str]] = {}
 
-
-def _dotted_name(expression: ast.expr) -> str | None:
-    if isinstance(expression, ast.Name):
-        return expression.id
-    if isinstance(expression, ast.Attribute):
-        parent = _dotted_name(expression.value)
-        return f"{parent}.{expression.attr}" if parent is not None else None
-    return None
+    def resolve(self, name: str) -> tuple[str, str] | None:
+        binding = self.bindings.get(name)
+        if binding is not None:
+            return binding
+        if self.parent is not None:
+            return self.parent.resolve(name)
+        return None
 
 
-def _locally_bound_names(tree: ast.AST) -> set[str]:
-    """识别会遮蔽 builtin lookup 的显式本地绑定。"""
-
-    names = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-    }
-    for node in ast.walk(tree):
-        targets: tuple[ast.expr, ...] = ()
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-            if isinstance(node, ast.Assign):
-                targets = tuple(node.targets)
-            else:
-                targets = (node.target,)
-        names.update(
-            target.id
-            for target in targets
-            if isinstance(target, ast.Name)
+def _argument_names(arguments: ast.arguments) -> set[str]:
+    return {
+        argument.arg
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
         )
-    return names
+    } | {
+        argument.arg
+        for argument in (arguments.vararg, arguments.kwarg)
+        if argument is not None
+    }
 
 
-def _canonical_dynamic_lookup(
-    function: ast.expr,
-    *,
-    function_aliases: dict[str, str],
-    module_aliases: dict[str, str],
-    locally_bound_names: set[str],
-) -> str | None:
-    """只解析已证明来自 builtin 或标准库模块的 lookup。"""
+class _FunctionLocalCollector(ast.NodeVisitor):
+    """预收集一个函数自己的 local 名字，不穿透嵌套作用域。"""
 
-    if isinstance(function, ast.Name):
-        aliased = function_aliases.get(function.id)
-        if aliased is not None:
-            return aliased
-        if (
-            function.id in _BUILTIN_DYNAMIC_LOOKUPS
-            and function.id not in locally_bound_names
+    def __init__(self, arguments: ast.arguments) -> None:
+        self.names = _argument_names(arguments)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.names.update(
+            alias.asname or alias.name.split(".", maxsplit=1)[0]
+            for alias in node.names
+        )
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.names.update(
+            alias.asname or alias.name
+            for alias in node.names
+            if alias.name != "*"
+        )
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def _visit_comprehension(self, generators: list[ast.comprehension]) -> None:
+        for generator in generators:
+            self.visit(generator.iter)
+            for condition in generator.ifs:
+                self.visit(condition)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators)
+
+
+def _function_local_names(
+    arguments: ast.arguments,
+    body: list[ast.stmt],
+) -> set[str]:
+    collector = _FunctionLocalCollector(arguments)
+    for statement in body:
+        collector.visit(statement)
+    return collector.names
+
+
+class _DispatchedStringVisitor(ast.NodeVisitor):
+    """按源码顺序和词法作用域追踪动态查找调用的来源。"""
+
+    def __init__(self, tree: ast.AST) -> None:
+        self.parents = {
+            child: node
+            for node in ast.walk(tree)
+            for child in ast.iter_child_nodes(node)
+        }
+        self.scope = _LookupScope()
+        self.values: set[str] = set()
+
+    def _bind(self, name: str, binding: tuple[str, str] = _LOCAL_BINDING) -> None:
+        self.scope.bindings[name] = binding
+
+    def _bind_target(self, target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            self._bind(target.id)
+        elif isinstance(target, (ast.List, ast.Tuple)):
+            for element in target.elts:
+                self._bind_target(element)
+        elif isinstance(target, ast.Starred):
+            self._bind_target(target.value)
+
+    def _canonical_lookup(self, function: ast.expr) -> str | None:
+        if isinstance(function, ast.Name):
+            binding = self.scope.resolve(function.id)
+            if binding is not None:
+                kind, provenance = binding
+                return provenance if kind == "lookup" else None
+            if function.id in _BUILTIN_DYNAMIC_LOOKUPS:
+                return function.id
+            return None
+
+        attributes: list[str] = []
+        while isinstance(function, ast.Attribute):
+            attributes.append(function.attr)
+            function = function.value
+        if not isinstance(function, ast.Name):
+            return None
+        binding = self.scope.resolve(function.id)
+        if binding is None or binding[0] != "module":
+            return None
+        dotted = ".".join((binding[1], *reversed(attributes)))
+        return _STANDARD_DYNAMIC_MODULE_CALLS.get(dotted)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            local_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
+            imported_name = alias.name if alias.asname else local_name
+            binding = (
+                ("module", imported_name)
+                if imported_name in _STANDARD_DYNAMIC_MODULES
+                else _LOCAL_BINDING
+            )
+            self._bind(local_name, binding)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = node.module or ""
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            local_name = alias.asname or alias.name
+            qualified_name = f"{module}.{alias.name}" if module else alias.name
+            canonical = _STANDARD_DYNAMIC_MODULE_CALLS.get(qualified_name)
+            if canonical is not None:
+                self._bind(local_name, ("lookup", canonical))
+            elif qualified_name in _STANDARD_DYNAMIC_MODULES:
+                self._bind(local_name, ("module", qualified_name))
+            else:
+                self._bind(local_name)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            self._bind_target(target)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+        self._bind_target(node.target)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.value)
+        self._bind_target(node.target)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self._bind_target(node.target)
+
+    def _visit_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        for expression in (
+            *node.decorator_list,
+            *node.args.defaults,
+            *(default for default in node.args.kw_defaults if default is not None),
         ):
-            return function.id
-        return None
+            self.visit(expression)
+        self._bind(node.name)
 
-    dotted = _dotted_name(function)
-    if dotted is None:
-        return None
-    root, separator, remainder = dotted.partition(".")
-    resolved_root = module_aliases.get(root)
-    if resolved_root is not None:
-        dotted = f"{resolved_root}.{remainder}" if separator else resolved_root
-    return _STANDARD_DYNAMIC_MODULE_CALLS.get(dotted)
+        parent = self.scope.parent if self.scope.kind == "class" else self.scope
+        function_scope = _LookupScope(parent, kind="function")
+        function_scope.bindings.update({
+            name: _LOCAL_BINDING
+            for name in _function_local_names(node.args, node.body)
+        })
+        previous_scope = self.scope
+        self.scope = function_scope
+        for statement in node.body:
+            self.visit(statement)
+        self.scope = previous_scope
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        lambda_scope = _LookupScope(self.scope, kind="function")
+        lambda_scope.bindings.update({
+            name: _LOCAL_BINDING
+            for name in _argument_names(node.args)
+        })
+        previous_scope = self.scope
+        self.scope = lambda_scope
+        self.visit(node.body)
+        self.scope = previous_scope
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in (*node.decorator_list, *node.bases, *node.keywords):
+            self.visit(expression.value if isinstance(expression, ast.keyword) else expression)
+        self._bind(node.name)
+        previous_scope = self.scope
+        self.scope = _LookupScope(previous_scope, kind="class")
+        for statement in node.body:
+            self.visit(statement)
+        self.scope = previous_scope
+
+    def visit_Call(self, node: ast.Call) -> None:
+        for candidate in ast.walk(node.func):
+            if (
+                isinstance(candidate, ast.Subscript)
+                and isinstance(candidate.slice, ast.Constant)
+                and isinstance(candidate.slice.value, str)
+            ):
+                self.values.add(candidate.slice.value)
+
+        canonical_name = self._canonical_lookup(node.func)
+        if canonical_name in _DYNAMIC_LOOKUP_ARGUMENTS:
+            value = _string_argument(
+                node,
+                _DYNAMIC_LOOKUP_ARGUMENTS[canonical_name],
+                _DYNAMIC_LOOKUP_KEYWORDS[canonical_name],
+            )
+            if value is not None:
+                self.values.add(value)
+        else:
+            parent = self.parents.get(node)
+            if isinstance(parent, ast.Call) and parent.func is node:
+                arguments = (
+                    *node.args,
+                    *(keyword.value for keyword in node.keywords),
+                )
+                self.values.update(
+                    argument.value
+                    for argument in arguments
+                    if isinstance(argument, ast.Constant)
+                    and isinstance(argument.value, str)
+                )
+        self.generic_visit(node)
 
 
 def _string_argument(
@@ -297,54 +494,9 @@ def _string_argument(
 def _dispatched_strings(tree: ast.AST) -> set[str]:
     """只收集真正参与动态查找或调用目标选择的字符串。"""
 
-    parents = {
-        child: node
-        for node in ast.walk(tree)
-        for child in ast.iter_child_nodes(node)
-    }
-    function_aliases = _dynamic_lookup_aliases(tree)
-    module_aliases = _standard_module_aliases(tree)
-    locally_bound_names = _locally_bound_names(tree)
-    values: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-
-        for candidate in ast.walk(node.func):
-            if not isinstance(candidate, ast.Subscript):
-                continue
-            if isinstance(candidate.slice, ast.Constant) and isinstance(
-                candidate.slice.value,
-                str,
-            ):
-                values.add(candidate.slice.value)
-
-        canonical_name = _canonical_dynamic_lookup(
-            node.func,
-            function_aliases=function_aliases,
-            module_aliases=module_aliases,
-            locally_bound_names=locally_bound_names,
-        )
-        if canonical_name in _DYNAMIC_LOOKUP_ARGUMENTS:
-            value = _string_argument(
-                node,
-                _DYNAMIC_LOOKUP_ARGUMENTS[canonical_name],
-                _DYNAMIC_LOOKUP_KEYWORDS[canonical_name],
-            )
-            if value is not None:
-                values.add(value)
-            continue
-
-        parent = parents.get(node)
-        if isinstance(parent, ast.Call) and parent.func is node:
-            arguments = (*node.args, *(keyword.value for keyword in node.keywords))
-            values.update(
-                argument.value
-                for argument in arguments
-                if isinstance(argument, ast.Constant)
-                and isinstance(argument.value, str)
-            )
-    return values
+    visitor = _DispatchedStringVisitor(tree)
+    visitor.visit(tree)
+    return visitor.values
 
 
 def _is_forbidden_dispatched_value(value: str) -> bool:
@@ -424,6 +576,58 @@ def test_dispatch_scanner_tracks_only_dynamic_lookup_targets(tmp_path: Path) -> 
         encoding="utf-8",
     )
     assert _dispatched_strings(_tree(local_lookup_probe)) == set()
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            (
+                "from app.helpers import getattr\n"
+                "getattr(target, 'PlayerAgent')\n"
+            ),
+            set(),
+        ),
+        (
+            (
+                "def use(getattr):\n"
+                "    return getattr(target, 'PlayerAgent')\n"
+            ),
+            set(),
+        ),
+        (
+            (
+                "from importlib import import_module as load_module\n"
+                "import importlib as imports\n"
+                "load_module = local_loader\n"
+                "imports = local_imports\n"
+                "load_module(name='werewolf_agent.runtime')\n"
+                "imports.import_module(name='werewolf_agent.model_gateway')\n"
+            ),
+            set(),
+        ),
+        (
+            (
+                "def unrelated():\n"
+                "    getattr = local_lookup\n"
+                "def active():\n"
+                "    return getattr(target, 'PlayerAgent')\n"
+            ),
+            {"PlayerAgent"},
+        ),
+    ],
+    ids=[
+        "foreign-import",
+        "parameter-shadow",
+        "rebound-stdlib-aliases",
+        "unrelated-nested-binding",
+    ],
+)
+def test_dispatch_scanner_resolves_provenance_in_lexical_scope(
+    source: str,
+    expected: set[str],
+) -> None:
+    assert _dispatched_strings(ast.parse(source)) == expected
 
 
 def test_provider_scanner_uses_import_context_not_local_suffixes(
